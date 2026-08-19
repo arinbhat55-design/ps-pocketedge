@@ -1,0 +1,40 @@
+MODULE   := github.com/ankitapaul1586-cmd/pspocketedge
+VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE     ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS  := -X '$(MODULE)/internal/shared/version.Version=$(VERSION)' \
+            -X '$(MODULE)/internal/shared/version.Commit=$(COMMIT)' \
+            -X '$(MODULE)/internal/shared/version.BuildDate=$(DATE)'
+
+.PHONY: build build-agent build-controlplane test vet proto migrate dev release clean
+
+build: build-agent build-controlplane
+
+build-agent:
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/pe-agent ./cmd/agent
+
+build-controlplane:
+	go build -ldflags "$(LDFLAGS)" -o bin/pe-controlplane ./cmd/controlplane
+
+test:
+	go test ./...
+
+vet:
+	go vet ./...
+
+proto:
+	protoc --go_out=. --go_opt=paths=source_relative \
+		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		proto/agent/v1/agent.proto
+
+migrate:
+	migrate -path migrations -database "$${DATABASE_URL}" up
+
+dev:
+	docker compose -f deploy/docker-compose.dev.yml up
+
+release:
+	goreleaser release --snapshot --clean
+
+clean:
+	rm -rf bin dist

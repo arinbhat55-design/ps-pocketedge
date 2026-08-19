@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS deployment_events;
+DROP TABLE IF EXISTS deployments;
+DROP TABLE IF EXISTS stacks;
+DROP TABLE IF EXISTS enrollment_tokens;
+DROP TABLE IF EXISTS servers;
+DROP TABLE IF EXISTS users;

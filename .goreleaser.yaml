@@ -1,0 +1,55 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: agent
+    main: ./cmd/agent
+    binary: pe-agent
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "7"
+    ldflags:
+      - -s -w
+      - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.Version={{.Version}}
+      - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.Commit={{.Commit}}
+      - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.BuildDate={{.Date}}
+
+  - id: controlplane
+    main: ./cmd/controlplane
+    binary: pe-controlplane
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.Version={{.Version}}
+      - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.Commit={{.Commit}}
+      - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.BuildDate={{.Date}}
+
+archives:
+  - id: agent
+    ids: [agent]
+    name_template: "pe-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+  - id: controlplane
+    ids: [controlplane]
+    name_template: "pe-controlplane_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ .Tag }}-next"

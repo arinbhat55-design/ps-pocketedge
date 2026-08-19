@@ -1,0 +1,17 @@
+# Go
+/bin/
+/dist/
+*.test
+*.out
+
+# Env / secrets
+.env
+*.env.local
+
+# OS
+.DS_Store
+
+# Flutter/Dart (app/ has its own .gitignore for platform-specific entries;
+# these are repo-root-level catch-alls)
+app/build/
+app/.dart_tool/
