@@ -15,11 +15,22 @@ import (
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/api"
 	authpkg "github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/grpcserver"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version"
 )
+
+// defaultStackComposeYAML is the one hand-seeded stack for the MVP core
+// loop (M4): a minimal single-service stack, not a marketplace catalog.
+const defaultStackComposeYAML = `services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8899:80"
+    restart: unless-stopped
+`
 
 func main() {
 	grpcAddr := flag.String("grpc-addr", ":8443", "address for the agent gRPC service to listen on")
@@ -60,18 +71,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := seedDefaultStack(ctx, log, st); err != nil {
+		log.Error("failed to seed default stack", "error", err)
+		os.Exit(1)
+	}
+
 	lis, err := net.Listen("tcp", *grpcAddr)
 	if err != nil {
 		log.Error("failed to listen", "addr", *grpcAddr, "error", err)
 		os.Exit(1)
 	}
 
+	dispatcher := deploy.NewDispatcher()
+
 	grpcServer := grpc.NewServer()
-	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st))
+	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher))
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher),
 	}
 
 	errCh := make(chan error, 2)
@@ -93,4 +111,19 @@ func main() {
 		log.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func seedDefaultStack(ctx context.Context, log *slog.Logger, st *store.Store) error {
+	count, err := st.CountStacks(ctx)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	if _, err := st.CreateStack(ctx, "nginx-hello", defaultStackComposeYAML, map[string]string{}); err != nil {
+		return err
+	}
+	log.Info("seeded default stack", "name", "nginx-hello")
+	return nil
 }

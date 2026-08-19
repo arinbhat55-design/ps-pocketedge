@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
@@ -21,12 +22,13 @@ import (
 type Server struct {
 	agentv1.UnimplementedAgentSessionServer
 
-	log   *slog.Logger
-	store *store.Store
+	log        *slog.Logger
+	store      *store.Store
+	dispatcher *deploy.Dispatcher
 }
 
-func New(log *slog.Logger, st *store.Store) *Server {
-	return &Server{log: log, store: st}
+func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher) *Server {
+	return &Server{log: log, store: st, dispatcher: dispatcher}
 }
 
 func (s *Server) Enroll(ctx context.Context, req *agentv1.EnrollRequest) (*agentv1.EnrollResponse, error) {
@@ -82,10 +84,37 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 		return err
 	}
 
+	// Register this connection so REST-triggered deployments (internal/
+	// controlplane/deploy) can route commands to this specific agent. The
+	// send side runs in its own goroutine since the stream is
+	// bidirectional and stream.Recv() below blocks.
+	outbound, unregister := s.dispatcher.Register(serverID)
+	defer unregister()
+
+	sendErrCh := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg := <-outbound:
+				if err := stream.Send(msg); err != nil {
+					sendErrCh <- err
+					return
+				}
+			}
+		}
+	}()
+
+	s.log.Info("agent connected", "server_id", serverID)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-sendErrCh:
+			s.log.Info("agent session closed (send failed)", "server_id", serverID, "error", err)
+			return err
 		default:
 		}
 
@@ -120,15 +149,39 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 			)
 		case *agentv1.AgentMessage_DeployStatus:
 			ds := payload.DeployStatus
+			phase := deployPhaseToString(ds.GetPhase())
 			s.log.Info("deploy status received",
 				"server_id", serverID,
 				"deployment_id", ds.GetDeploymentId(),
-				"phase", ds.GetPhase(),
+				"phase", phase,
 				"message", ds.GetMessage(),
 			)
+			if err := s.store.UpdateDeploymentPhase(ctx, ds.GetDeploymentId(), phase); err != nil {
+				s.log.Error("failed to update deployment phase", "deployment_id", ds.GetDeploymentId(), "error", err)
+			}
+			if err := s.store.AddDeploymentEvent(ctx, ds.GetDeploymentId(), phase, ds.GetMessage()); err != nil {
+				s.log.Error("failed to record deployment event", "deployment_id", ds.GetDeploymentId(), "error", err)
+			}
 		default:
 			s.log.Warn("unknown agent message payload", "server_id", serverID)
 		}
+	}
+}
+
+func deployPhaseToString(phase agentv1.DeployPhase) string {
+	switch phase {
+	case agentv1.DeployPhase_DEPLOY_PHASE_PENDING:
+		return "pending"
+	case agentv1.DeployPhase_DEPLOY_PHASE_PULLING:
+		return "pulling"
+	case agentv1.DeployPhase_DEPLOY_PHASE_CREATING:
+		return "creating"
+	case agentv1.DeployPhase_DEPLOY_PHASE_RUNNING:
+		return "running"
+	case agentv1.DeployPhase_DEPLOY_PHASE_FAILED:
+		return "failed"
+	default:
+		return "unknown"
 	}
 }
 

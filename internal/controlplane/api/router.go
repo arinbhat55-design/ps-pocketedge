@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
 )
 
@@ -20,13 +21,18 @@ const enrollmentTokenTTL = 1 * time.Hour
 // A permissive CORS policy is applied so the Flutter web build can call
 // this API from its dev server origin during local development; this
 // should be tightened before any non-local deployment.
-func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager) http.Handler {
+func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
 
 	mux.Handle("GET /api/servers", authMgr.RequireAuth(handleListServers(log, st)))
 	mux.Handle("POST /api/servers/enroll-token", authMgr.RequireAuth(handleCreateEnrollmentToken(log, st)))
+
+	mux.Handle("GET /api/stacks", authMgr.RequireAuth(handleListStacks(log, st)))
+
+	mux.Handle("POST /api/deployments", authMgr.RequireAuth(handleCreateDeployment(log, st, dispatcher)))
+	mux.Handle("GET /api/deployments/{id}", authMgr.RequireAuth(handleGetDeployment(log, st)))
 
 	return withCORS(mux)
 }

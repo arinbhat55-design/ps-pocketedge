@@ -1,6 +1,7 @@
 // Package stream manages the agent's persistent connection to the control
 // plane: enrolling once, then keeping the bidirectional Session stream open
-// with reconnect/backoff and periodic heartbeats.
+// with reconnect/backoff, periodic heartbeats, and applying any
+// DeployStackCommand the control plane sends.
 package stream
 
 import (
@@ -9,11 +10,13 @@ import (
 	"math/rand"
 	"time"
 
+	dockerclient "github.com/docker/docker/client"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/docker"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/enroll"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/state"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
@@ -71,6 +74,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	r.log.Info("agent identity ready", "server_id", identity.ServerID)
 
+	// Constructing the Docker client doesn't require a live daemon — it
+	// only fails later, when a deploy is actually attempted. So a host
+	// without Docker reachable yet still enrolls and heartbeats fine;
+	// deploy commands just report FAILED until it's reachable.
+	dockerCli, err := docker.NewClient()
+	if err != nil {
+		r.log.Warn("failed to create docker client, deploy commands will fail until this is resolved", "error", err)
+	}
+
 	backoff := minBackoff
 	for {
 		select {
@@ -79,7 +91,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		default:
 		}
 
-		if err := r.runSession(ctx, client, identity); err != nil {
+		if err := r.runSession(ctx, client, identity, dockerCli); err != nil {
 			r.log.Warn("session ended, reconnecting", "error", err, "backoff", backoff)
 		}
 
@@ -120,7 +132,7 @@ func (r *Runner) loadOrEnroll(ctx context.Context, client agentv1.AgentSessionCl
 	return identity, nil
 }
 
-func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClient, identity *state.Identity) error {
+func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClient, identity *state.Identity, dockerCli *dockerclient.Client) error {
 	authedCtx := metadata.AppendToOutgoingContext(ctx,
 		"authorization", "Bearer "+identity.Credential,
 		"x-server-id", identity.ServerID,
@@ -131,21 +143,24 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 		return err
 	}
 
-	// The server rejects an unauthenticated/invalid credential by closing
-	// the stream before ever reading a message, and control commands
-	// (DeployStackCommand, in M4) only ever arrive this way — so the agent
-	// must actively read the stream, not just write to it. A bare Send
-	// loop wouldn't notice either case until its next Send happened to
-	// fail, which could be a full heartbeat interval later.
+	// stream.Send is not safe for concurrent use, but heartbeats (from this
+	// function's own loop) and deploy-status reports (from handleDeploy,
+	// running in its own goroutine per in-flight deploy) both need to write
+	// to it — so every writer funnels through this channel, and only the
+	// select loop below ever calls stream.Send directly.
+	outbound := make(chan *agentv1.AgentMessage, 16)
+
 	recvErrCh := make(chan error, 1)
 	go func() {
 		for {
-			if _, err := stream.Recv(); err != nil {
+			msg, err := stream.Recv()
+			if err != nil {
 				recvErrCh <- err
 				return
 			}
-			// M3 scope: no ControlMessage handling yet (DeployStackCommand
-			// lands in M4) — just keep draining the stream.
+			if deployCmd := msg.GetDeployStack(); deployCmd != nil {
+				go r.handleDeploy(ctx, dockerCli, deployCmd, outbound)
+			}
 		}
 	}()
 
@@ -154,7 +169,7 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 
 	// Send an immediate heartbeat on connect rather than waiting a full
 	// interval, so a fresh/reconnected agent shows up promptly.
-	if err := sendHeartbeat(stream, identity.ServerID); err != nil {
+	if err := stream.Send(heartbeatMessage(identity.ServerID)); err != nil {
 		return err
 	}
 
@@ -164,16 +179,46 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 			return ctx.Err()
 		case err := <-recvErrCh:
 			return err
+		case msg := <-outbound:
+			if err := stream.Send(msg); err != nil {
+				return err
+			}
 		case <-ticker.C:
-			if err := sendHeartbeat(stream, identity.ServerID); err != nil {
+			if err := stream.Send(heartbeatMessage(identity.ServerID)); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func sendHeartbeat(stream agentv1.AgentSession_SessionClient, serverID string) error {
-	return stream.Send(&agentv1.AgentMessage{
+// handleDeploy applies cmd via the Docker Engine SDK, relaying phase
+// transitions back to the control plane over outbound. Runs in its own
+// goroutine so a slow image pull doesn't block heartbeats or receiving
+// further commands.
+func (r *Runner) handleDeploy(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.DeployStackCommand, outbound chan<- *agentv1.AgentMessage) {
+	report := func(phase agentv1.DeployPhase, message string) {
+		select {
+		case outbound <- deployStatusMessage(cmd.GetDeploymentId(), phase, message):
+		case <-ctx.Done():
+		}
+	}
+
+	if dockerCli == nil {
+		r.log.Error("cannot deploy, no docker client available", "deployment_id", cmd.GetDeploymentId())
+		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "docker client unavailable on this agent")
+		return
+	}
+
+	r.log.Info("deploying stack", "deployment_id", cmd.GetDeploymentId(), "stack", cmd.GetStackName())
+	if err := docker.Deploy(ctx, dockerCli, cmd, report); err != nil {
+		r.log.Error("deploy failed", "deployment_id", cmd.GetDeploymentId(), "error", err)
+		return
+	}
+	r.log.Info("deploy succeeded", "deployment_id", cmd.GetDeploymentId())
+}
+
+func heartbeatMessage(serverID string) *agentv1.AgentMessage {
+	return &agentv1.AgentMessage{
 		Payload: &agentv1.AgentMessage_Heartbeat{
 			Heartbeat: &agentv1.Heartbeat{
 				ServerId: serverID,
@@ -185,7 +230,20 @@ func sendHeartbeat(stream agentv1.AgentSession_SessionClient, serverID string) e
 				},
 			},
 		},
-	})
+	}
+}
+
+func deployStatusMessage(deploymentID string, phase agentv1.DeployPhase, message string) *agentv1.AgentMessage {
+	return &agentv1.AgentMessage{
+		Payload: &agentv1.AgentMessage_DeployStatus{
+			DeployStatus: &agentv1.DeployStatus{
+				DeploymentId: deploymentID,
+				Phase:        phase,
+				Message:      message,
+				UpdatedAt:    timestamppb.Now(),
+			},
+		},
+	}
 }
 
 func jitter(d time.Duration) time.Duration {
