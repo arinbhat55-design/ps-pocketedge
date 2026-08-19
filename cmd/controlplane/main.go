@@ -83,13 +83,14 @@ func main() {
 	}
 
 	dispatcher := deploy.NewDispatcher()
+	events := deploy.NewEventBus()
 
 	grpcServer := grpc.NewServer()
-	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher))
+	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events))
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr, dispatcher),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher, events),
 	}
 
 	errCh := make(chan error, 2)

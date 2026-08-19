@@ -74,12 +74,17 @@ func (s *Store) UpdateDeploymentPhase(ctx context.Context, id, phase string) err
 	return err
 }
 
-// AddDeploymentEvent appends a row to the deployment's status history.
-func (s *Store) AddDeploymentEvent(ctx context.Context, deploymentID, phase, message string) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO deployment_events (deployment_id, phase, message) VALUES ($1, $2, $3)
-	`, deploymentID, phase, message)
-	return err
+// AddDeploymentEvent appends a row to the deployment's status history and
+// returns the created row (with its generated id/created_at) so callers
+// can publish it to live-status subscribers without a second round-trip.
+func (s *Store) AddDeploymentEvent(ctx context.Context, deploymentID, phase, message string) (DeploymentEvent, error) {
+	var e DeploymentEvent
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO deployment_events (deployment_id, phase, message)
+		VALUES ($1, $2, $3)
+		RETURNING id, deployment_id, phase, message, created_at
+	`, deploymentID, phase, message).Scan(&e.ID, &e.DeploymentID, &e.Phase, &e.Message, &e.CreatedAt)
+	return e, err
 }
 
 // ListDeploymentEvents returns a deployment's status history, oldest first.

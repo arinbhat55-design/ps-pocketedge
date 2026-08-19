@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/server.dart';
+import '../models/stack.dart';
 
 class ApiException implements Exception {
   final int statusCode;
@@ -86,5 +87,49 @@ class ApiClient {
     }
     return EnrollmentToken.fromJson(
         jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<List<StackSummary>> listStacks() async {
+    final response =
+        await _http.get(Uri.parse('$baseUrl/api/stacks'), headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => StackSummary.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<String> createDeployment(
+      {required String stackId, required String serverId}) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/deployments'),
+      headers: _headers,
+      body: jsonEncode({'stackId': stackId, 'serverId': serverId}),
+    );
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 202) {
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+    return decoded['deploymentId'] as String;
+  }
+
+  /// WebSocket URL for a deployment's live status stream. The JWT travels
+  /// as a `?token=` query param here rather than an Authorization header —
+  /// browsers can't set custom headers on a WebSocket handshake, so the
+  /// server accepts this one endpoint's auth that way; see the server's
+  /// handleDeploymentStream doc comment.
+  Uri deploymentStreamUri(String deploymentId) {
+    final httpUri = Uri.parse(baseUrl);
+    final wsScheme = httpUri.scheme == 'https' ? 'wss' : 'ws';
+    return httpUri.replace(
+      scheme: wsScheme,
+      path: '/api/deployments/$deploymentId/stream',
+      queryParameters: {'token': ?authToken},
+    );
   }
 }

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/server.dart';
+import '../deployments/deploy_dialog.dart';
+import '../deployments/deployment_status_screen.dart';
 import 'add_server_dialog.dart';
 
 class ServerListScreen extends StatefulWidget {
@@ -28,6 +30,24 @@ class _ServerListScreenState extends State<ServerListScreen> {
       _serversFuture = widget.apiClient.listServers();
     });
     await _serversFuture;
+  }
+
+  Future<void> _openDeploy(Server server) async {
+    final deploymentId = await showDialog<String>(
+      context: context,
+      builder: (_) => DeployDialog(
+        apiClient: widget.apiClient,
+        serverId: server.id,
+        serverName: server.name,
+      ),
+    );
+    if (deploymentId == null || !mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => DeploymentStatusScreen(
+        apiClient: widget.apiClient,
+        deploymentId: deploymentId,
+      ),
+    ));
   }
 
   Future<void> _openAddServer() async {
@@ -102,12 +122,13 @@ class _ServerListScreenState extends State<ServerListScreen> {
                   ),
                   title: Text(server.name),
                   subtitle: Text(
-                      '${server.os}/${server.arch} • ${server.status}'),
+                      '${server.os}/${server.arch} • ${server.status} • tap to deploy a stack'),
                   trailing: server.lastResources == null
                       ? null
                       : Text(
                           'CPU ${server.lastResources!.cpuPercent.toStringAsFixed(0)}%',
                         ),
+                  onTap: () => _openDeploy(server),
                 );
               },
             );

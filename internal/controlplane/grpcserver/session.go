@@ -25,10 +25,11 @@ type Server struct {
 	log        *slog.Logger
 	store      *store.Store
 	dispatcher *deploy.Dispatcher
+	events     *deploy.EventBus
 }
 
-func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher) *Server {
-	return &Server{log: log, store: st, dispatcher: dispatcher}
+func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus) *Server {
+	return &Server{log: log, store: st, dispatcher: dispatcher, events: events}
 }
 
 func (s *Server) Enroll(ctx context.Context, req *agentv1.EnrollRequest) (*agentv1.EnrollResponse, error) {
@@ -159,8 +160,11 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 			if err := s.store.UpdateDeploymentPhase(ctx, ds.GetDeploymentId(), phase); err != nil {
 				s.log.Error("failed to update deployment phase", "deployment_id", ds.GetDeploymentId(), "error", err)
 			}
-			if err := s.store.AddDeploymentEvent(ctx, ds.GetDeploymentId(), phase, ds.GetMessage()); err != nil {
+			event, err := s.store.AddDeploymentEvent(ctx, ds.GetDeploymentId(), phase, ds.GetMessage())
+			if err != nil {
 				s.log.Error("failed to record deployment event", "deployment_id", ds.GetDeploymentId(), "error", err)
+			} else {
+				s.events.Publish(ds.GetDeploymentId(), event)
 			}
 		default:
 			s.log.Warn("unknown agent message payload", "server_id", serverID)

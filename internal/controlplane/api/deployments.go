@@ -17,7 +17,7 @@ type deploymentStatusResponse struct {
 	Events []store.DeploymentEvent `json:"events"`
 }
 
-func handleCreateDeployment(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher) http.HandlerFunc {
+func handleCreateDeployment(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus) http.HandlerFunc {
 	type request struct {
 		StackID  string            `json:"stackId"`
 		ServerID string            `json:"serverId"`
@@ -62,7 +62,9 @@ func handleCreateDeployment(log *slog.Logger, st *store.Store, dispatcher *deplo
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		_ = st.AddDeploymentEvent(r.Context(), deploymentID, "pending", "deployment created")
+		if event, err := st.AddDeploymentEvent(r.Context(), deploymentID, "pending", "deployment created"); err == nil {
+			events.Publish(deploymentID, event)
+		}
 
 		cmd := &agentv1.ControlMessage{
 			Payload: &agentv1.ControlMessage_DeployStack{
@@ -78,7 +80,9 @@ func handleCreateDeployment(log *slog.Logger, st *store.Store, dispatcher *deplo
 		if err := dispatcher.Send(req.ServerID, cmd); err != nil {
 			log.Warn("failed to dispatch deploy command", "deployment_id", deploymentID, "server_id", req.ServerID, "error", err)
 			_ = st.UpdateDeploymentPhase(r.Context(), deploymentID, "failed")
-			_ = st.AddDeploymentEvent(r.Context(), deploymentID, "failed", "server not connected: "+err.Error())
+			if event, err := st.AddDeploymentEvent(r.Context(), deploymentID, "failed", "server not connected: "+err.Error()); err == nil {
+				events.Publish(deploymentID, event)
+			}
 			writeJSON(w, http.StatusConflict, map[string]string{
 				"deploymentId": deploymentID,
 				"error":        "server not connected",

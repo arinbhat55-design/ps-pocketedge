@@ -21,7 +21,7 @@ const enrollmentTokenTTL = 1 * time.Hour
 // A permissive CORS policy is applied so the Flutter web build can call
 // this API from its dev server origin during local development; this
 // should be tightened before any non-local deployment.
-func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher) http.Handler {
+func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
@@ -31,8 +31,11 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 
 	mux.Handle("GET /api/stacks", authMgr.RequireAuth(handleListStacks(log, st)))
 
-	mux.Handle("POST /api/deployments", authMgr.RequireAuth(handleCreateDeployment(log, st, dispatcher)))
+	mux.Handle("POST /api/deployments", authMgr.RequireAuth(handleCreateDeployment(log, st, dispatcher, events)))
 	mux.Handle("GET /api/deployments/{id}", authMgr.RequireAuth(handleGetDeployment(log, st)))
+	// Auth via ?token= query param, not the Authorization header — see
+	// handleDeploymentStream's doc comment for why.
+	mux.HandleFunc("GET /api/deployments/{id}/stream", handleDeploymentStream(log, st, authMgr, events))
 
 	return withCORS(mux)
 }
