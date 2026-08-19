@@ -11,9 +11,11 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/enroll"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/state"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
 
@@ -23,8 +25,10 @@ const (
 	maxBackoff        = 60 * time.Second
 )
 
-// Runner owns the connection lifecycle: dial, enroll (once), then keep the
-// Session stream alive, reconnecting with backoff on failure.
+// Runner owns the connection lifecycle: dial, enroll (once, persisting the
+// resulting identity to StatePath so a restart doesn't re-enroll with an
+// already-consumed token), then keep the Session stream alive, reconnecting
+// with backoff on failure.
 type Runner struct {
 	Addr         string
 	Token        string
@@ -32,11 +36,12 @@ type Runner struct {
 	OS           string
 	Arch         string
 	AgentVersion string
+	StatePath    string
 
 	log *slog.Logger
 }
 
-func New(log *slog.Logger, addr, token, hostname, osName, arch, agentVersion string) *Runner {
+func New(log *slog.Logger, addr, token, hostname, osName, arch, agentVersion, statePath string) *Runner {
 	return &Runner{
 		Addr:         addr,
 		Token:        token,
@@ -44,12 +49,13 @@ func New(log *slog.Logger, addr, token, hostname, osName, arch, agentVersion str
 		OS:           osName,
 		Arch:         arch,
 		AgentVersion: agentVersion,
+		StatePath:    statePath,
 		log:          log,
 	}
 }
 
-// Run blocks, enrolling once and then looping the Session stream with
-// reconnect/backoff until ctx is cancelled.
+// Run blocks, enrolling once (or reusing a persisted identity) and then
+// looping the Session stream with reconnect/backoff until ctx is cancelled.
 func (r *Runner) Run(ctx context.Context) error {
 	conn, err := grpc.NewClient(r.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -59,11 +65,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	client := agentv1.NewAgentSessionClient(conn)
 
-	identity, err := enroll.Enroll(ctx, client, r.Token, r.Hostname, r.OS, r.Arch, r.AgentVersion)
+	identity, err := r.loadOrEnroll(ctx, client)
 	if err != nil {
 		return err
 	}
-	r.log.Info("enrolled with control plane", "server_id", identity.ServerID)
+	r.log.Info("agent identity ready", "server_id", identity.ServerID)
 
 	backoff := minBackoff
 	for {
@@ -90,14 +96,59 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClient, identity *enroll.Identity) error {
-	stream, err := client.Session(ctx)
+func (r *Runner) loadOrEnroll(ctx context.Context, client agentv1.AgentSessionClient) (*state.Identity, error) {
+	if r.StatePath != "" {
+		if existing, err := state.Load(r.StatePath); err != nil {
+			r.log.Warn("failed to read agent state file, will re-enroll", "path", r.StatePath, "error", err)
+		} else if existing != nil {
+			return existing, nil
+		}
+	}
+
+	identity, err := enroll.Enroll(ctx, client, r.Token, r.Hostname, r.OS, r.Arch, r.AgentVersion)
+	if err != nil {
+		return nil, err
+	}
+	r.log.Info("enrolled with control plane", "server_id", identity.ServerID)
+
+	if r.StatePath != "" {
+		if err := state.Save(r.StatePath, identity); err != nil {
+			r.log.Warn("failed to persist agent state, will re-enroll on restart", "path", r.StatePath, "error", err)
+		}
+	}
+
+	return identity, nil
+}
+
+func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClient, identity *state.Identity) error {
+	authedCtx := metadata.AppendToOutgoingContext(ctx,
+		"authorization", "Bearer "+identity.Credential,
+		"x-server-id", identity.ServerID,
+	)
+
+	stream, err := client.Session(authedCtx)
 	if err != nil {
 		return err
 	}
 
-	// Reset backoff implicitly by returning nil once connected; the caller's
-	// loop only backs off after a failed/ended session.
+	// The server rejects an unauthenticated/invalid credential by closing
+	// the stream before ever reading a message, and control commands
+	// (DeployStackCommand, in M4) only ever arrive this way — so the agent
+	// must actively read the stream, not just write to it. A bare Send
+	// loop wouldn't notice either case until its next Send happened to
+	// fail, which could be a full heartbeat interval later.
+	recvErrCh := make(chan error, 1)
+	go func() {
+		for {
+			if _, err := stream.Recv(); err != nil {
+				recvErrCh <- err
+				return
+			}
+			// M3 scope: no ControlMessage handling yet (DeployStackCommand
+			// lands in M4) — just keep draining the stream.
+		}
+	}()
+
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
@@ -111,6 +162,8 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-recvErrCh:
+			return err
 		case <-ticker.C:
 			if err := sendHeartbeat(stream, identity.ServerID); err != nil {
 				return err

@@ -1,0 +1,18 @@
+[Unit]
+Description=PSpocketEdge agent
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pe-agent --config=/etc/pspocketedge/agent.yaml
+Restart=on-failure
+RestartSec=5s
+# The agent talks to the Docker Engine over the host socket, so it runs as
+# root — same trust level as any other Docker management tool. See the
+# plan's "Docker socket exposure" risk note.
+User=root
+
+[Install]
+WantedBy=multi-user.target

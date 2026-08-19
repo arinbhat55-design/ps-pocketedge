@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/server.dart';
+import 'add_server_dialog.dart';
 
 class ServerListScreen extends StatefulWidget {
   final ApiClient apiClient;
+  final VoidCallback? onLogout;
 
-  const ServerListScreen({super.key, required this.apiClient});
+  const ServerListScreen({super.key, required this.apiClient, this.onLogout});
 
   @override
   State<ServerListScreen> createState() => _ServerListScreenState();
@@ -28,10 +30,36 @@ class _ServerListScreenState extends State<ServerListScreen> {
     await _serversFuture;
   }
 
+  Future<void> _openAddServer() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AddServerDialog(apiClient: widget.apiClient),
+    );
+    // A freshly enrolled server won't show up until it's actually running
+    // and has enrolled, so this refresh is best-effort, not guaranteed to
+    // show the new server immediately.
+    await _refresh();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Servers')),
+      appBar: AppBar(
+        title: const Text('Servers'),
+        actions: [
+          if (widget.onLogout != null)
+            IconButton(
+              icon: const Icon(Icons.logout),
+              tooltip: 'Log out',
+              onPressed: widget.onLogout,
+            ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _openAddServer,
+        icon: const Icon(Icons.add),
+        label: const Text('Add server'),
+      ),
       body: RefreshIndicator(
         onRefresh: _refresh,
         child: FutureBuilder<List<Server>>(

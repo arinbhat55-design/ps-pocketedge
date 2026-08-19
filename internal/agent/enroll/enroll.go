@@ -5,17 +5,12 @@ package enroll
 import (
 	"context"
 
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/state"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
 
-// Identity is what the agent persists locally after a successful enrollment.
-type Identity struct {
-	ServerID   string
-	Credential string
-}
-
 // Enroll exchanges token for a long-lived Identity via a unary gRPC call.
-func Enroll(ctx context.Context, client agentv1.AgentSessionClient, token, hostname, os, arch, agentVersion string) (*Identity, error) {
+func Enroll(ctx context.Context, client agentv1.AgentSessionClient, token, hostname, os, arch, agentVersion string) (*state.Identity, error) {
 	resp, err := client.Enroll(ctx, &agentv1.EnrollRequest{
 		Token:        token,
 		Hostname:     hostname,
@@ -27,7 +22,7 @@ func Enroll(ctx context.Context, client agentv1.AgentSessionClient, token, hostn
 		return nil, err
 	}
 
-	return &Identity{
+	return &state.Identity{
 		ServerID:   resp.GetServerId(),
 		Credential: resp.GetAgentCredential(),
 	}, nil

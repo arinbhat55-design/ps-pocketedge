@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Server mirrors a row in the servers table.
@@ -29,14 +32,27 @@ type ResourceSnapshot struct {
 
 // CreateServer inserts a new server row and returns its generated ID.
 // name defaults to hostname at enrollment time; renaming is a later feature.
-func (s *Store) CreateServer(ctx context.Context, hostname, osName, arch, agentVersion, agentTokenHash string) (string, error) {
+// enrolledBy is the admin user who generated the enrollment token, if known.
+func (s *Store) CreateServer(ctx context.Context, hostname, osName, arch, agentVersion, agentTokenHash string, enrolledBy *string) (string, error) {
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO servers (name, hostname, os, arch, agent_version, agent_token_hash, status)
-		VALUES ($1, $2, $3, $4, $5, $6, 'online')
+		INSERT INTO servers (name, hostname, os, arch, agent_version, agent_token_hash, status, enrolled_by)
+		VALUES ($1, $2, $3, $4, $5, $6, 'online', $7)
 		RETURNING id
-	`, hostname, hostname, osName, arch, agentVersion, agentTokenHash).Scan(&id)
+	`, hostname, hostname, osName, arch, agentVersion, agentTokenHash, enrolledBy).Scan(&id)
 	return id, err
+}
+
+// GetAgentTokenHash returns the hashed bearer credential for serverID, used
+// to authenticate the agent's persistent Session stream. Returns
+// ErrNotFound if no such server exists.
+func (s *Store) GetAgentTokenHash(ctx context.Context, serverID string) (string, error) {
+	var hash string
+	err := s.pool.QueryRow(ctx, `SELECT agent_token_hash FROM servers WHERE id = $1`, serverID).Scan(&hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return hash, err
 }
 
 // RecordHeartbeat updates a server's status, last-seen time, and latest
