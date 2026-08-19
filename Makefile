@@ -23,8 +23,9 @@ vet:
 	go vet ./...
 
 proto:
-	protoc --go_out=. --go_opt=paths=source_relative \
-		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+	protoc -I proto -I $$(brew --prefix protobuf)/include \
+		--go_out=. --go_opt=module=$(MODULE) \
+		--go-grpc_out=. --go-grpc_opt=module=$(MODULE) \
 		proto/agent/v1/agent.proto
 
 migrate:

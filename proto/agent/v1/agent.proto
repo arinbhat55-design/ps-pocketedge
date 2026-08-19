@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package agent.v1;
+
+option go_package = "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+// AgentSession is the contract between a managed-node agent and the
+// control plane. The agent always dials out to the control plane so it
+// works behind NAT/home-network firewalls with no inbound port-forwarding.
+service AgentSession {
+  // Enroll is a one-shot unary call an agent makes on first startup,
+  // exchanging a one-time enrollment token for a long-lived credential.
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+
+  // Session is the persistent bidirectional stream the agent opens after
+  // enrolling. It multiplexes heartbeats/status reports (agent -> control
+  // plane) and commands (control plane -> agent) over one connection.
+  rpc Session(stream AgentMessage) returns (stream ControlMessage);
+}
+
+message EnrollRequest {
+  string token = 1;
+  string hostname = 2;
+  string os = 3;
+  string arch = 4;
+  string agent_version = 5;
+}
+
+message EnrollResponse {
+  string server_id = 1;
+  string agent_credential = 2;
+}
+
+message AgentMessage {
+  oneof payload {
+    Heartbeat heartbeat = 1;
+    DeployStatus deploy_status = 2;
+  }
+}
+
+message ControlMessage {
+  oneof payload {
+    DeployStackCommand deploy_stack = 1;
+    Ack ack = 2;
+  }
+}
+
+message Heartbeat {
+  string server_id = 1;
+  google.protobuf.Timestamp sent_at = 2;
+  ResourceSnapshot resources = 3;
+  repeated ContainerSummary containers = 4;
+}
+
+message ResourceSnapshot {
+  double cpu_percent = 1;
+  double mem_percent = 2;
+  double disk_percent = 3;
+}
+
+message ContainerSummary {
+  string id = 1;
+  string name = 2;
+  string state = 3;
+  string deployment_id = 4;
+}
+
+message DeployStackCommand {
+  string deployment_id = 1;
+  string stack_name = 2;
+  string compose_yaml = 3;
+  map<string, string> env = 4;
+}
+
+enum DeployPhase {
+  DEPLOY_PHASE_UNSPECIFIED = 0;
+  DEPLOY_PHASE_PENDING = 1;
+  DEPLOY_PHASE_PULLING = 2;
+  DEPLOY_PHASE_CREATING = 3;
+  DEPLOY_PHASE_RUNNING = 4;
+  DEPLOY_PHASE_FAILED = 5;
+}
+
+message DeployStatus {
+  string deployment_id = 1;
+  DeployPhase phase = 2;
+  string message = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message Ack {
+  string message_id = 1;
+}
