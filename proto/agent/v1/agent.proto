@@ -37,6 +37,8 @@ message AgentMessage {
   oneof payload {
     Heartbeat heartbeat = 1;
     DeployStatus deploy_status = 2;
+    BackupStatus backup_status = 3;
+    RestoreStatus restore_status = 4;
   }
 }
 
@@ -44,6 +46,8 @@ message ControlMessage {
   oneof payload {
     DeployStackCommand deploy_stack = 1;
     Ack ack = 2;
+    BackupCommand backup = 3;
+    RestoreCommand restore = 4;
   }
 }
 
@@ -92,4 +96,59 @@ message DeployStatus {
 
 message Ack {
   string message_id = 1;
+}
+
+enum TaskPhase {
+  TASK_PHASE_UNSPECIFIED = 0;
+  TASK_PHASE_RUNNING = 1;
+  TASK_PHASE_COMPLETED = 2;
+  TASK_PHASE_FAILED = 3;
+}
+
+// BackupCommand tells the agent to snapshot every named volume belonging
+// to deployment_id into a single tar stream and PUT it to upload_url.
+// Bulk bytes deliberately don't travel over the AgentSession stream
+// itself (see internal/controlplane/backup's doc comment) — upload_url
+// is a separate authenticated HTTP endpoint so a large transfer can't
+// starve heartbeats/other commands sharing this stream's one outbound
+// channel.
+message BackupCommand {
+  string backup_id = 1;
+  string deployment_id = 2;
+  string upload_url = 3;
+}
+
+message BackupStatus {
+  string backup_id = 1;
+  TaskPhase phase = 2;
+  string message = 3;
+  int64 size_bytes = 4;
+}
+
+// RestoreCommand tells the agent to GET a tar snapshot from download_url,
+// extract it back into deployment_id's named volumes, then redeploy
+// (stack_name/compose_yaml/env are included because the agent doesn't
+// cache the original DeployStackCommand — this is what makes restore
+// bring the containers back up on top of the restored data rather than
+// just leaving the volumes populated with nothing running).
+message RestoreCommand {
+  string backup_id = 1;
+  string deployment_id = 2;
+  string download_url = 3;
+  string stack_name = 4;
+  string compose_yaml = 5;
+  map<string, string> env = 6;
+}
+
+// RestoreStatus covers only the download+extract step. Once that
+// completes, the agent immediately re-runs the normal deploy pipeline
+// (internal/agent/docker.Deploy) on top of the restored volumes, which
+// reports its own DeployStatus events through the existing path — so a
+// restore's "containers coming back up" progress reuses deployment_events
+// rather than this message needing to duplicate it.
+message RestoreStatus {
+  string backup_id = 1;
+  string deployment_id = 2;
+  TaskPhase phase = 3;
+  string message = 4;
 }

@@ -6,6 +6,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../api/api_client.dart';
 import '../../models/deployment_event.dart';
+import '../backups/backups_screen.dart';
 
 class DeploymentStatusScreen extends StatefulWidget {
   final ApiClient apiClient;
@@ -69,20 +70,39 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
     setState(() => _redeploying = true);
     try {
       await widget.apiClient.redeployDeployment(widget.deploymentId);
-      await _sub?.cancel();
-      await _channel?.sink.close();
-      setState(() {
-        _events.clear();
-        _error = null;
-        _closed = false;
-        _redeploying = false;
-      });
-      _connect();
+      await _resetAndReconnect();
     } catch (e) {
       setState(() {
         _error = 'Failed to redeploy: $e';
-        _redeploying = false;
       });
+    } finally {
+      if (mounted) setState(() => _redeploying = false);
+    }
+  }
+
+  Future<void> _resetAndReconnect() async {
+    await _sub?.cancel();
+    await _channel?.sink.close();
+    if (!mounted) return;
+    setState(() {
+      _events.clear();
+      _error = null;
+      _closed = false;
+    });
+    _connect();
+  }
+
+  Future<void> _openBackups() async {
+    final restoreTriggered = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => BackupsScreen(
+          apiClient: widget.apiClient,
+          deploymentId: widget.deploymentId,
+        ),
+      ),
+    );
+    if (restoreTriggered == true) {
+      await _resetAndReconnect();
     }
   }
 
@@ -107,6 +127,11 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
       appBar: AppBar(
         title: const Text('Deployment status'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.backup),
+            tooltip: 'Backups',
+            onPressed: _openBackups,
+          ),
           if (_closed)
             IconButton(
               icon: _redeploying

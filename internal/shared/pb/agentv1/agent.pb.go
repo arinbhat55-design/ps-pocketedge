@@ -80,6 +80,58 @@ func (DeployPhase) EnumDescriptor() ([]byte, []int) {
 	return file_agent_v1_agent_proto_rawDescGZIP(), []int{0}
 }
 
+type TaskPhase int32
+
+const (
+	TaskPhase_TASK_PHASE_UNSPECIFIED TaskPhase = 0
+	TaskPhase_TASK_PHASE_RUNNING     TaskPhase = 1
+	TaskPhase_TASK_PHASE_COMPLETED   TaskPhase = 2
+	TaskPhase_TASK_PHASE_FAILED      TaskPhase = 3
+)
+
+// Enum value maps for TaskPhase.
+var (
+	TaskPhase_name = map[int32]string{
+		0: "TASK_PHASE_UNSPECIFIED",
+		1: "TASK_PHASE_RUNNING",
+		2: "TASK_PHASE_COMPLETED",
+		3: "TASK_PHASE_FAILED",
+	}
+	TaskPhase_value = map[string]int32{
+		"TASK_PHASE_UNSPECIFIED": 0,
+		"TASK_PHASE_RUNNING":     1,
+		"TASK_PHASE_COMPLETED":   2,
+		"TASK_PHASE_FAILED":      3,
+	}
+)
+
+func (x TaskPhase) Enum() *TaskPhase {
+	p := new(TaskPhase)
+	*p = x
+	return p
+}
+
+func (x TaskPhase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TaskPhase) Descriptor() protoreflect.EnumDescriptor {
+	return file_agent_v1_agent_proto_enumTypes[1].Descriptor()
+}
+
+func (TaskPhase) Type() protoreflect.EnumType {
+	return &file_agent_v1_agent_proto_enumTypes[1]
+}
+
+func (x TaskPhase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TaskPhase.Descriptor instead.
+func (TaskPhase) EnumDescriptor() ([]byte, []int) {
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{1}
+}
+
 type EnrollRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
@@ -214,6 +266,8 @@ type AgentMessage struct {
 	//
 	//	*AgentMessage_Heartbeat
 	//	*AgentMessage_DeployStatus
+	//	*AgentMessage_BackupStatus
+	//	*AgentMessage_RestoreStatus
 	Payload       isAgentMessage_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -274,6 +328,24 @@ func (x *AgentMessage) GetDeployStatus() *DeployStatus {
 	return nil
 }
 
+func (x *AgentMessage) GetBackupStatus() *BackupStatus {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentMessage_BackupStatus); ok {
+			return x.BackupStatus
+		}
+	}
+	return nil
+}
+
+func (x *AgentMessage) GetRestoreStatus() *RestoreStatus {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentMessage_RestoreStatus); ok {
+			return x.RestoreStatus
+		}
+	}
+	return nil
+}
+
 type isAgentMessage_Payload interface {
 	isAgentMessage_Payload()
 }
@@ -286,9 +358,21 @@ type AgentMessage_DeployStatus struct {
 	DeployStatus *DeployStatus `protobuf:"bytes,2,opt,name=deploy_status,json=deployStatus,proto3,oneof"`
 }
 
+type AgentMessage_BackupStatus struct {
+	BackupStatus *BackupStatus `protobuf:"bytes,3,opt,name=backup_status,json=backupStatus,proto3,oneof"`
+}
+
+type AgentMessage_RestoreStatus struct {
+	RestoreStatus *RestoreStatus `protobuf:"bytes,4,opt,name=restore_status,json=restoreStatus,proto3,oneof"`
+}
+
 func (*AgentMessage_Heartbeat) isAgentMessage_Payload() {}
 
 func (*AgentMessage_DeployStatus) isAgentMessage_Payload() {}
+
+func (*AgentMessage_BackupStatus) isAgentMessage_Payload() {}
+
+func (*AgentMessage_RestoreStatus) isAgentMessage_Payload() {}
 
 type ControlMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -296,6 +380,8 @@ type ControlMessage struct {
 	//
 	//	*ControlMessage_DeployStack
 	//	*ControlMessage_Ack
+	//	*ControlMessage_Backup
+	//	*ControlMessage_Restore
 	Payload       isControlMessage_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -356,6 +442,24 @@ func (x *ControlMessage) GetAck() *Ack {
 	return nil
 }
 
+func (x *ControlMessage) GetBackup() *BackupCommand {
+	if x != nil {
+		if x, ok := x.Payload.(*ControlMessage_Backup); ok {
+			return x.Backup
+		}
+	}
+	return nil
+}
+
+func (x *ControlMessage) GetRestore() *RestoreCommand {
+	if x != nil {
+		if x, ok := x.Payload.(*ControlMessage_Restore); ok {
+			return x.Restore
+		}
+	}
+	return nil
+}
+
 type isControlMessage_Payload interface {
 	isControlMessage_Payload()
 }
@@ -368,9 +472,21 @@ type ControlMessage_Ack struct {
 	Ack *Ack `protobuf:"bytes,2,opt,name=ack,proto3,oneof"`
 }
 
+type ControlMessage_Backup struct {
+	Backup *BackupCommand `protobuf:"bytes,3,opt,name=backup,proto3,oneof"`
+}
+
+type ControlMessage_Restore struct {
+	Restore *RestoreCommand `protobuf:"bytes,4,opt,name=restore,proto3,oneof"`
+}
+
 func (*ControlMessage_DeployStack) isControlMessage_Payload() {}
 
 func (*ControlMessage_Ack) isControlMessage_Payload() {}
+
+func (*ControlMessage_Backup) isControlMessage_Payload() {}
+
+func (*ControlMessage_Restore) isControlMessage_Payload() {}
 
 type Heartbeat struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -748,6 +864,305 @@ func (x *Ack) GetMessageId() string {
 	return ""
 }
 
+// BackupCommand tells the agent to snapshot every named volume belonging
+// to deployment_id into a single tar stream and PUT it to upload_url.
+// Bulk bytes deliberately don't travel over the AgentSession stream
+// itself (see internal/controlplane/backup's doc comment) — upload_url
+// is a separate authenticated HTTP endpoint so a large transfer can't
+// starve heartbeats/other commands sharing this stream's one outbound
+// channel.
+type BackupCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BackupId      string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	DeploymentId  string                 `protobuf:"bytes,2,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	UploadUrl     string                 `protobuf:"bytes,3,opt,name=upload_url,json=uploadUrl,proto3" json:"upload_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackupCommand) Reset() {
+	*x = BackupCommand{}
+	mi := &file_agent_v1_agent_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackupCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackupCommand) ProtoMessage() {}
+
+func (x *BackupCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_agent_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackupCommand.ProtoReflect.Descriptor instead.
+func (*BackupCommand) Descriptor() ([]byte, []int) {
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *BackupCommand) GetBackupId() string {
+	if x != nil {
+		return x.BackupId
+	}
+	return ""
+}
+
+func (x *BackupCommand) GetDeploymentId() string {
+	if x != nil {
+		return x.DeploymentId
+	}
+	return ""
+}
+
+func (x *BackupCommand) GetUploadUrl() string {
+	if x != nil {
+		return x.UploadUrl
+	}
+	return ""
+}
+
+type BackupStatus struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BackupId      string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	Phase         TaskPhase              `protobuf:"varint,2,opt,name=phase,proto3,enum=agent.v1.TaskPhase" json:"phase,omitempty"`
+	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,4,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackupStatus) Reset() {
+	*x = BackupStatus{}
+	mi := &file_agent_v1_agent_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackupStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackupStatus) ProtoMessage() {}
+
+func (x *BackupStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_agent_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackupStatus.ProtoReflect.Descriptor instead.
+func (*BackupStatus) Descriptor() ([]byte, []int) {
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *BackupStatus) GetBackupId() string {
+	if x != nil {
+		return x.BackupId
+	}
+	return ""
+}
+
+func (x *BackupStatus) GetPhase() TaskPhase {
+	if x != nil {
+		return x.Phase
+	}
+	return TaskPhase_TASK_PHASE_UNSPECIFIED
+}
+
+func (x *BackupStatus) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *BackupStatus) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+// RestoreCommand tells the agent to GET a tar snapshot from download_url,
+// extract it back into deployment_id's named volumes, then redeploy
+// (stack_name/compose_yaml/env are included because the agent doesn't
+// cache the original DeployStackCommand — this is what makes restore
+// bring the containers back up on top of the restored data rather than
+// just leaving the volumes populated with nothing running).
+type RestoreCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BackupId      string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	DeploymentId  string                 `protobuf:"bytes,2,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	DownloadUrl   string                 `protobuf:"bytes,3,opt,name=download_url,json=downloadUrl,proto3" json:"download_url,omitempty"`
+	StackName     string                 `protobuf:"bytes,4,opt,name=stack_name,json=stackName,proto3" json:"stack_name,omitempty"`
+	ComposeYaml   string                 `protobuf:"bytes,5,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
+	Env           map[string]string      `protobuf:"bytes,6,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreCommand) Reset() {
+	*x = RestoreCommand{}
+	mi := &file_agent_v1_agent_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreCommand) ProtoMessage() {}
+
+func (x *RestoreCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_agent_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreCommand.ProtoReflect.Descriptor instead.
+func (*RestoreCommand) Descriptor() ([]byte, []int) {
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RestoreCommand) GetBackupId() string {
+	if x != nil {
+		return x.BackupId
+	}
+	return ""
+}
+
+func (x *RestoreCommand) GetDeploymentId() string {
+	if x != nil {
+		return x.DeploymentId
+	}
+	return ""
+}
+
+func (x *RestoreCommand) GetDownloadUrl() string {
+	if x != nil {
+		return x.DownloadUrl
+	}
+	return ""
+}
+
+func (x *RestoreCommand) GetStackName() string {
+	if x != nil {
+		return x.StackName
+	}
+	return ""
+}
+
+func (x *RestoreCommand) GetComposeYaml() string {
+	if x != nil {
+		return x.ComposeYaml
+	}
+	return ""
+}
+
+func (x *RestoreCommand) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+// RestoreStatus covers only the download+extract step. Once that
+// completes, the agent immediately re-runs the normal deploy pipeline
+// (internal/agent/docker.Deploy) on top of the restored volumes, which
+// reports its own DeployStatus events through the existing path — so a
+// restore's "containers coming back up" progress reuses deployment_events
+// rather than this message needing to duplicate it.
+type RestoreStatus struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BackupId      string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	DeploymentId  string                 `protobuf:"bytes,2,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	Phase         TaskPhase              `protobuf:"varint,3,opt,name=phase,proto3,enum=agent.v1.TaskPhase" json:"phase,omitempty"`
+	Message       string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreStatus) Reset() {
+	*x = RestoreStatus{}
+	mi := &file_agent_v1_agent_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreStatus) ProtoMessage() {}
+
+func (x *RestoreStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_agent_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreStatus.ProtoReflect.Descriptor instead.
+func (*RestoreStatus) Descriptor() ([]byte, []int) {
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *RestoreStatus) GetBackupId() string {
+	if x != nil {
+		return x.BackupId
+	}
+	return ""
+}
+
+func (x *RestoreStatus) GetDeploymentId() string {
+	if x != nil {
+		return x.DeploymentId
+	}
+	return ""
+}
+
+func (x *RestoreStatus) GetPhase() TaskPhase {
+	if x != nil {
+		return x.Phase
+	}
+	return TaskPhase_TASK_PHASE_UNSPECIFIED
+}
+
+func (x *RestoreStatus) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_agent_v1_agent_proto protoreflect.FileDescriptor
 
 const file_agent_v1_agent_proto_rawDesc = "" +
@@ -761,14 +1176,18 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\ragent_version\x18\x05 \x01(\tR\fagentVersion\"X\n" +
 	"\x0eEnrollResponse\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12)\n" +
-	"\x10agent_credential\x18\x02 \x01(\tR\x0fagentCredential\"\x8d\x01\n" +
+	"\x10agent_credential\x18\x02 \x01(\tR\x0fagentCredential\"\x8e\x02\n" +
 	"\fAgentMessage\x123\n" +
 	"\theartbeat\x18\x01 \x01(\v2\x13.agent.v1.HeartbeatH\x00R\theartbeat\x12=\n" +
-	"\rdeploy_status\x18\x02 \x01(\v2\x16.agent.v1.DeployStatusH\x00R\fdeployStatusB\t\n" +
-	"\apayload\"\x81\x01\n" +
+	"\rdeploy_status\x18\x02 \x01(\v2\x16.agent.v1.DeployStatusH\x00R\fdeployStatus\x12=\n" +
+	"\rbackup_status\x18\x03 \x01(\v2\x16.agent.v1.BackupStatusH\x00R\fbackupStatus\x12@\n" +
+	"\x0erestore_status\x18\x04 \x01(\v2\x17.agent.v1.RestoreStatusH\x00R\rrestoreStatusB\t\n" +
+	"\apayload\"\xea\x01\n" +
 	"\x0eControlMessage\x12A\n" +
 	"\fdeploy_stack\x18\x01 \x01(\v2\x1c.agent.v1.DeployStackCommandH\x00R\vdeployStack\x12!\n" +
-	"\x03ack\x18\x02 \x01(\v2\r.agent.v1.AckH\x00R\x03ackB\t\n" +
+	"\x03ack\x18\x02 \x01(\v2\r.agent.v1.AckH\x00R\x03ack\x121\n" +
+	"\x06backup\x18\x03 \x01(\v2\x17.agent.v1.BackupCommandH\x00R\x06backup\x124\n" +
+	"\arestore\x18\x04 \x01(\v2\x18.agent.v1.RestoreCommandH\x00R\arestoreB\t\n" +
 	"\apayload\"\xd3\x01\n" +
 	"\tHeartbeat\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x123\n" +
@@ -805,14 +1224,46 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"updated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"$\n" +
 	"\x03Ack\x12\x1d\n" +
 	"\n" +
-	"message_id\x18\x01 \x01(\tR\tmessageId*\xad\x01\n" +
+	"message_id\x18\x01 \x01(\tR\tmessageId\"p\n" +
+	"\rBackupCommand\x12\x1b\n" +
+	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12#\n" +
+	"\rdeployment_id\x18\x02 \x01(\tR\fdeploymentId\x12\x1d\n" +
+	"\n" +
+	"upload_url\x18\x03 \x01(\tR\tuploadUrl\"\x8f\x01\n" +
+	"\fBackupStatus\x12\x1b\n" +
+	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12)\n" +
+	"\x05phase\x18\x02 \x01(\x0e2\x13.agent.v1.TaskPhaseR\x05phase\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x04 \x01(\x03R\tsizeBytes\"\xa4\x02\n" +
+	"\x0eRestoreCommand\x12\x1b\n" +
+	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12#\n" +
+	"\rdeployment_id\x18\x02 \x01(\tR\fdeploymentId\x12!\n" +
+	"\fdownload_url\x18\x03 \x01(\tR\vdownloadUrl\x12\x1d\n" +
+	"\n" +
+	"stack_name\x18\x04 \x01(\tR\tstackName\x12!\n" +
+	"\fcompose_yaml\x18\x05 \x01(\tR\vcomposeYaml\x123\n" +
+	"\x03env\x18\x06 \x03(\v2!.agent.v1.RestoreCommand.EnvEntryR\x03env\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x96\x01\n" +
+	"\rRestoreStatus\x12\x1b\n" +
+	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12#\n" +
+	"\rdeployment_id\x18\x02 \x01(\tR\fdeploymentId\x12)\n" +
+	"\x05phase\x18\x03 \x01(\x0e2\x13.agent.v1.TaskPhaseR\x05phase\x12\x18\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage*\xad\x01\n" +
 	"\vDeployPhase\x12\x1c\n" +
 	"\x18DEPLOY_PHASE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14DEPLOY_PHASE_PENDING\x10\x01\x12\x18\n" +
 	"\x14DEPLOY_PHASE_PULLING\x10\x02\x12\x19\n" +
 	"\x15DEPLOY_PHASE_CREATING\x10\x03\x12\x18\n" +
 	"\x14DEPLOY_PHASE_RUNNING\x10\x04\x12\x17\n" +
-	"\x13DEPLOY_PHASE_FAILED\x10\x052\x8c\x01\n" +
+	"\x13DEPLOY_PHASE_FAILED\x10\x05*p\n" +
+	"\tTaskPhase\x12\x1a\n" +
+	"\x16TASK_PHASE_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12TASK_PHASE_RUNNING\x10\x01\x12\x18\n" +
+	"\x14TASK_PHASE_COMPLETED\x10\x02\x12\x15\n" +
+	"\x11TASK_PHASE_FAILED\x10\x032\x8c\x01\n" +
 	"\fAgentSession\x12;\n" +
 	"\x06Enroll\x12\x17.agent.v1.EnrollRequest\x1a\x18.agent.v1.EnrollResponse\x12?\n" +
 	"\aSession\x12\x16.agent.v1.AgentMessage\x1a\x18.agent.v1.ControlMessage(\x010\x01BGZEgithub.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1b\x06proto3"
@@ -829,43 +1280,56 @@ func file_agent_v1_agent_proto_rawDescGZIP() []byte {
 	return file_agent_v1_agent_proto_rawDescData
 }
 
-var file_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_agent_v1_agent_proto_goTypes = []any{
 	(DeployPhase)(0),              // 0: agent.v1.DeployPhase
-	(*EnrollRequest)(nil),         // 1: agent.v1.EnrollRequest
-	(*EnrollResponse)(nil),        // 2: agent.v1.EnrollResponse
-	(*AgentMessage)(nil),          // 3: agent.v1.AgentMessage
-	(*ControlMessage)(nil),        // 4: agent.v1.ControlMessage
-	(*Heartbeat)(nil),             // 5: agent.v1.Heartbeat
-	(*ResourceSnapshot)(nil),      // 6: agent.v1.ResourceSnapshot
-	(*ContainerSummary)(nil),      // 7: agent.v1.ContainerSummary
-	(*DeployStackCommand)(nil),    // 8: agent.v1.DeployStackCommand
-	(*DeployStatus)(nil),          // 9: agent.v1.DeployStatus
-	(*Ack)(nil),                   // 10: agent.v1.Ack
-	nil,                           // 11: agent.v1.DeployStackCommand.EnvEntry
-	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
+	(TaskPhase)(0),                // 1: agent.v1.TaskPhase
+	(*EnrollRequest)(nil),         // 2: agent.v1.EnrollRequest
+	(*EnrollResponse)(nil),        // 3: agent.v1.EnrollResponse
+	(*AgentMessage)(nil),          // 4: agent.v1.AgentMessage
+	(*ControlMessage)(nil),        // 5: agent.v1.ControlMessage
+	(*Heartbeat)(nil),             // 6: agent.v1.Heartbeat
+	(*ResourceSnapshot)(nil),      // 7: agent.v1.ResourceSnapshot
+	(*ContainerSummary)(nil),      // 8: agent.v1.ContainerSummary
+	(*DeployStackCommand)(nil),    // 9: agent.v1.DeployStackCommand
+	(*DeployStatus)(nil),          // 10: agent.v1.DeployStatus
+	(*Ack)(nil),                   // 11: agent.v1.Ack
+	(*BackupCommand)(nil),         // 12: agent.v1.BackupCommand
+	(*BackupStatus)(nil),          // 13: agent.v1.BackupStatus
+	(*RestoreCommand)(nil),        // 14: agent.v1.RestoreCommand
+	(*RestoreStatus)(nil),         // 15: agent.v1.RestoreStatus
+	nil,                           // 16: agent.v1.DeployStackCommand.EnvEntry
+	nil,                           // 17: agent.v1.RestoreCommand.EnvEntry
+	(*timestamppb.Timestamp)(nil), // 18: google.protobuf.Timestamp
 }
 var file_agent_v1_agent_proto_depIdxs = []int32{
-	5,  // 0: agent.v1.AgentMessage.heartbeat:type_name -> agent.v1.Heartbeat
-	9,  // 1: agent.v1.AgentMessage.deploy_status:type_name -> agent.v1.DeployStatus
-	8,  // 2: agent.v1.ControlMessage.deploy_stack:type_name -> agent.v1.DeployStackCommand
-	10, // 3: agent.v1.ControlMessage.ack:type_name -> agent.v1.Ack
-	12, // 4: agent.v1.Heartbeat.sent_at:type_name -> google.protobuf.Timestamp
-	6,  // 5: agent.v1.Heartbeat.resources:type_name -> agent.v1.ResourceSnapshot
-	7,  // 6: agent.v1.Heartbeat.containers:type_name -> agent.v1.ContainerSummary
-	11, // 7: agent.v1.DeployStackCommand.env:type_name -> agent.v1.DeployStackCommand.EnvEntry
-	0,  // 8: agent.v1.DeployStatus.phase:type_name -> agent.v1.DeployPhase
-	12, // 9: agent.v1.DeployStatus.updated_at:type_name -> google.protobuf.Timestamp
-	1,  // 10: agent.v1.AgentSession.Enroll:input_type -> agent.v1.EnrollRequest
-	3,  // 11: agent.v1.AgentSession.Session:input_type -> agent.v1.AgentMessage
-	2,  // 12: agent.v1.AgentSession.Enroll:output_type -> agent.v1.EnrollResponse
-	4,  // 13: agent.v1.AgentSession.Session:output_type -> agent.v1.ControlMessage
-	12, // [12:14] is the sub-list for method output_type
-	10, // [10:12] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	6,  // 0: agent.v1.AgentMessage.heartbeat:type_name -> agent.v1.Heartbeat
+	10, // 1: agent.v1.AgentMessage.deploy_status:type_name -> agent.v1.DeployStatus
+	13, // 2: agent.v1.AgentMessage.backup_status:type_name -> agent.v1.BackupStatus
+	15, // 3: agent.v1.AgentMessage.restore_status:type_name -> agent.v1.RestoreStatus
+	9,  // 4: agent.v1.ControlMessage.deploy_stack:type_name -> agent.v1.DeployStackCommand
+	11, // 5: agent.v1.ControlMessage.ack:type_name -> agent.v1.Ack
+	12, // 6: agent.v1.ControlMessage.backup:type_name -> agent.v1.BackupCommand
+	14, // 7: agent.v1.ControlMessage.restore:type_name -> agent.v1.RestoreCommand
+	18, // 8: agent.v1.Heartbeat.sent_at:type_name -> google.protobuf.Timestamp
+	7,  // 9: agent.v1.Heartbeat.resources:type_name -> agent.v1.ResourceSnapshot
+	8,  // 10: agent.v1.Heartbeat.containers:type_name -> agent.v1.ContainerSummary
+	16, // 11: agent.v1.DeployStackCommand.env:type_name -> agent.v1.DeployStackCommand.EnvEntry
+	0,  // 12: agent.v1.DeployStatus.phase:type_name -> agent.v1.DeployPhase
+	18, // 13: agent.v1.DeployStatus.updated_at:type_name -> google.protobuf.Timestamp
+	1,  // 14: agent.v1.BackupStatus.phase:type_name -> agent.v1.TaskPhase
+	17, // 15: agent.v1.RestoreCommand.env:type_name -> agent.v1.RestoreCommand.EnvEntry
+	1,  // 16: agent.v1.RestoreStatus.phase:type_name -> agent.v1.TaskPhase
+	2,  // 17: agent.v1.AgentSession.Enroll:input_type -> agent.v1.EnrollRequest
+	4,  // 18: agent.v1.AgentSession.Session:input_type -> agent.v1.AgentMessage
+	3,  // 19: agent.v1.AgentSession.Enroll:output_type -> agent.v1.EnrollResponse
+	5,  // 20: agent.v1.AgentSession.Session:output_type -> agent.v1.ControlMessage
+	19, // [19:21] is the sub-list for method output_type
+	17, // [17:19] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_agent_v1_agent_proto_init() }
@@ -876,18 +1340,22 @@ func file_agent_v1_agent_proto_init() {
 	file_agent_v1_agent_proto_msgTypes[2].OneofWrappers = []any{
 		(*AgentMessage_Heartbeat)(nil),
 		(*AgentMessage_DeployStatus)(nil),
+		(*AgentMessage_BackupStatus)(nil),
+		(*AgentMessage_RestoreStatus)(nil),
 	}
 	file_agent_v1_agent_proto_msgTypes[3].OneofWrappers = []any{
 		(*ControlMessage_DeployStack)(nil),
 		(*ControlMessage_Ack)(nil),
+		(*ControlMessage_Backup)(nil),
+		(*ControlMessage_Restore)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_v1_agent_proto_rawDesc), len(file_agent_v1_agent_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   11,
+			NumEnums:      2,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

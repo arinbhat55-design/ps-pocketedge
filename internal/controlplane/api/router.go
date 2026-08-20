@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/backup"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
 )
@@ -18,10 +19,17 @@ const enrollmentTokenTTL = 1 * time.Hour
 
 // NewRouter builds the HTTP handler for the REST API.
 //
+// publicURL is how agents reach this control plane's HTTP API (used to
+// build the upload/download URLs embedded in BackupCommand/RestoreCommand
+// — the control plane can't assume its own bind address is what a remote
+// agent, possibly behind a different network path or reverse proxy,
+// should actually dial).
+//
 // A permissive CORS policy is applied so the Flutter web build can call
 // this API from its dev server origin during local development; this
-// should be tightened before any non-local deployment.
-func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus) http.Handler {
+// should be tightened together with publicURL before any non-local
+// deployment.
+func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, blobs *backup.BlobStore, publicURL string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
@@ -37,6 +45,17 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	// Auth via ?token= query param, not the Authorization header — see
 	// handleDeploymentStream's doc comment for why.
 	mux.HandleFunc("GET /api/deployments/{id}/stream", handleDeploymentStream(log, st, authMgr, events))
+
+	mux.Handle("POST /api/deployments/{id}/backups", authMgr.RequireAuth(handleCreateBackup(log, st, dispatcher, publicURL)))
+	mux.Handle("GET /api/deployments/{id}/backups", authMgr.RequireAuth(handleListBackups(log, st)))
+	mux.Handle("GET /api/backups/{id}", authMgr.RequireAuth(handleGetBackup(log, st)))
+	mux.Handle("POST /api/backups/{id}/restore", authMgr.RequireAuth(handleRestoreBackup(log, st, dispatcher, events, publicURL)))
+	// Agent-credential auth (bearer token hashed against the owning
+	// server's agent_token_hash), not admin JWT — these two are called by
+	// the agent itself, not the Flutter app. See handleUploadBackupBlob's
+	// doc comment.
+	mux.HandleFunc("PUT /api/agent/backups/{id}/blob", handleUploadBackupBlob(log, st, blobs))
+	mux.HandleFunc("GET /api/agent/backups/{id}/blob", handleDownloadBackupBlob(log, st, blobs))
 
 	return withCORS(mux)
 }

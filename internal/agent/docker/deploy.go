@@ -48,7 +48,7 @@ type StatusFunc func(phase agentv1.DeployPhase, message string)
 // error, whatever was already created is left in place for inspection, and
 // FAILED is reported with the error detail.
 func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, report StatusFunc) error {
-	project, err := parseCompose(ctx, cmd)
+	project, err := parseCompose(ctx, cmd.GetComposeYaml(), cmd.GetEnv(), cmd.GetStackName())
 	if err != nil {
 		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to parse compose file: "+err.Error())
 		return err
@@ -69,7 +69,7 @@ func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCom
 		return err
 	}
 
-	networkName, err := ensureNetwork(ctx, cli, cmd)
+	networkName, err := ensureNetwork(ctx, cli, cmd.GetDeploymentId(), cmd.GetStackName())
 	if err != nil {
 		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to create network: "+err.Error())
 		return err
@@ -80,14 +80,14 @@ func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCom
 	// database's rows, a model cache) instead of starting fresh every
 	// time, which is the whole point of supporting them for stateful
 	// catalog entries like Postgres/Ollama/Qdrant.
-	volumeNames, err := ensureVolumes(ctx, cli, cmd, project)
+	volumeNames, err := ensureVolumes(ctx, cli, cmd.GetDeploymentId(), cmd.GetStackName(), project)
 	if err != nil {
 		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to create volumes: "+err.Error())
 		return err
 	}
 
 	for name, svc := range project.Services {
-		containerID, err := createContainer(ctx, cli, cmd, name, svc, networkName, volumeNames)
+		containerID, err := createContainer(ctx, cli, cmd.GetDeploymentId(), cmd.GetStackName(), name, svc, networkName, volumeNames)
 		if err != nil {
 			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, fmt.Sprintf("failed to create container for service %q: %v", name, err))
 			return err
@@ -102,14 +102,14 @@ func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCom
 	return nil
 }
 
-func parseCompose(ctx context.Context, cmd *agentv1.DeployStackCommand) (*types.Project, error) {
+func parseCompose(ctx context.Context, composeYAML string, env map[string]string, stackName string) (*types.Project, error) {
 	details := types.ConfigDetails{
 		ConfigFiles: []types.ConfigFile{
-			{Filename: "compose.yaml", Content: []byte(cmd.GetComposeYaml())},
+			{Filename: "compose.yaml", Content: []byte(composeYAML)},
 		},
-		Environment: cmd.GetEnv(),
+		Environment: env,
 	}
-	name := sanitizeProjectName(cmd.GetStackName())
+	name := sanitizeProjectName(stackName)
 	return loader.LoadWithContext(ctx, details, func(o *loader.Options) {
 		o.SetProjectName(name, true)
 		o.SkipConsistencyCheck = true
@@ -194,8 +194,8 @@ func removeExisting(ctx context.Context, cli *client.Client, deploymentID string
 
 // ensureNetwork creates (or reuses) a bridge network scoped to this
 // deployment, so multi-service stacks can reach each other by service name.
-func ensureNetwork(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand) (string, error) {
-	name := "pe-" + cmd.GetDeploymentId()
+func ensureNetwork(ctx context.Context, cli *client.Client, deploymentID, stackName string) (string, error) {
+	name := "pe-" + deploymentID
 
 	existing, err := cli.NetworkList(ctx, network.ListOptions{Filters: filters.NewArgs(filters.Arg("name", name))})
 	if err != nil {
@@ -210,8 +210,8 @@ func ensureNetwork(ctx context.Context, cli *client.Client, cmd *agentv1.DeployS
 	_, err = cli.NetworkCreate(ctx, name, network.CreateOptions{
 		Driver: "bridge",
 		Labels: map[string]string{
-			labelDeploymentID: cmd.GetDeploymentId(),
-			labelStack:        cmd.GetStackName(),
+			labelDeploymentID: deploymentID,
+			labelStack:        stackName,
 		},
 	})
 	return name, err
@@ -220,17 +220,19 @@ func ensureNetwork(ctx context.Context, cli *client.Client, cmd *agentv1.DeployS
 // ensureVolumes creates (idempotently) one Docker named volume per named
 // volume declared in the compose project, scoped to this deployment_id,
 // and returns a map from the compose-file volume name (e.g. "data") to the
-// actual Docker volume name (e.g. "pe-<deployment_id>-data").
+// actual Docker volume name (e.g. "pe-<deployment_id>-data"). Also used by
+// Restore (see restore.go) to recreate the same volumes before extracting
+// a backup into them.
 //
 // Bind mounts are deliberately not supported: a host path in a
 // marketplace-sourced compose file would let a catalog entry read/write
 // arbitrary paths on the agent's host, which is a real privilege-escalation
 // surface this MVP doesn't attempt to sandbox against. Named volumes avoid
 // that because Docker manages their storage location itself.
-func ensureVolumes(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, project *types.Project) (map[string]string, error) {
+func ensureVolumes(ctx context.Context, cli *client.Client, deploymentID, stackName string, project *types.Project) (map[string]string, error) {
 	resolved := make(map[string]string, len(project.Volumes))
 	for name := range project.Volumes {
-		dockerName := "pe-" + cmd.GetDeploymentId() + "-" + name
+		dockerName := "pe-" + deploymentID + "-" + name
 		if _, err := cli.VolumeInspect(ctx, dockerName); err == nil {
 			resolved[name] = dockerName
 			continue
@@ -241,8 +243,8 @@ func ensureVolumes(ctx context.Context, cli *client.Client, cmd *agentv1.DeployS
 		if _, err := cli.VolumeCreate(ctx, volume.CreateOptions{
 			Name: dockerName,
 			Labels: map[string]string{
-				labelDeploymentID: cmd.GetDeploymentId(),
-				labelStack:        cmd.GetStackName(),
+				labelDeploymentID: deploymentID,
+				labelStack:        stackName,
 			},
 		}); err != nil {
 			return nil, err
@@ -252,7 +254,7 @@ func ensureVolumes(ctx context.Context, cli *client.Client, cmd *agentv1.DeployS
 	return resolved, nil
 }
 
-func createContainer(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, serviceName string, svc types.ServiceConfig, networkName string, volumeNames map[string]string) (string, error) {
+func createContainer(ctx context.Context, cli *client.Client, deploymentID, stackName, serviceName string, svc types.ServiceConfig, networkName string, volumeNames map[string]string) (string, error) {
 	env := make([]string, 0, len(svc.Environment))
 	for k, v := range svc.Environment {
 		if v != nil {
@@ -268,14 +270,14 @@ func createContainer(ctx context.Context, cli *client.Client, cmd *agentv1.Deplo
 	}
 
 	labels := map[string]string{
-		labelDeploymentID: cmd.GetDeploymentId(),
-		labelStack:        cmd.GetStackName(),
+		labelDeploymentID: deploymentID,
+		labelStack:        stackName,
 	}
 	for k, v := range svc.Labels {
 		labels[k] = v
 	}
 
-	containerName := "pe-" + cmd.GetDeploymentId() + "-" + serviceName
+	containerName := "pe-" + deploymentID + "-" + serviceName
 
 	mounts, err := buildMounts(svc.Volumes, volumeNames)
 	if err != nil {

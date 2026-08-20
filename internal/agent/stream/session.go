@@ -6,8 +6,11 @@ package stream
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
+	"net/http"
 	"time"
 
 	dockerclient "github.com/docker/docker/client"
@@ -168,8 +171,13 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 				recvErrCh <- err
 				return
 			}
-			if deployCmd := msg.GetDeployStack(); deployCmd != nil {
-				go r.handleDeploy(sessionCtx, dockerCli, deployCmd, outbound)
+			switch {
+			case msg.GetDeployStack() != nil:
+				go r.handleDeploy(sessionCtx, dockerCli, msg.GetDeployStack(), outbound)
+			case msg.GetBackup() != nil:
+				go r.handleBackup(sessionCtx, dockerCli, msg.GetBackup(), identity.Credential, outbound)
+			case msg.GetRestore() != nil:
+				go r.handleRestore(sessionCtx, dockerCli, msg.GetRestore(), identity.Credential, outbound)
 			}
 		}
 	}()
@@ -227,6 +235,131 @@ func (r *Runner) handleDeploy(ctx context.Context, dockerCli *dockerclient.Clien
 	r.log.Info("deploy succeeded", "deployment_id", cmd.GetDeploymentId())
 }
 
+// handleBackup snapshots the deployment's volumes and PUTs the resulting
+// tar to cmd.UploadUrl, a separate authenticated HTTP endpoint rather than
+// the AgentSession stream itself — a multi-GB backup would otherwise share
+// the same outbound channel as heartbeats and other commands (see
+// runSession's doc comment on why that channel exists), and could starve
+// them for as long as the transfer takes.
+func (r *Runner) handleBackup(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.BackupCommand, credential string, outbound chan<- *agentv1.AgentMessage) {
+	report := func(phase agentv1.TaskPhase, message string) {
+		select {
+		case outbound <- backupStatusMessage(cmd.GetBackupId(), phase, message):
+		case <-ctx.Done():
+		}
+	}
+
+	if dockerCli == nil {
+		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "docker client unavailable on this agent")
+		return
+	}
+
+	report(agentv1.TaskPhase_TASK_PHASE_RUNNING, "snapshotting volumes")
+
+	reader, err := docker.BackupVolumes(ctx, dockerCli, cmd.GetDeploymentId())
+	if err != nil {
+		r.log.Error("backup snapshot failed", "backup_id", cmd.GetBackupId(), "error", err)
+		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "failed to snapshot volumes: "+err.Error())
+		return
+	}
+	defer reader.Close()
+
+	if err := uploadBlob(ctx, cmd.GetUploadUrl(), credential, reader); err != nil {
+		r.log.Error("backup upload failed", "backup_id", cmd.GetBackupId(), "error", err)
+		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "failed to upload backup: "+err.Error())
+		return
+	}
+
+	// COMPLETED is recorded by the control plane's blob-upload handler
+	// once the bytes actually land (it knows the real size; this stream
+	// message doesn't carry the upload's outcome), not reported here.
+	r.log.Info("backup uploaded", "backup_id", cmd.GetBackupId())
+}
+
+// handleRestore downloads cmd's backup blob, extracts it into the
+// deployment's volumes, then redeploys on top of the restored data by
+// reusing the normal deploy pipeline — see docker.RestoreVolumes' doc
+// comment for why redeploy (not handleRestore itself) owns bringing the
+// containers back up.
+func (r *Runner) handleRestore(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.RestoreCommand, credential string, outbound chan<- *agentv1.AgentMessage) {
+	report := func(phase agentv1.TaskPhase, message string) {
+		select {
+		case outbound <- restoreStatusMessage(cmd.GetBackupId(), cmd.GetDeploymentId(), phase, message):
+		case <-ctx.Done():
+		}
+	}
+
+	if dockerCli == nil {
+		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "docker client unavailable on this agent")
+		return
+	}
+
+	report(agentv1.TaskPhase_TASK_PHASE_RUNNING, "downloading and extracting backup")
+
+	body, err := downloadBlob(ctx, cmd.GetDownloadUrl(), credential)
+	if err != nil {
+		r.log.Error("restore download failed", "backup_id", cmd.GetBackupId(), "error", err)
+		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "failed to download backup: "+err.Error())
+		return
+	}
+	defer body.Close()
+
+	if err := docker.RestoreVolumes(ctx, dockerCli, cmd, body); err != nil {
+		r.log.Error("restore extraction failed", "backup_id", cmd.GetBackupId(), "error", err)
+		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "failed to restore volumes: "+err.Error())
+		return
+	}
+	report(agentv1.TaskPhase_TASK_PHASE_COMPLETED, "")
+
+	r.log.Info("restored volumes, redeploying", "backup_id", cmd.GetBackupId(), "deployment_id", cmd.GetDeploymentId())
+	r.handleDeploy(ctx, dockerCli, &agentv1.DeployStackCommand{
+		DeploymentId: cmd.GetDeploymentId(),
+		StackName:    cmd.GetStackName(),
+		ComposeYaml:  cmd.GetComposeYaml(),
+		Env:          cmd.GetEnv(),
+	}, outbound)
+}
+
+func uploadBlob(ctx context.Context, url, credential string, body io.Reader) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+credential)
+	req.Header.Set("Content-Type", "application/x-tar")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload failed: %s: %s", resp.Status, string(respBody))
+	}
+	return nil
+}
+
+func downloadBlob(ctx context.Context, url, credential string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+credential)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("download failed: %s: %s", resp.Status, string(respBody))
+	}
+	return resp.Body, nil
+}
+
 func heartbeatMessage(serverID string) *agentv1.AgentMessage {
 	return &agentv1.AgentMessage{
 		Payload: &agentv1.AgentMessage_Heartbeat{
@@ -251,6 +384,31 @@ func deployStatusMessage(deploymentID string, phase agentv1.DeployPhase, message
 				Phase:        phase,
 				Message:      message,
 				UpdatedAt:    timestamppb.Now(),
+			},
+		},
+	}
+}
+
+func backupStatusMessage(backupID string, phase agentv1.TaskPhase, message string) *agentv1.AgentMessage {
+	return &agentv1.AgentMessage{
+		Payload: &agentv1.AgentMessage_BackupStatus{
+			BackupStatus: &agentv1.BackupStatus{
+				BackupId: backupID,
+				Phase:    phase,
+				Message:  message,
+			},
+		},
+	}
+}
+
+func restoreStatusMessage(backupID, deploymentID string, phase agentv1.TaskPhase, message string) *agentv1.AgentMessage {
+	return &agentv1.AgentMessage{
+		Payload: &agentv1.AgentMessage_RestoreStatus{
+			RestoreStatus: &agentv1.RestoreStatus{
+				BackupId:     backupID,
+				DeploymentId: deploymentID,
+				Phase:        phase,
+				Message:      message,
 			},
 		},
 	}

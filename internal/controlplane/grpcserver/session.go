@@ -166,6 +166,50 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 			} else {
 				s.events.Publish(ds.GetDeploymentId(), event)
 			}
+		case *agentv1.AgentMessage_BackupStatus:
+			bs := payload.BackupStatus
+			phase := taskPhaseToString(bs.GetPhase())
+			s.log.Info("backup status received",
+				"server_id", serverID,
+				"backup_id", bs.GetBackupId(),
+				"phase", phase,
+				"message", bs.GetMessage(),
+			)
+			// COMPLETED is set by the blob-upload HTTP handler once the
+			// bytes actually land (internal/controlplane/api), not here —
+			// this stream-level status only ever reports RUNNING/FAILED.
+			if phase == "failed" {
+				if err := s.store.UpdateBackupStatus(ctx, bs.GetBackupId(), phase, bs.GetMessage()); err != nil {
+					s.log.Error("failed to update backup status", "backup_id", bs.GetBackupId(), "error", err)
+				}
+			} else if phase == "running" {
+				_ = s.store.UpdateBackupStatus(ctx, bs.GetBackupId(), phase, bs.GetMessage())
+			}
+		case *agentv1.AgentMessage_RestoreStatus:
+			rs := payload.RestoreStatus
+			phase := taskPhaseToString(rs.GetPhase())
+			s.log.Info("restore status received",
+				"server_id", serverID,
+				"backup_id", rs.GetBackupId(),
+				"deployment_id", rs.GetDeploymentId(),
+				"phase", phase,
+				"message", rs.GetMessage(),
+			)
+			switch phase {
+			case "running":
+				if event, err := s.store.AddDeploymentEvent(ctx, rs.GetDeploymentId(), "restoring", rs.GetMessage()); err == nil {
+					s.events.Publish(rs.GetDeploymentId(), event)
+				}
+			case "failed":
+				_ = s.store.UpdateDeploymentPhase(ctx, rs.GetDeploymentId(), "failed")
+				if event, err := s.store.AddDeploymentEvent(ctx, rs.GetDeploymentId(), "failed", rs.GetMessage()); err == nil {
+					s.events.Publish(rs.GetDeploymentId(), event)
+				}
+			}
+			// COMPLETED needs no event here: the agent immediately follows
+			// up with a normal deploy pipeline run, whose DeployStatus
+			// events (handled above) take over the deployment's status
+			// feed from this point.
 		default:
 			s.log.Warn("unknown agent message payload", "server_id", serverID)
 		}
@@ -183,6 +227,19 @@ func deployPhaseToString(phase agentv1.DeployPhase) string {
 	case agentv1.DeployPhase_DEPLOY_PHASE_RUNNING:
 		return "running"
 	case agentv1.DeployPhase_DEPLOY_PHASE_FAILED:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func taskPhaseToString(phase agentv1.TaskPhase) string {
+	switch phase {
+	case agentv1.TaskPhase_TASK_PHASE_RUNNING:
+		return "running"
+	case agentv1.TaskPhase_TASK_PHASE_COMPLETED:
+		return "completed"
+	case agentv1.TaskPhase_TASK_PHASE_FAILED:
 		return "failed"
 	default:
 		return "unknown"

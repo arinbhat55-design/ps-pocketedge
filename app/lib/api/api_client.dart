@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models/backup.dart';
 import '../models/server.dart';
 import '../models/stack.dart';
 
@@ -128,6 +129,55 @@ class ApiClient {
   Future<void> redeployDeployment(String deploymentId) async {
     final response = await _http.post(
       Uri.parse('$baseUrl/api/deployments/$deploymentId/redeploy'),
+      headers: _headers,
+    );
+    if (response.statusCode != 202) {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+  }
+
+  Future<String> createBackup(String deploymentId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/backups'),
+      headers: _headers,
+    );
+    if (response.statusCode != 202) {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return decoded['backupId'] as String;
+  }
+
+  Future<List<Backup>> listBackups(String deploymentId) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/backups'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => Backup.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Restores backup's deployment from that snapshot. Always restores into
+  /// the same deployment it was taken from — there's no "restore into a
+  /// new deployment" yet. Progress after this call shows up in the
+  /// deployment's normal live status stream (deploymentStreamUri), not a
+  /// separate backup-status feed.
+  Future<void> restoreBackup(String backupId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/backups/$backupId/restore'),
       headers: _headers,
     );
     if (response.statusCode != 202) {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/api"
 	authpkg "github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/backup"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/grpcserver"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
@@ -29,6 +30,8 @@ func main() {
 	jwtSecret := flag.String("jwt-secret", os.Getenv("JWT_SECRET"), "secret used to sign admin session JWTs (env JWT_SECRET); a random one is generated per-process if unset, which invalidates sessions on restart")
 	adminEmail := flag.String("admin-email", os.Getenv("ADMIN_EMAIL"), "email for the seeded admin user, only used if no users exist yet (env ADMIN_EMAIL)")
 	adminPassword := flag.String("admin-password", os.Getenv("ADMIN_PASSWORD"), "password for the seeded admin user, only used if no users exist yet; generated and logged if unset (env ADMIN_PASSWORD)")
+	publicURL := flag.String("public-url", envOr("PUBLIC_URL", "http://localhost:8080"), "URL agents use to reach this control plane's REST API, for backup/restore blob transfer (env PUBLIC_URL); must be reachable from every enrolled agent, not just localhost, once agents run on other machines")
+	backupDir := flag.String("backup-dir", envOr("BACKUP_DIR", "./data/backups"), "local directory to store backup blobs in (env BACKUP_DIR)")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -75,12 +78,18 @@ func main() {
 	dispatcher := deploy.NewDispatcher()
 	events := deploy.NewEventBus()
 
+	blobs, err := backup.NewBlobStore(*backupDir)
+	if err != nil {
+		log.Error("failed to initialize backup storage", "dir", *backupDir, "error", err)
+		os.Exit(1)
+	}
+
 	grpcServer := grpc.NewServer()
 	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events))
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr, dispatcher, events),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, blobs, *publicURL),
 	}
 
 	errCh := make(chan error, 2)
@@ -102,4 +111,11 @@ func main() {
 		log.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

@@ -4,6 +4,9 @@
 *.test
 *.out
 
+# Local backup blob storage (see internal/controlplane/backup)
+/data/
+
 # Env / secrets
 .env
 *.env.local
