@@ -37,6 +37,7 @@ dependencies:
   http: ^1.6.0
   flutter_secure_storage: ^11.0.0
   web_socket_channel: ^3.0.3
+  fl_chart: ^0.69.0
 
 dev_dependencies:
   flutter_test:

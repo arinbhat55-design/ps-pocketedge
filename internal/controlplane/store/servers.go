@@ -72,6 +72,24 @@ func (s *Store) RecordHeartbeat(ctx context.Context, serverID string, resources 
 	return err
 }
 
+// GetServer looks up a single server by ID. Returns ErrNotFound if it
+// doesn't exist.
+func (s *Store) GetServer(ctx context.Context, id string) (*Server, error) {
+	var sv Server
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, name, hostname, os, arch, agent_version, status, last_heartbeat_at, last_resources, created_at
+		FROM servers WHERE id = $1
+	`, id).Scan(&sv.ID, &sv.Name, &sv.Hostname, &sv.OS, &sv.Arch, &sv.AgentVersion,
+		&sv.Status, &sv.LastHeartbeatAt, &sv.LastResources, &sv.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &sv, nil
+}
+
 // ListServers returns all registered servers, most recently created first.
 func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 	rows, err := s.pool.Query(ctx, `

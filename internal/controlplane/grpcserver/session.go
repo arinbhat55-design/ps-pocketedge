@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/livestate"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
@@ -22,14 +24,15 @@ import (
 type Server struct {
 	agentv1.UnimplementedAgentSessionServer
 
-	log        *slog.Logger
-	store      *store.Store
-	dispatcher *deploy.Dispatcher
-	events     *deploy.EventBus
+	log          *slog.Logger
+	store        *store.Store
+	dispatcher   *deploy.Dispatcher
+	events       *deploy.EventBus
+	serverEvents *livestate.EventBus
 }
 
-func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus) *Server {
-	return &Server{log: log, store: st, dispatcher: dispatcher, events: events}
+func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus) *Server {
+	return &Server{log: log, store: st, dispatcher: dispatcher, events: events, serverEvents: serverEvents}
 }
 
 func (s *Server) Enroll(ctx context.Context, req *agentv1.EnrollRequest) (*agentv1.EnrollResponse, error) {
@@ -141,6 +144,29 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 				s.log.Error("failed to record heartbeat", "server_id", serverID, "error", err)
 				continue
 			}
+			if err := s.store.InsertMetricSample(ctx, serverID, resources); err != nil {
+				s.log.Error("failed to record metric sample", "server_id", serverID, "error", err)
+			}
+
+			heartbeatTime := time.Now()
+			containers := make([]store.ContainerState, len(hb.GetContainers()))
+			for i, c := range hb.GetContainers() {
+				var deploymentID *string
+				if id := c.GetDeploymentId(); id != "" {
+					deploymentID = &id
+				}
+				containers[i] = store.ContainerState{
+					ContainerID:  c.GetId(),
+					Name:         c.GetName(),
+					State:        c.GetState(),
+					DeploymentID: deploymentID,
+					UpdatedAt:    heartbeatTime,
+				}
+			}
+			if err := s.store.ReplaceContainers(ctx, serverID, containers); err != nil {
+				s.log.Error("failed to replace container inventory", "server_id", serverID, "error", err)
+			}
+
 			s.log.Info("heartbeat recorded",
 				"server_id", serverID,
 				"cpu_percent", resources.CPUPercent,
@@ -148,6 +174,12 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 				"disk_percent", resources.DiskPercent,
 				"containers", len(hb.GetContainers()),
 			)
+
+			s.serverEvents.Publish(serverID, livestate.ServerUpdate{
+				Resources:  resources,
+				Containers: containers,
+				UpdatedAt:  heartbeatTime,
+			})
 		case *agentv1.AgentMessage_DeployStatus:
 			ds := payload.DeployStatus
 			phase := deployPhaseToString(ds.GetPhase())

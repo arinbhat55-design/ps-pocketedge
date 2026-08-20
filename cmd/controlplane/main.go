@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -18,10 +19,16 @@ import (
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/backup"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/grpcserver"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/livestate"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version"
 )
+
+// metricSampleRetention bounds how long server_metric_samples history is
+// kept. No downsampling/rollup in this MVP slice — old samples are pruned
+// outright by a periodic background sweep, not aggregated.
+const metricSampleRetention = 24 * time.Hour
 
 func main() {
 	grpcAddr := flag.String("grpc-addr", ":8443", "address for the agent gRPC service to listen on")
@@ -77,6 +84,7 @@ func main() {
 
 	dispatcher := deploy.NewDispatcher()
 	events := deploy.NewEventBus()
+	serverEvents := livestate.NewEventBus()
 
 	blobs, err := backup.NewBlobStore(*backupDir)
 	if err != nil {
@@ -85,11 +93,11 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events))
+	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents))
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, blobs, *publicURL),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL),
 	}
 
 	errCh := make(chan error, 2)
@@ -101,6 +109,7 @@ func main() {
 		log.Info("REST API listening", "addr", *httpAddr)
 		errCh <- httpServer.ListenAndServe()
 	}()
+	go pruneMetricsLoop(ctx, log, st)
 
 	select {
 	case <-ctx.Done():
@@ -110,6 +119,28 @@ func main() {
 	case err := <-errCh:
 		log.Error("server stopped", "error", err)
 		os.Exit(1)
+	}
+}
+
+// pruneMetricsLoop periodically deletes server_metric_samples older than
+// metricSampleRetention, so the table doesn't grow unbounded — a heartbeat
+// every ~20s per server adds up over days/weeks of uptime. Runs hourly
+// rather than continuously since retention is measured in a day, not
+// seconds.
+func pruneMetricsLoop(ctx context.Context, log *slog.Logger, st *store.Store) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-metricSampleRetention)
+			if err := st.PruneMetricSamplesOlderThan(ctx, cutoff); err != nil {
+				log.Error("failed to prune old metric samples", "error", err)
+			}
+		}
 	}
 }
 

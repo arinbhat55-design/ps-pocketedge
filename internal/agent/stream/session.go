@@ -21,6 +21,7 @@ import (
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/docker"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/enroll"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/health"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/state"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
@@ -187,7 +188,7 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 
 	// Send an immediate heartbeat on connect rather than waiting a full
 	// interval, so a fresh/reconnected agent shows up promptly.
-	if err := stream.Send(heartbeatMessage(identity.ServerID)); err != nil {
+	if err := stream.Send(r.heartbeatMessage(ctx, dockerCli, identity.ServerID)); err != nil {
 		return err
 	}
 
@@ -202,7 +203,7 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 				return err
 			}
 		case <-ticker.C:
-			if err := stream.Send(heartbeatMessage(identity.ServerID)); err != nil {
+			if err := stream.Send(r.heartbeatMessage(ctx, dockerCli, identity.ServerID)); err != nil {
 				return err
 			}
 		}
@@ -360,17 +361,45 @@ func downloadBlob(ctx context.Context, url, credential string) (io.ReadCloser, e
 	return resp.Body, nil
 }
 
-func heartbeatMessage(serverID string) *agentv1.AgentMessage {
+// heartbeatMessage samples current host resources and (if a Docker daemon
+// is reachable) the container inventory. Either collector failing is logged
+// and degrades that part of the heartbeat to its zero value — a heartbeat
+// must still go out on schedule even if one metric source is temporarily
+// unavailable.
+func (r *Runner) heartbeatMessage(ctx context.Context, dockerCli *dockerclient.Client, serverID string) *agentv1.AgentMessage {
+	snap, err := health.Collect(ctx)
+	if err != nil {
+		r.log.Warn("failed to collect host metrics", "error", err)
+	}
+
+	var containers []*agentv1.ContainerSummary
+	if dockerCli != nil {
+		list, err := docker.ListContainers(ctx, dockerCli)
+		if err != nil {
+			r.log.Warn("failed to list containers for heartbeat", "error", err)
+		}
+		containers = make([]*agentv1.ContainerSummary, len(list))
+		for i, c := range list {
+			containers[i] = &agentv1.ContainerSummary{
+				Id:           c.ID,
+				Name:         c.Name,
+				State:        c.State,
+				DeploymentId: c.DeploymentID,
+			}
+		}
+	}
+
 	return &agentv1.AgentMessage{
 		Payload: &agentv1.AgentMessage_Heartbeat{
 			Heartbeat: &agentv1.Heartbeat{
 				ServerId: serverID,
 				SentAt:   timestamppb.Now(),
 				Resources: &agentv1.ResourceSnapshot{
-					CpuPercent:  0,
-					MemPercent:  0,
-					DiskPercent: 0,
+					CpuPercent:  snap.CPUPercent,
+					MemPercent:  snap.MemPercent,
+					DiskPercent: snap.DiskPercent,
 				},
+				Containers: containers,
 			},
 		},
 	}

@@ -5,6 +5,7 @@ import '../../models/server.dart';
 import '../deployments/catalog_screen.dart';
 import '../deployments/deployment_status_screen.dart';
 import 'add_server_dialog.dart';
+import 'server_detail_screen.dart';
 
 class ServerListScreen extends StatefulWidget {
   final ApiClient apiClient;
@@ -47,6 +48,16 @@ class _ServerListScreenState extends State<ServerListScreen> {
       builder: (_) => DeploymentStatusScreen(
         apiClient: widget.apiClient,
         deploymentId: deploymentId,
+      ),
+    ));
+  }
+
+  Future<void> _openDetail(Server server) async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ServerDetailScreen(
+        apiClient: widget.apiClient,
+        serverId: server.id,
+        serverName: server.name,
       ),
     ));
   }
@@ -115,6 +126,7 @@ class _ServerListScreenState extends State<ServerListScreen> {
               itemBuilder: (context, index) {
                 final server = servers[index];
                 return ListTile(
+                  onTap: () => _openDetail(server),
                   leading: Icon(
                     Icons.dns,
                     color: server.status == 'online'
@@ -129,7 +141,8 @@ class _ServerListScreenState extends State<ServerListScreen> {
                     children: [
                       if (server.lastResources != null) ...[
                         Text(
-                          'CPU ${server.lastResources!.cpuPercent.toStringAsFixed(0)}%',
+                          'CPU ${server.lastResources!.cpuPercent.toStringAsFixed(0)}% '
+                          'MEM ${server.lastResources!.memPercent.toStringAsFixed(0)}%',
                         ),
                         const SizedBox(width: 8),
                       ],

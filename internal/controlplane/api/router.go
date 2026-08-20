@@ -12,8 +12,13 @@ import (
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/backup"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/livestate"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
 )
+
+// defaultMetricsWindow is how far back GET .../metrics looks when the
+// client doesn't pass a ?since= duration.
+const defaultMetricsWindow = 1 * time.Hour
 
 const enrollmentTokenTTL = 1 * time.Hour
 
@@ -29,13 +34,18 @@ const enrollmentTokenTTL = 1 * time.Hour
 // this API from its dev server origin during local development; this
 // should be tightened together with publicURL before any non-local
 // deployment.
-func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, blobs *backup.BlobStore, publicURL string) http.Handler {
+func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
 
 	mux.Handle("GET /api/servers", authMgr.RequireAuth(handleListServers(log, st)))
 	mux.Handle("POST /api/servers/enroll-token", authMgr.RequireAuth(handleCreateEnrollmentToken(log, st)))
+	mux.Handle("GET /api/servers/{id}", authMgr.RequireAuth(handleGetServer(log, st)))
+	mux.Handle("GET /api/servers/{id}/metrics", authMgr.RequireAuth(handleGetServerMetrics(log, st)))
+	// Auth via ?token= query param, not the Authorization header — see
+	// handleDeploymentStream's doc comment for why.
+	mux.HandleFunc("GET /api/servers/{id}/stream", handleServerStream(log, st, authMgr, serverEvents))
 
 	mux.Handle("GET /api/stacks", authMgr.RequireAuth(handleListStacks(log, st)))
 
@@ -112,6 +122,62 @@ func handleListServers(log *slog.Logger, st *store.Store) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, servers)
+	}
+}
+
+func handleGetServer(log *slog.Logger, st *store.Store) http.HandlerFunc {
+	type response struct {
+		store.Server
+		Containers []store.ContainerState `json:"containers"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+
+		server, err := st.GetServer(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				http.Error(w, "server not found", http.StatusNotFound)
+				return
+			}
+			log.Error("failed to load server", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		containers, err := st.ListContainers(r.Context(), id)
+		if err != nil {
+			log.Error("failed to list containers", "server_id", id, "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, response{Server: *server, Containers: containers})
+	}
+}
+
+func handleGetServerMetrics(log *slog.Logger, st *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+
+		window := defaultMetricsWindow
+		if raw := r.URL.Query().Get("since"); raw != "" {
+			parsed, err := time.ParseDuration(raw)
+			if err != nil {
+				http.Error(w, "invalid since duration", http.StatusBadRequest)
+				return
+			}
+			window = parsed
+		}
+
+		samples, err := st.ListMetricSamples(r.Context(), id, time.Now().Add(-window))
+		if err != nil {
+			log.Error("failed to list metric samples", "server_id", id, "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, samples)
 	}
 }
 

@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/backup.dart';
 import '../models/server.dart';
+import '../models/server_metrics.dart';
 import '../models/stack.dart';
 
 class ApiException implements Exception {
@@ -76,6 +77,47 @@ class ApiClient {
     return decoded
         .map((e) => Server.fromJson(e as Map<String, dynamic>))
         .toList();
+  }
+
+  Future<ServerDetail> getServerDetail(String serverId) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/servers/$serverId'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return ServerDetail.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  /// [since] is a Go duration string (e.g. '1h', '30m'); defaults to the
+  /// server's own default window (1h) if omitted.
+  Future<List<MetricSample>> getServerMetrics(String serverId,
+      {String? since}) async {
+    final uri = Uri.parse('$baseUrl/api/servers/$serverId/metrics').replace(
+      queryParameters: since == null ? null : {'since': since},
+    );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => MetricSample.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// WebSocket URL for a server's live resource/container status stream —
+  /// same `?token=` query-param auth pattern as [deploymentStreamUri].
+  Uri serverStreamUri(String serverId) {
+    final httpUri = Uri.parse(baseUrl);
+    final wsScheme = httpUri.scheme == 'https' ? 'wss' : 'ws';
+    return httpUri.replace(
+      scheme: wsScheme,
+      path: '/api/servers/$serverId/stream',
+      queryParameters: {'token': ?authToken},
+    );
   }
 
   Future<EnrollmentToken> createEnrollmentToken() async {
