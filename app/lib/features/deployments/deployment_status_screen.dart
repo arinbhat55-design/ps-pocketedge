@@ -28,6 +28,7 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
   final List<DeploymentEvent> _events = [];
   String? _error;
   bool _closed = false;
+  bool _redeploying = false;
 
   @override
   void initState() {
@@ -64,6 +65,27 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
     super.dispose();
   }
 
+  Future<void> _redeploy() async {
+    setState(() => _redeploying = true);
+    try {
+      await widget.apiClient.redeployDeployment(widget.deploymentId);
+      await _sub?.cancel();
+      await _channel?.sink.close();
+      setState(() {
+        _events.clear();
+        _error = null;
+        _closed = false;
+        _redeploying = false;
+      });
+      _connect();
+    } catch (e) {
+      setState(() {
+        _error = 'Failed to redeploy: $e';
+        _redeploying = false;
+      });
+    }
+  }
+
   Color _phaseColor(String phase) {
     switch (phase) {
       case 'running':
@@ -82,7 +104,23 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
     final latestPhase = _events.isEmpty ? 'connecting' : _events.last.phase;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Deployment status')),
+      appBar: AppBar(
+        title: const Text('Deployment status'),
+        actions: [
+          if (_closed)
+            IconButton(
+              icon: _redeploying
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.replay),
+              tooltip: 'Redeploy',
+              onPressed: _redeploying ? null : _redeploy,
+            ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(

@@ -121,14 +121,24 @@ class _ServerListScreenState extends State<ServerListScreen> {
                         : Colors.grey,
                   ),
                   title: Text(server.name),
-                  subtitle: Text(
-                      '${server.os}/${server.arch} • ${server.status} • tap to deploy a stack'),
-                  trailing: server.lastResources == null
-                      ? null
-                      : Text(
+                  subtitle:
+                      Text('${server.os}/${server.arch} • ${server.status}'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (server.lastResources != null) ...[
+                        Text(
                           'CPU ${server.lastResources!.cpuPercent.toStringAsFixed(0)}%',
                         ),
-                  onTap: () => _openDeploy(server),
+                        const SizedBox(width: 8),
+                      ],
+                      FilledButton.tonalIcon(
+                        onPressed: () => _openDeploy(server),
+                        icon: const Icon(Icons.rocket_launch, size: 18),
+                        label: const Text('Deploy'),
+                      ),
+                    ],
+                  ),
                 );
               },
             );

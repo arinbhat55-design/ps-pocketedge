@@ -118,6 +118,24 @@ class ApiClient {
     return decoded['deploymentId'] as String;
   }
 
+  /// Re-applies an existing deployment (same deployment_id) to its server.
+  /// Unlike [createDeployment], this exercises the agent's redeploy/recreate
+  /// path: the agent finds containers already labeled with this
+  /// deployment_id and replaces them, rather than creating a parallel set.
+  Future<void> redeployDeployment(String deploymentId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/redeploy'),
+      headers: _headers,
+    );
+    if (response.statusCode != 202) {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+  }
+
   /// WebSocket URL for a deployment's live status stream. The JWT travels
   /// as a `?token=` query param here rather than an Authorization header —
   /// browsers can't set custom headers on a WebSocket handshake, so the

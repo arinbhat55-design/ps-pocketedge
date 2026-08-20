@@ -143,6 +143,16 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 		return err
 	}
 
+	// Deploys in flight when this session ends must not keep running
+	// against a Docker daemon indefinitely while silently unable to report
+	// status anywhere — sessionCtx is cancelled the moment runSession
+	// returns (by any path), which both aborts the Deploy() call's Docker
+	// SDK operations and unblocks report()'s ctx.Done() case below, so
+	// that goroutine exits instead of leaking forever on a channel send
+	// nobody's reading from.
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
+
 	// stream.Send is not safe for concurrent use, but heartbeats (from this
 	// function's own loop) and deploy-status reports (from handleDeploy,
 	// running in its own goroutine per in-flight deploy) both need to write
@@ -159,7 +169,7 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 				return
 			}
 			if deployCmd := msg.GetDeployStack(); deployCmd != nil {
-				go r.handleDeploy(ctx, dockerCli, deployCmd, outbound)
+				go r.handleDeploy(sessionCtx, dockerCli, deployCmd, outbound)
 			}
 		}
 	}()

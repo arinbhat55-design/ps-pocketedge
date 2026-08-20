@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -66,23 +67,7 @@ func handleCreateDeployment(log *slog.Logger, st *store.Store, dispatcher *deplo
 			events.Publish(deploymentID, event)
 		}
 
-		cmd := &agentv1.ControlMessage{
-			Payload: &agentv1.ControlMessage_DeployStack{
-				DeployStack: &agentv1.DeployStackCommand{
-					DeploymentId: deploymentID,
-					StackName:    stack.Name,
-					ComposeYaml:  stack.ComposeYAML,
-					Env:          env,
-				},
-			},
-		}
-
-		if err := dispatcher.Send(req.ServerID, cmd); err != nil {
-			log.Warn("failed to dispatch deploy command", "deployment_id", deploymentID, "server_id", req.ServerID, "error", err)
-			_ = st.UpdateDeploymentPhase(r.Context(), deploymentID, "failed")
-			if event, err := st.AddDeploymentEvent(r.Context(), deploymentID, "failed", "server not connected: "+err.Error()); err == nil {
-				events.Publish(deploymentID, event)
-			}
+		if err := dispatchDeploy(r.Context(), log, st, dispatcher, events, deploymentID, req.ServerID, stack.Name, stack.ComposeYAML, env); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{
 				"deploymentId": deploymentID,
 				"error":        "server not connected",
@@ -118,4 +103,73 @@ func handleGetDeployment(log *slog.Logger, st *store.Store) http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, deploymentStatusResponse{Deployment: *deployment, Events: events})
 	}
+}
+
+// handleRedeployDeployment re-sends an existing deployment's compose stack
+// to its server, keeping the same deployment_id. This is what actually
+// exercises the agent's "redeploy = recreate" idempotency logic (internal/
+// agent/docker.Deploy): a fresh POST /api/deployments always mints a new
+// deployment_id, so it can never collide with a previous run's labeled
+// containers — only re-sending the *same* deployment_id does that.
+func handleRedeployDeployment(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+
+		deployment, err := st.GetDeployment(r.Context(), id)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "deployment not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			log.Error("failed to load deployment", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		stack, err := st.GetStack(r.Context(), deployment.StackID)
+		if err != nil {
+			log.Error("failed to load stack", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		if event, err := st.AddDeploymentEvent(r.Context(), id, "pending", "redeploy requested"); err == nil {
+			events.Publish(id, event)
+		}
+
+		if err := dispatchDeploy(r.Context(), log, st, dispatcher, events, id, deployment.ServerID, stack.Name, stack.ComposeYAML, deployment.Env); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"deploymentId": id,
+				"error":        "server not connected",
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusAccepted, map[string]string{"deploymentId": id})
+	}
+}
+
+// dispatchDeploy sends a DeployStackCommand to serverID and, if that fails
+// (agent not currently connected), records and publishes a FAILED event.
+func dispatchDeploy(ctx context.Context, log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, deploymentID, serverID, stackName, composeYAML string, env map[string]string) error {
+	cmd := &agentv1.ControlMessage{
+		Payload: &agentv1.ControlMessage_DeployStack{
+			DeployStack: &agentv1.DeployStackCommand{
+				DeploymentId: deploymentID,
+				StackName:    stackName,
+				ComposeYaml:  composeYAML,
+				Env:          env,
+			},
+		},
+	}
+
+	if err := dispatcher.Send(serverID, cmd); err != nil {
+		log.Warn("failed to dispatch deploy command", "deployment_id", deploymentID, "server_id", serverID, "error", err)
+		_ = st.UpdateDeploymentPhase(ctx, deploymentID, "failed")
+		if event, addErr := st.AddDeploymentEvent(ctx, deploymentID, "failed", "server not connected: "+err.Error()); addErr == nil {
+			events.Publish(deploymentID, event)
+		}
+		return err
+	}
+	return nil
 }

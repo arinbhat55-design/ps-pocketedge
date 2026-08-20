@@ -33,6 +33,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 
 	mux.Handle("POST /api/deployments", authMgr.RequireAuth(handleCreateDeployment(log, st, dispatcher, events)))
 	mux.Handle("GET /api/deployments/{id}", authMgr.RequireAuth(handleGetDeployment(log, st)))
+	mux.Handle("POST /api/deployments/{id}/redeploy", authMgr.RequireAuth(handleRedeployDeployment(log, st, dispatcher, events)))
 	// Auth via ?token= query param, not the Authorization header — see
 	// handleDeploymentStream's doc comment for why.
 	mux.HandleFunc("GET /api/deployments/{id}/stream", handleDeploymentStream(log, st, authMgr, events))
