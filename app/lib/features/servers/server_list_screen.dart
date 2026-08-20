@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/server.dart';
-import '../deployments/deploy_dialog.dart';
+import '../deployments/catalog_screen.dart';
 import '../deployments/deployment_status_screen.dart';
 import 'add_server_dialog.dart';
 
@@ -33,12 +33,13 @@ class _ServerListScreenState extends State<ServerListScreen> {
   }
 
   Future<void> _openDeploy(Server server) async {
-    final deploymentId = await showDialog<String>(
-      context: context,
-      builder: (_) => DeployDialog(
-        apiClient: widget.apiClient,
-        serverId: server.id,
-        serverName: server.name,
+    final deploymentId = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => CatalogScreen(
+          apiClient: widget.apiClient,
+          serverId: server.id,
+          serverName: server.name,
+        ),
       ),
     );
     if (deploymentId == null || !mounted) return;

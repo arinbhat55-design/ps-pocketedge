@@ -2,6 +2,8 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -9,12 +11,16 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/strslice"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/go-connections/nat"
 
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
@@ -69,8 +75,19 @@ func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCom
 		return err
 	}
 
+	// Named volumes are created once and never removed by removeExisting
+	// above — that's what makes redeploy actually preserve data (a
+	// database's rows, a model cache) instead of starting fresh every
+	// time, which is the whole point of supporting them for stateful
+	// catalog entries like Postgres/Ollama/Qdrant.
+	volumeNames, err := ensureVolumes(ctx, cli, cmd, project)
+	if err != nil {
+		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to create volumes: "+err.Error())
+		return err
+	}
+
 	for name, svc := range project.Services {
-		containerID, err := createContainer(ctx, cli, cmd, name, svc, networkName)
+		containerID, err := createContainer(ctx, cli, cmd, name, svc, networkName, volumeNames)
 		if err != nil {
 			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, fmt.Sprintf("failed to create container for service %q: %v", name, err))
 			return err
@@ -113,14 +130,47 @@ func sanitizeProjectName(name string) string {
 	return s
 }
 
+// pullImage drains the ImagePull response and surfaces registry-side
+// failures. The HTTP response streams newline-delimited JSON progress
+// messages and still closes cleanly (err == nil from a bare io.Copy) even
+// when an individual message reports a failure (rate limit, manifest not
+// found, auth failure, ...) — Docker's API reports those failures inside
+// the stream, not as a request-level error. A bare io.Copy would swallow
+// that silently and let deploy proceed to ContainerCreate against an image
+// that was never actually pulled.
+//
+// Belt-and-suspenders: a flaky registry connection can also make the
+// stream end cleanly (a plain EOF, no error message) after stalling
+// partway through — observed directly while building this, pulling a
+// multi-GB image over a slow link — so a clean pullImage return still
+// isn't proof the image exists. ImageInspect confirms it actually landed
+// before Deploy proceeds to ContainerCreate, instead of surfacing Docker's
+// more confusing "No such image" error from that later, unrelated call.
 func pullImage(ctx context.Context, cli *client.Client, ref string) error {
 	reader, err := cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {
 		return err
 	}
 	defer reader.Close()
-	_, err = io.Copy(io.Discard, reader)
-	return err
+
+	decoder := json.NewDecoder(reader)
+	for {
+		var msg jsonmessage.JSONMessage
+		if err := decoder.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return err
+		}
+		if msg.Error != nil {
+			return msg.Error
+		}
+	}
+
+	if _, err := cli.ImageInspect(ctx, ref); err != nil {
+		return fmt.Errorf("pull reported success but image is not present locally: %w", err)
+	}
+	return nil
 }
 
 // removeExisting implements the "redeploy = recreate" idempotency rule:
@@ -167,7 +217,42 @@ func ensureNetwork(ctx context.Context, cli *client.Client, cmd *agentv1.DeployS
 	return name, err
 }
 
-func createContainer(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, serviceName string, svc types.ServiceConfig, networkName string) (string, error) {
+// ensureVolumes creates (idempotently) one Docker named volume per named
+// volume declared in the compose project, scoped to this deployment_id,
+// and returns a map from the compose-file volume name (e.g. "data") to the
+// actual Docker volume name (e.g. "pe-<deployment_id>-data").
+//
+// Bind mounts are deliberately not supported: a host path in a
+// marketplace-sourced compose file would let a catalog entry read/write
+// arbitrary paths on the agent's host, which is a real privilege-escalation
+// surface this MVP doesn't attempt to sandbox against. Named volumes avoid
+// that because Docker manages their storage location itself.
+func ensureVolumes(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, project *types.Project) (map[string]string, error) {
+	resolved := make(map[string]string, len(project.Volumes))
+	for name := range project.Volumes {
+		dockerName := "pe-" + cmd.GetDeploymentId() + "-" + name
+		if _, err := cli.VolumeInspect(ctx, dockerName); err == nil {
+			resolved[name] = dockerName
+			continue
+		} else if !errdefs.IsNotFound(err) {
+			return nil, err
+		}
+
+		if _, err := cli.VolumeCreate(ctx, volume.CreateOptions{
+			Name: dockerName,
+			Labels: map[string]string{
+				labelDeploymentID: cmd.GetDeploymentId(),
+				labelStack:        cmd.GetStackName(),
+			},
+		}); err != nil {
+			return nil, err
+		}
+		resolved[name] = dockerName
+	}
+	return resolved, nil
+}
+
+func createContainer(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, serviceName string, svc types.ServiceConfig, networkName string, volumeNames map[string]string) (string, error) {
 	env := make([]string, 0, len(svc.Environment))
 	for k, v := range svc.Environment {
 		if v != nil {
@@ -192,6 +277,11 @@ func createContainer(ctx context.Context, cli *client.Client, cmd *agentv1.Deplo
 
 	containerName := "pe-" + cmd.GetDeploymentId() + "-" + serviceName
 
+	mounts, err := buildMounts(svc.Volumes, volumeNames)
+	if err != nil {
+		return "", err
+	}
+
 	config := &container.Config{
 		Image:        svc.Image,
 		Env:          env,
@@ -202,6 +292,7 @@ func createContainer(ctx context.Context, cli *client.Client, cmd *agentv1.Deplo
 	hostConfig := &container.HostConfig{
 		PortBindings:  portBindings,
 		RestartPolicy: parseRestartPolicy(svc.Restart),
+		Mounts:        mounts,
 	}
 	networkingConfig := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
@@ -214,6 +305,32 @@ func createContainer(ctx context.Context, cli *client.Client, cmd *agentv1.Deplo
 		return "", err
 	}
 	return resp.ID, nil
+}
+
+// buildMounts translates a service's compose `volumes:` entries into
+// Docker mounts. Only named volumes are supported (see ensureVolumes'
+// doc comment on why bind mounts are deliberately rejected rather than
+// silently ignored) — an unsupported entry is a hard error, not a
+// best-effort skip, so a catalog entry that needs a bind mount fails
+// loudly at deploy time instead of silently losing its data directory.
+func buildMounts(volumes []types.ServiceVolumeConfig, volumeNames map[string]string) ([]mount.Mount, error) {
+	mounts := make([]mount.Mount, 0, len(volumes))
+	for _, v := range volumes {
+		if v.Type != "volume" {
+			return nil, fmt.Errorf("unsupported volume type %q for %q (only named volumes are supported)", v.Type, v.Target)
+		}
+		dockerName, ok := volumeNames[v.Source]
+		if !ok {
+			return nil, fmt.Errorf("volume %q not declared in the compose file's top-level volumes section", v.Source)
+		}
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeVolume,
+			Source:   dockerName,
+			Target:   v.Target,
+			ReadOnly: v.ReadOnly,
+		})
+	}
+	return mounts, nil
 }
 
 func buildPorts(ports []types.ServicePortConfig) (nat.PortSet, nat.PortMap, error) {

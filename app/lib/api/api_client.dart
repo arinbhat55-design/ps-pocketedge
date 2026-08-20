@@ -101,12 +101,15 @@ class ApiClient {
         .toList();
   }
 
-  Future<String> createDeployment(
-      {required String stackId, required String serverId}) async {
+  Future<String> createDeployment({
+    required String stackId,
+    required String serverId,
+    Map<String, String> env = const {},
+  }) async {
     final response = await _http.post(
       Uri.parse('$baseUrl/api/deployments'),
       headers: _headers,
-      body: jsonEncode({'stackId': stackId, 'serverId': serverId}),
+      body: jsonEncode({'stackId': stackId, 'serverId': serverId, 'env': env}),
     );
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode != 202) {

@@ -22,16 +22,6 @@ import (
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version"
 )
 
-// defaultStackComposeYAML is the one hand-seeded stack for the MVP core
-// loop (M4): a minimal single-service stack, not a marketplace catalog.
-const defaultStackComposeYAML = `services:
-  web:
-    image: nginx:alpine
-    ports:
-      - "8899:80"
-    restart: unless-stopped
-`
-
 func main() {
 	grpcAddr := flag.String("grpc-addr", ":8443", "address for the agent gRPC service to listen on")
 	httpAddr := flag.String("http-addr", ":8080", "address for the REST API to listen on")
@@ -71,8 +61,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := seedDefaultStack(ctx, log, st); err != nil {
-		log.Error("failed to seed default stack", "error", err)
+	if err := seedCatalog(ctx, log, st); err != nil {
+		log.Error("failed to seed catalog", "error", err)
 		os.Exit(1)
 	}
 
@@ -112,19 +102,4 @@ func main() {
 		log.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
-}
-
-func seedDefaultStack(ctx context.Context, log *slog.Logger, st *store.Store) error {
-	count, err := st.CountStacks(ctx)
-	if err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
-	if _, err := st.CreateStack(ctx, "nginx-hello", defaultStackComposeYAML, map[string]string{}); err != nil {
-		return err
-	}
-	log.Info("seeded default stack", "name", "nginx-hello")
-	return nil
 }
