@@ -33,6 +33,19 @@ func (m *Manager) RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// RequireAdmin wraps next like RequireAuth, additionally rejecting
+// requests whose caller isn't role "admin" with 403.
+func (m *Manager) RequireAdmin(next http.Handler) http.Handler {
+	return m.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := ClaimsFromContext(r.Context())
+		if !ok || claims.Role != "admin" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
 // ClaimsFromContext retrieves the Claims injected by RequireAuth.
 func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
 	claims, ok := ctx.Value(claimsContextKey).(*Claims)

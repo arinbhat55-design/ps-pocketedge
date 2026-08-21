@@ -13,7 +13,7 @@ import (
 // cycle).
 type UserStore interface {
 	CountUsers(ctx context.Context) (int, error)
-	CreateUser(ctx context.Context, email, passwordHash string) (string, error)
+	CreateUser(ctx context.Context, email, passwordHash, role string) (string, error)
 }
 
 // SeedAdmin creates the initial admin user if no users exist yet. If
@@ -46,7 +46,7 @@ func SeedAdmin(ctx context.Context, log *slog.Logger, us UserStore, email, passw
 	if err != nil {
 		return err
 	}
-	if _, err := us.CreateUser(ctx, email, hash); err != nil {
+	if _, err := us.CreateUser(ctx, email, hash, "admin"); err != nil {
 		return err
 	}
 

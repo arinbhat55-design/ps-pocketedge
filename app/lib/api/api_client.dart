@@ -6,6 +6,7 @@ import '../models/backup.dart';
 import '../models/server.dart';
 import '../models/server_metrics.dart';
 import '../models/stack.dart';
+import '../models/user.dart';
 
 class ApiException implements Exception {
   final int statusCode;
@@ -65,6 +66,91 @@ class ApiClient {
     }
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
     return decoded['token'] as String;
+  }
+
+  Future<AppUser> getMe() async {
+    final response =
+        await _http.get(Uri.parse('$baseUrl/api/auth/me'), headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return AppUser.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/auth/change-password'),
+      headers: _headers,
+      body: jsonEncode({
+        'currentPassword': currentPassword,
+        'newPassword': newPassword,
+      }),
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(response.statusCode, response.body);
+    }
+  }
+
+  Future<List<AppUser>> listUsers() async {
+    final response =
+        await _http.get(Uri.parse('$baseUrl/api/users'), headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => AppUser.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> createUser({
+    required String email,
+    required String password,
+    required String role,
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/users'),
+      headers: _headers,
+      body: jsonEncode({'email': email, 'password': password, 'role': role}),
+    );
+    if (response.statusCode != 201) {
+      throw ApiException(response.statusCode, response.body);
+    }
+  }
+
+  Future<void> updateUserRole(String userId, String role) async {
+    final response = await _http.patch(
+      Uri.parse('$baseUrl/api/users/$userId/role'),
+      headers: _headers,
+      body: jsonEncode({'role': role}),
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(response.statusCode, response.body);
+    }
+  }
+
+  Future<void> resetUserPassword(String userId, String password) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/users/$userId/reset-password'),
+      headers: _headers,
+      body: jsonEncode({'password': password}),
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(response.statusCode, response.body);
+    }
+  }
+
+  Future<void> deleteUser(String userId) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/users/$userId'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(response.statusCode, response.body);
+    }
   }
 
   Future<List<Server>> listServers() async {

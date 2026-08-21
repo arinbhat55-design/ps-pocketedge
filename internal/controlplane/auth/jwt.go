@@ -22,6 +22,7 @@ const accessTokenTTL = 24 * time.Hour
 type Claims struct {
 	UserID string `json:"uid"`
 	Email  string `json:"email"`
+	Role   string `json:"role"`
 	jwt.RegisteredClaims
 }
 
@@ -39,10 +40,11 @@ func NewManager(secret []byte) *Manager {
 	return &Manager{secret: secret}
 }
 
-func (m *Manager) IssueToken(userID, email string) (string, error) {
+func (m *Manager) IssueToken(userID, email, role string) (string, error) {
 	claims := Claims{
 		UserID: userID,
 		Email:  email,
+		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessTokenTTL)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

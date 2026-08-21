@@ -38,6 +38,14 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
+	mux.Handle("GET /api/auth/me", authMgr.RequireAuth(handleGetMe(log, st)))
+	mux.Handle("POST /api/auth/change-password", authMgr.RequireAuth(handleChangePassword(log, st)))
+
+	mux.Handle("GET /api/users", authMgr.RequireAdmin(handleListUsers(log, st)))
+	mux.Handle("POST /api/users", authMgr.RequireAdmin(handleCreateUser(log, st)))
+	mux.Handle("PATCH /api/users/{id}/role", authMgr.RequireAdmin(handleUpdateUserRole(log, st)))
+	mux.Handle("POST /api/users/{id}/reset-password", authMgr.RequireAdmin(handleResetUserPassword(log, st)))
+	mux.Handle("DELETE /api/users/{id}", authMgr.RequireAdmin(handleDeleteUser(log, st)))
 
 	mux.Handle("GET /api/servers", authMgr.RequireAuth(handleListServers(log, st)))
 	mux.Handle("POST /api/servers/enroll-token", authMgr.RequireAuth(handleCreateEnrollmentToken(log, st)))
@@ -102,7 +110,7 @@ func handleLogin(log *slog.Logger, st *store.Store, authMgr *auth.Manager) http.
 			return
 		}
 
-		token, err := authMgr.IssueToken(user.ID, user.Email)
+		token, err := authMgr.IssueToken(user.ID, user.Email, user.Role)
 		if err != nil {
 			log.Error("failed to issue token", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)

@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/server.dart';
+import '../../models/user.dart';
 import '../deployments/catalog_screen.dart';
 import '../deployments/deployment_status_screen.dart';
+import '../users/change_password_dialog.dart';
+import '../users/user_list_screen.dart';
 import 'add_server_dialog.dart';
 import 'server_detail_screen.dart';
 
@@ -19,11 +22,13 @@ class ServerListScreen extends StatefulWidget {
 
 class _ServerListScreenState extends State<ServerListScreen> {
   late Future<List<Server>> _serversFuture;
+  late Future<AppUser> _meFuture;
 
   @override
   void initState() {
     super.initState();
     _serversFuture = widget.apiClient.listServers();
+    _meFuture = widget.apiClient.getMe();
   }
 
   Future<void> _refresh() async {
@@ -73,12 +78,50 @@ class _ServerListScreenState extends State<ServerListScreen> {
     await _refresh();
   }
 
+  Future<void> _openChangePassword() async {
+    await showDialog<bool>(
+      context: context,
+      builder: (_) => ChangePasswordDialog(apiClient: widget.apiClient),
+    );
+  }
+
+  Future<void> _openManageUsers(String currentUserId) async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => UserListScreen(
+        apiClient: widget.apiClient,
+        currentUserId: currentUserId,
+      ),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Servers'),
         actions: [
+          FutureBuilder<AppUser>(
+            future: _meFuture,
+            builder: (context, snapshot) {
+              final me = snapshot.data;
+              if (me == null) return const SizedBox.shrink();
+              return Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.lock_outline),
+                    tooltip: 'Change password',
+                    onPressed: _openChangePassword,
+                  ),
+                  if (me.isAdmin)
+                    IconButton(
+                      icon: const Icon(Icons.people_outline),
+                      tooltip: 'Manage users',
+                      onPressed: () => _openManageUsers(me.id),
+                    ),
+                ],
+              );
+            },
+          ),
           if (widget.onLogout != null)
             IconButton(
               icon: const Icon(Icons.logout),
