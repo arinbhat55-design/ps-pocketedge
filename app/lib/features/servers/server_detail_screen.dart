@@ -6,8 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../api/api_client.dart';
+import '../../models/container.dart';
 import '../../models/server.dart';
 import '../../models/server_metrics.dart';
+import '../containers/container_detail_screen.dart';
 
 class ServerDetailScreen extends StatefulWidget {
   final ApiClient apiClient;
@@ -95,18 +97,6 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
     super.dispose();
   }
 
-  Color _containerStateColor(String state) {
-    switch (state) {
-      case 'running':
-        return Colors.green;
-      case 'exited':
-      case 'dead':
-        return Colors.red;
-      default:
-        return Colors.grey;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -163,10 +153,18 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
                       dense: true,
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(Icons.circle,
-                          size: 10, color: _containerStateColor(c.state)),
+                          size: 10, color: containerStateColor(c.state)),
                       title: Text(c.name),
                       subtitle: Text(
                           '${c.containerId.substring(0, c.containerId.length < 12 ? c.containerId.length : 12)} • ${c.state}'),
+                      onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => ContainerDetailScreen(
+                          apiClient: widget.apiClient,
+                          serverId: widget.serverId,
+                          serverName: widget.serverName,
+                          container: c,
+                        ),
+                      )),
                     )),
             ],
           );

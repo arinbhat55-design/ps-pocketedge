@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/compose-spec/compose-go/v2/types"
@@ -23,7 +24,19 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/go-connections/nat"
 
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/backoff"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
+)
+
+// pullRetryAttempts/pullRetryBase/pullRetryCap govern retrying a transient
+// pull failure — edge networks are the flakiest link in this whole system,
+// and today a single registry blip aborts the entire deploy with no retry.
+// Small base/cap relative to the session-level reconnect backoff, since
+// this is within one deploy attempt, not a long-lived connection.
+const (
+	pullRetryAttempts = 3
+	pullRetryBase     = 1 * time.Second
+	pullRetryCap      = 8 * time.Second
 )
 
 // Docker labels applied to every resource this agent creates, so a
@@ -130,7 +143,40 @@ func sanitizeProjectName(name string) string {
 	return s
 }
 
-// pullImage drains the ImagePull response and surfaces registry-side
+// pullImage defers the network pull entirely if ref is already present
+// locally (a redeploy of an unchanged base image shouldn't re-pull it over
+// what might be a slow or metered edge connection), then retries a genuine
+// pull up to pullRetryAttempts times with jittered backoff — a transient
+// registry blip on a flaky edge connection otherwise aborts the whole
+// deploy with no retry.
+func pullImage(ctx context.Context, cli *client.Client, ref string) error {
+	if _, err := cli.ImageInspect(ctx, ref); err == nil {
+		return nil
+	}
+
+	delay := pullRetryBase
+	var lastErr error
+	for attempt := 1; attempt <= pullRetryAttempts; attempt++ {
+		if lastErr = pullImageOnce(ctx, cli, ref); lastErr == nil {
+			return nil
+		}
+		if attempt == pullRetryAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff.Jitter(delay)):
+		}
+		delay *= 2
+		if delay > pullRetryCap {
+			delay = pullRetryCap
+		}
+	}
+	return fmt.Errorf("pull failed after %d attempts: %w", pullRetryAttempts, lastErr)
+}
+
+// pullImageOnce drains the ImagePull response and surfaces registry-side
 // failures. The HTTP response streams newline-delimited JSON progress
 // messages and still closes cleanly (err == nil from a bare io.Copy) even
 // when an individual message reports a failure (rate limit, manifest not
@@ -142,11 +188,11 @@ func sanitizeProjectName(name string) string {
 // Belt-and-suspenders: a flaky registry connection can also make the
 // stream end cleanly (a plain EOF, no error message) after stalling
 // partway through — observed directly while building this, pulling a
-// multi-GB image over a slow link — so a clean pullImage return still
+// multi-GB image over a slow link — so a clean pullImageOnce return still
 // isn't proof the image exists. ImageInspect confirms it actually landed
 // before Deploy proceeds to ContainerCreate, instead of surfacing Docker's
 // more confusing "No such image" error from that later, unrelated call.
-func pullImage(ctx context.Context, cli *client.Client, ref string) error {
+func pullImageOnce(ctx context.Context, cli *client.Client, ref string) error {
 	reader, err := cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {
 		return err

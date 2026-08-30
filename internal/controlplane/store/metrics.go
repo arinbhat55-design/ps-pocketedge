@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -14,23 +15,77 @@ type MetricSample struct {
 	DiskPercent float64   `json:"diskPercent"`
 }
 
-// ContainerState mirrors a row in server_containers — a server's current
-// container inventory, replaced in full on every heartbeat (see
-// ReplaceContainers).
-type ContainerState struct {
-	ContainerID  string    `json:"containerId"`
-	Name         string    `json:"name"`
-	State        string    `json:"state"`
-	DeploymentID *string   `json:"deploymentId,omitempty"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+// ContainerPort is one published or exposed port on a container.
+type ContainerPort struct {
+	IP          string `json:"ip,omitempty"`
+	PrivatePort uint16 `json:"privatePort"`
+	PublicPort  uint16 `json:"publicPort,omitempty"`
+	Type        string `json:"type"`
 }
 
-// InsertMetricSample appends one resource-usage sample for serverID.
-func (s *Store) InsertMetricSample(ctx context.Context, serverID string, resources ResourceSnapshot) error {
+// ContainerNetwork is one Docker network a container is attached to.
+type ContainerNetwork struct {
+	Name      string `json:"name"`
+	IPAddress string `json:"ipAddress,omitempty"`
+}
+
+// ContainerMount is one volume or bind mount attached to a container.
+type ContainerMount struct {
+	Type        string `json:"type"`
+	Name        string `json:"name,omitempty"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	ReadWrite   bool   `json:"readWrite"`
+}
+
+// ContainerState mirrors a row in server_containers — a server's current
+// container inventory, replaced in full on every heartbeat (see
+// ReplaceContainers). Image/ImageID/CreatedAt/Status/Ports/Networks/Mounts
+// come from the agent's cheap ContainerList call, ridden on every
+// heartbeat that refreshes containers — no extra Docker API round-trip.
+type ContainerState struct {
+	ContainerID  string             `json:"containerId"`
+	Name         string             `json:"name"`
+	State        string             `json:"state"`
+	DeploymentID *string            `json:"deploymentId,omitempty"`
+	Image        string             `json:"image,omitempty"`
+	ImageID      string             `json:"imageId,omitempty"`
+	CreatedAt    *time.Time         `json:"createdAt,omitempty"`
+	Status       string             `json:"status,omitempty"`
+	Ports        []ContainerPort    `json:"ports,omitempty"`
+	Networks     []ContainerNetwork `json:"networks,omitempty"`
+	Mounts       []ContainerMount   `json:"mounts,omitempty"`
+	UpdatedAt    time.Time          `json:"updatedAt"`
+}
+
+// marshalContainerSlice marshals a ports/networks/mounts slice for a JSONB
+// column, returning nil (SQL NULL) for an empty slice rather than the
+// literal "[]" — a container with none of these just stores nothing.
+func marshalContainerSlice[T any](v []T) ([]byte, error) {
+	if len(v) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(v)
+}
+
+// unmarshalContainerSlice decodes a nullable JSONB column into dst, leaving
+// dst as nil when raw is NULL/empty.
+func unmarshalContainerSlice[T any](raw []byte, dst *[]T) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	return json.Unmarshal(raw, dst)
+}
+
+// InsertMetricSample appends one resource-usage sample for serverID,
+// recorded at recordedAt (not defaulted to now()) so that samples replayed
+// from the agent's offline buffer land at the time they were actually
+// taken, not bunched at reconnect time.
+func (s *Store) InsertMetricSample(ctx context.Context, serverID string, recordedAt time.Time, resources ResourceSnapshot) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO server_metric_samples (server_id, cpu_percent, mem_percent, disk_percent)
-		VALUES ($1, $2, $3, $4)
-	`, serverID, resources.CPUPercent, resources.MemPercent, resources.DiskPercent)
+		INSERT INTO server_metric_samples (server_id, recorded_at, cpu_percent, mem_percent, disk_percent)
+		VALUES ($1, $2, $3, $4, $5)
+	`, serverID, recordedAt, resources.CPUPercent, resources.MemPercent, resources.DiskPercent)
 	return err
 }
 
@@ -84,10 +139,22 @@ func (s *Store) ReplaceContainers(ctx context.Context, serverID string, containe
 	}
 
 	for _, c := range containers {
+		ports, err := marshalContainerSlice(c.Ports)
+		if err != nil {
+			return err
+		}
+		networks, err := marshalContainerSlice(c.Networks)
+		if err != nil {
+			return err
+		}
+		mounts, err := marshalContainerSlice(c.Mounts)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO server_containers (server_id, container_id, name, state, deployment_id)
-			VALUES ($1, $2, $3, $4, $5)
-		`, serverID, c.ContainerID, c.Name, c.State, c.DeploymentID); err != nil {
+			INSERT INTO server_containers (server_id, container_id, name, state, deployment_id, image, image_id, created_at, status, ports, networks, mounts)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		`, serverID, c.ContainerID, c.Name, c.State, c.DeploymentID, c.Image, c.ImageID, c.CreatedAt, c.Status, ports, networks, mounts); err != nil {
 			return err
 		}
 	}
@@ -98,7 +165,7 @@ func (s *Store) ReplaceContainers(ctx context.Context, serverID string, containe
 // ListContainers returns serverID's current container inventory.
 func (s *Store) ListContainers(ctx context.Context, serverID string) ([]ContainerState, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT container_id, name, state, deployment_id, updated_at
+		SELECT container_id, name, state, deployment_id, image, image_id, created_at, status, ports, networks, mounts, updated_at
 		FROM server_containers
 		WHERE server_id = $1
 		ORDER BY name ASC
@@ -111,7 +178,17 @@ func (s *Store) ListContainers(ctx context.Context, serverID string) ([]Containe
 	containers := []ContainerState{}
 	for rows.Next() {
 		var c ContainerState
-		if err := rows.Scan(&c.ContainerID, &c.Name, &c.State, &c.DeploymentID, &c.UpdatedAt); err != nil {
+		var ports, networks, mounts []byte
+		if err := rows.Scan(&c.ContainerID, &c.Name, &c.State, &c.DeploymentID, &c.Image, &c.ImageID, &c.CreatedAt, &c.Status, &ports, &networks, &mounts, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if err := unmarshalContainerSlice(ports, &c.Ports); err != nil {
+			return nil, err
+		}
+		if err := unmarshalContainerSlice(networks, &c.Networks); err != nil {
+			return nil, err
+		}
+		if err := unmarshalContainerSlice(mounts, &c.Mounts); err != nil {
 			return nil, err
 		}
 		containers = append(containers, c)

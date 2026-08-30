@@ -12,13 +12,16 @@ import (
 // Deployment mirrors a row in the deployments table: one instance of a
 // stack applied to a server.
 type Deployment struct {
-	ID        string            `json:"id"`
-	StackID   string            `json:"stackId"`
-	ServerID  string            `json:"serverId"`
-	Env       map[string]string `json:"env"`
-	Phase     string            `json:"phase"`
-	CreatedAt time.Time         `json:"createdAt"`
-	UpdatedAt time.Time         `json:"updatedAt"`
+	ID                string            `json:"id"`
+	StackID           string            `json:"stackId"`
+	ServerID          string            `json:"serverId"`
+	Env               map[string]string `json:"env"`
+	Phase             string            `json:"phase"`
+	CreatedBy         *string           `json:"createdBy,omitempty"`
+	DeployEnvironment *string           `json:"deployEnvironment,omitempty"`
+	Tags              []string          `json:"tags,omitempty"`
+	CreatedAt         time.Time         `json:"createdAt"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
 }
 
 // DeploymentEvent mirrors a row in the append-only deployment_events log.
@@ -31,17 +34,23 @@ type DeploymentEvent struct {
 }
 
 // CreateDeployment inserts a new deployment row in the 'pending' phase.
-func (s *Store) CreateDeployment(ctx context.Context, stackID, serverID string, env map[string]string, createdBy string) (string, error) {
+// environment/tags are optional grouping metadata a caller can set at
+// creation time; they can also be changed later via
+// UpdateDeploymentMetadata.
+func (s *Store) CreateDeployment(ctx context.Context, stackID, serverID string, env map[string]string, createdBy string, environment *string, tags []string) (string, error) {
 	payload, err := json.Marshal(env)
 	if err != nil {
 		return "", err
 	}
+	if tags == nil {
+		tags = []string{}
+	}
 	var id string
 	err = s.pool.QueryRow(ctx, `
-		INSERT INTO deployments (stack_id, server_id, env, phase, created_by)
-		VALUES ($1, $2, $3, 'pending', $4)
+		INSERT INTO deployments (stack_id, server_id, env, phase, created_by, deploy_environment, tags)
+		VALUES ($1, $2, $3, 'pending', $4, $5, $6)
 		RETURNING id
-	`, stackID, serverID, payload, createdBy).Scan(&id)
+	`, stackID, serverID, payload, createdBy, environment, tags).Scan(&id)
 	return id, err
 }
 
@@ -51,9 +60,9 @@ func (s *Store) GetDeployment(ctx context.Context, id string) (*Deployment, erro
 	var d Deployment
 	var env []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, stack_id, server_id, env, phase, created_at, updated_at
+		SELECT id, stack_id, server_id, env, phase, created_by, deploy_environment, tags, created_at, updated_at
 		FROM deployments WHERE id = $1
-	`, id).Scan(&d.ID, &d.StackID, &d.ServerID, &env, &d.Phase, &d.CreatedAt, &d.UpdatedAt)
+	`, id).Scan(&d.ID, &d.StackID, &d.ServerID, &env, &d.Phase, &d.CreatedBy, &d.DeployEnvironment, &d.Tags, &d.CreatedAt, &d.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -71,6 +80,20 @@ func (s *Store) UpdateDeploymentPhase(ctx context.Context, id, phase string) err
 	_, err := s.pool.Exec(ctx, `
 		UPDATE deployments SET phase = $2, updated_at = now() WHERE id = $1
 	`, id, phase)
+	return err
+}
+
+// UpdateDeploymentMetadata sets a deployment's grouping metadata
+// (environment/tags) after creation — owner is fixed at creation time
+// (created_by), but environment/tags are expected to be edited as a
+// deployment's purpose becomes clearer (e.g. "prod" once promoted).
+func (s *Store) UpdateDeploymentMetadata(ctx context.Context, id string, environment *string, tags []string) error {
+	if tags == nil {
+		tags = []string{}
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE deployments SET deploy_environment = $2, tags = $3, updated_at = now() WHERE id = $1
+	`, id, environment, tags)
 	return err
 }
 

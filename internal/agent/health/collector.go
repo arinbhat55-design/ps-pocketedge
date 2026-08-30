@@ -52,3 +52,15 @@ func Collect(ctx context.Context) (Snapshot, error) {
 	}
 	return snap, nil
 }
+
+// TotalMemory returns total host memory in bytes, for classifying a
+// device's tier (see edge-device tuning's adaptive heartbeat interval) —
+// the one hardware signal simple enough to distinguish a Pi from a cloud
+// VM without adding a whole capability-negotiation scheme.
+func TotalMemory(ctx context.Context) (uint64, error) {
+	vm, err := mem.VirtualMemoryWithContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return vm.Total, nil
+}

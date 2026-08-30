@@ -39,6 +39,7 @@ message AgentMessage {
     DeployStatus deploy_status = 2;
     BackupStatus backup_status = 3;
     RestoreStatus restore_status = 4;
+    ContainerDetail container_detail = 5;
   }
 }
 
@@ -48,6 +49,7 @@ message ControlMessage {
     Ack ack = 2;
     BackupCommand backup = 3;
     RestoreCommand restore = 4;
+    InspectContainerCommand inspect_container = 5;
   }
 }
 
@@ -56,6 +58,10 @@ message Heartbeat {
   google.protobuf.Timestamp sent_at = 2;
   ResourceSnapshot resources = 3;
   repeated ContainerSummary containers = 4;
+  // False means "not refreshed this tick" (see edge-device tuning's
+  // container-list gating), not "genuinely zero containers running" —
+  // a repeated field alone can't distinguish those two cases.
+  bool containers_included = 5;
 }
 
 message ResourceSnapshot {
@@ -69,6 +75,33 @@ message ContainerSummary {
   string name = 2;
   string state = 3;
   string deployment_id = 4;
+  string image = 5;
+  string image_id = 6;
+  int64 created_unix = 7;
+  string status = 8;
+  repeated ContainerPort ports = 9;
+  repeated ContainerNetwork networks = 10;
+  repeated ContainerMount mounts = 11;
+}
+
+message ContainerPort {
+  string ip = 1;
+  uint32 private_port = 2;
+  uint32 public_port = 3;
+  string type = 4;
+}
+
+message ContainerNetwork {
+  string name = 1;
+  string ip_address = 2;
+}
+
+message ContainerMount {
+  string type = 1;
+  string name = 2;
+  string source = 3;
+  string destination = 4;
+  bool read_write = 5;
 }
 
 message DeployStackCommand {
@@ -151,4 +184,30 @@ message RestoreStatus {
   string deployment_id = 2;
   TaskPhase phase = 3;
   string message = 4;
+}
+
+// InspectContainerCommand asks the agent to run a live ContainerInspect for
+// one container and reply with ContainerDetail carrying request_id
+// unchanged, so the control plane can correlate the async reply back to
+// the HTTP request that triggered it. Deliberately not part of the
+// heartbeat: ContainerInspect is a per-container round-trip, too expensive
+// to run for every container on every heartbeat tick across a fleet, so
+// it's only issued on demand when a user opens a container's detail view.
+message InspectContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+}
+
+message ContainerDetail {
+  string request_id = 1;
+  string container_id = 2;
+  bool found = 3;
+  string error_message = 4;
+  repeated string env = 5;
+  string restart_policy_name = 6;
+  int32 restart_policy_max_retry_count = 7;
+  string health_status = 8;
+  int32 health_failing_streak = 9;
+  int32 restart_count = 10;
 }

@@ -20,9 +20,11 @@ type deploymentStatusResponse struct {
 
 func handleCreateDeployment(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus) http.HandlerFunc {
 	type request struct {
-		StackID  string            `json:"stackId"`
-		ServerID string            `json:"serverId"`
-		Env      map[string]string `json:"env"`
+		StackID     string            `json:"stackId"`
+		ServerID    string            `json:"serverId"`
+		Env         map[string]string `json:"env"`
+		Environment *string           `json:"environment,omitempty"`
+		Tags        []string          `json:"tags,omitempty"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +59,7 @@ func handleCreateDeployment(log *slog.Logger, st *store.Store, dispatcher *deplo
 			env[k] = v
 		}
 
-		deploymentID, err := st.CreateDeployment(r.Context(), stack.ID, req.ServerID, env, claims.UserID)
+		deploymentID, err := st.CreateDeployment(r.Context(), stack.ID, req.ServerID, env, claims.UserID, req.Environment, req.Tags)
 		if err != nil {
 			log.Error("failed to create deployment", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -146,6 +148,34 @@ func handleRedeployDeployment(log *slog.Logger, st *store.Store, dispatcher *dep
 		}
 
 		writeJSON(w, http.StatusAccepted, map[string]string{"deploymentId": id})
+	}
+}
+
+// handleUpdateDeploymentMetadata sets a deployment's grouping metadata
+// (environment/tags) after creation — owner (created_by) is fixed at
+// creation time and not editable here.
+func handleUpdateDeploymentMetadata(log *slog.Logger, st *store.Store) http.HandlerFunc {
+	type request struct {
+		Environment *string  `json:"environment,omitempty"`
+		Tags        []string `json:"tags,omitempty"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+
+		var req request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if err := st.UpdateDeploymentMetadata(r.Context(), id, req.Environment, req.Tags); err != nil {
+			log.Error("failed to update deployment metadata", "deployment_id", id, "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

@@ -85,6 +85,7 @@ func main() {
 	dispatcher := deploy.NewDispatcher()
 	events := deploy.NewEventBus()
 	serverEvents := livestate.NewEventBus()
+	inspectWaiter := deploy.NewInspectWaiter()
 
 	blobs, err := backup.NewBlobStore(*backupDir)
 	if err != nil {
@@ -93,11 +94,11 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents))
+	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents, inspectWaiter))
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter),
 	}
 
 	errCh := make(chan error, 2)

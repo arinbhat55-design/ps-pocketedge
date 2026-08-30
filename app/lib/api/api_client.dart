@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/backup.dart';
+import '../models/container.dart';
 import '../models/server.dart';
 import '../models/server_metrics.dart';
 import '../models/stack.dart';
@@ -315,6 +316,60 @@ class ApiClient {
         decoded['error'] as String? ?? response.body,
       );
     }
+  }
+
+  /// Fleet-wide container inventory, optionally narrowed by any of these
+  /// filters (all server-side, since the list spans the whole fleet).
+  Future<List<FleetContainer>> listContainers({
+    String? name,
+    String? image,
+    String? serverId,
+    String? status,
+    String? ownerId,
+    String? environment,
+    List<String>? tags,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/containers').replace(
+      queryParameters: {
+        if (name != null && name.isNotEmpty) 'name': name,
+        if (image != null && image.isNotEmpty) 'image': image,
+        if (serverId != null && serverId.isNotEmpty) 'serverId': serverId,
+        if (status != null && status.isNotEmpty) 'status': status,
+        if (ownerId != null && ownerId.isNotEmpty) 'ownerId': ownerId,
+        if (environment != null && environment.isNotEmpty)
+          'environment': environment,
+        if (tags != null && tags.isNotEmpty) 'tag': tags,
+      },
+    );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => FleetContainer.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Fetches the expensive, on-demand fields (env vars, restart policy,
+  /// health) for one container by asking the owning agent to run a live
+  /// ContainerInspect — not included in the cheap [FleetContainer]/
+  /// [ContainerInfo] fields returned by the heartbeat-fed endpoints.
+  Future<ContainerDetail> inspectContainer(
+      String serverId, String containerId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/servers/$serverId/containers/$containerId/inspect'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+    return ContainerDetail.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   /// WebSocket URL for a deployment's live status stream. The JWT travels

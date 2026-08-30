@@ -23,17 +23,98 @@ class MetricSample {
   }
 }
 
+class ContainerPort {
+  final String ip;
+  final int privatePort;
+  final int publicPort;
+  final String type;
+
+  const ContainerPort({
+    required this.ip,
+    required this.privatePort,
+    required this.publicPort,
+    required this.type,
+  });
+
+  factory ContainerPort.fromJson(Map<String, dynamic> json) {
+    return ContainerPort(
+      ip: json['ip'] as String? ?? '',
+      privatePort: (json['privatePort'] as num?)?.toInt() ?? 0,
+      publicPort: (json['publicPort'] as num?)?.toInt() ?? 0,
+      type: json['type'] as String? ?? '',
+    );
+  }
+}
+
+class ContainerNetworkInfo {
+  final String name;
+  final String ipAddress;
+
+  const ContainerNetworkInfo({required this.name, required this.ipAddress});
+
+  factory ContainerNetworkInfo.fromJson(Map<String, dynamic> json) {
+    return ContainerNetworkInfo(
+      name: json['name'] as String? ?? '',
+      ipAddress: json['ipAddress'] as String? ?? '',
+    );
+  }
+}
+
+class ContainerMountInfo {
+  final String type;
+  final String name;
+  final String source;
+  final String destination;
+  final bool readWrite;
+
+  const ContainerMountInfo({
+    required this.type,
+    required this.name,
+    required this.source,
+    required this.destination,
+    required this.readWrite,
+  });
+
+  factory ContainerMountInfo.fromJson(Map<String, dynamic> json) {
+    return ContainerMountInfo(
+      type: json['type'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      source: json['source'] as String? ?? '',
+      destination: json['destination'] as String? ?? '',
+      readWrite: json['readWrite'] as bool? ?? false,
+    );
+  }
+}
+
+/// Cheap per-container fields, populated from the agent's ContainerList
+/// call and refreshed on every heartbeat. Fields that require the agent to
+/// run ContainerInspect (env vars, restart policy, health) live separately
+/// in [ContainerDetail], fetched on demand — see models/container.dart.
 class ContainerInfo {
   final String containerId;
   final String name;
   final String state;
   final String? deploymentId;
+  final String? image;
+  final String? imageId;
+  final DateTime? createdAt;
+  final String? status;
+  final List<ContainerPort> ports;
+  final List<ContainerNetworkInfo> networks;
+  final List<ContainerMountInfo> mounts;
 
   const ContainerInfo({
     required this.containerId,
     required this.name,
     required this.state,
     required this.deploymentId,
+    this.image,
+    this.imageId,
+    this.createdAt,
+    this.status,
+    this.ports = const [],
+    this.networks = const [],
+    this.mounts = const [],
   });
 
   factory ContainerInfo.fromJson(Map<String, dynamic> json) {
@@ -42,6 +123,21 @@ class ContainerInfo {
       name: json['name'] as String,
       state: json['state'] as String,
       deploymentId: json['deploymentId'] as String?,
+      image: json['image'] as String?,
+      imageId: json['imageId'] as String?,
+      createdAt: json['createdAt'] == null
+          ? null
+          : DateTime.parse(json['createdAt'] as String),
+      status: json['status'] as String?,
+      ports: (json['ports'] as List<dynamic>? ?? [])
+          .map((e) => ContainerPort.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      networks: (json['networks'] as List<dynamic>? ?? [])
+          .map((e) => ContainerNetworkInfo.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      mounts: (json['mounts'] as List<dynamic>? ?? [])
+          .map((e) => ContainerMountInfo.fromJson(e as Map<String, dynamic>))
+          .toList(),
     );
   }
 }

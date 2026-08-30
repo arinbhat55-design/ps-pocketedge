@@ -8,13 +8,47 @@ import (
 	"github.com/docker/docker/client"
 )
 
+// ContainerPort is one published or exposed port on a container.
+type ContainerPort struct {
+	IP          string
+	PrivatePort uint16
+	PublicPort  uint16
+	Type        string
+}
+
+// ContainerNetwork is one Docker network a container is attached to.
+type ContainerNetwork struct {
+	Name      string
+	IPAddress string
+}
+
+// ContainerMount is one volume or bind mount attached to a container.
+type ContainerMount struct {
+	Type        string
+	Name        string
+	Source      string
+	Destination string
+	ReadWrite   bool
+}
+
 // ContainerSummary is a snapshot of one container's identity and state, for
-// reporting on the agent's heartbeat.
+// reporting on the agent's heartbeat. Every field here comes from the same
+// ContainerList call — no extra Docker API round-trip — so it's cheap
+// enough to refresh on every heartbeat tick. Fields that require a
+// ContainerInspect call (env vars, restart policy, structured health) are
+// fetched separately and only on demand — see InspectContainer.
 type ContainerSummary struct {
 	ID           string
 	Name         string
 	State        string
 	DeploymentID string // empty if not managed by this agent (no deployment label)
+	Image        string
+	ImageID      string
+	CreatedUnix  int64
+	Status       string
+	Ports        []ContainerPort
+	Networks     []ContainerNetwork
+	Mounts       []ContainerMount
 }
 
 // ListContainers returns every container on the host (including ones not
@@ -34,11 +68,52 @@ func ListContainers(ctx context.Context, cli *client.Client) ([]ContainerSummary
 			// ContainerList responses.
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
+
+		ports := make([]ContainerPort, 0, len(c.Ports))
+		for _, p := range c.Ports {
+			ports = append(ports, ContainerPort{
+				IP:          p.IP,
+				PrivatePort: p.PrivatePort,
+				PublicPort:  p.PublicPort,
+				Type:        p.Type,
+			})
+		}
+
+		var networks []ContainerNetwork
+		if c.NetworkSettings != nil {
+			networks = make([]ContainerNetwork, 0, len(c.NetworkSettings.Networks))
+			for name, ep := range c.NetworkSettings.Networks {
+				ipAddress := ""
+				if ep != nil {
+					ipAddress = ep.IPAddress
+				}
+				networks = append(networks, ContainerNetwork{Name: name, IPAddress: ipAddress})
+			}
+		}
+
+		mounts := make([]ContainerMount, 0, len(c.Mounts))
+		for _, m := range c.Mounts {
+			mounts = append(mounts, ContainerMount{
+				Type:        string(m.Type),
+				Name:        m.Name,
+				Source:      m.Source,
+				Destination: m.Destination,
+				ReadWrite:   m.RW,
+			})
+		}
+
 		summaries = append(summaries, ContainerSummary{
 			ID:           c.ID,
 			Name:         name,
 			State:        c.State,
 			DeploymentID: c.Labels[labelDeploymentID],
+			Image:        c.Image,
+			ImageID:      c.ImageID,
+			CreatedUnix:  c.Created,
+			Status:       c.Status,
+			Ports:        ports,
+			Networks:     networks,
+			Mounts:       mounts,
 		})
 	}
 	return summaries, nil

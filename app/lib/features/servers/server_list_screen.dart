@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../api/api_client.dart';
 import '../../models/server.dart';
 import '../../models/user.dart';
+import '../containers/container_list_screen.dart';
 import '../deployments/catalog_screen.dart';
 import '../deployments/deployment_status_screen.dart';
 import '../users/change_password_dialog.dart';
@@ -94,12 +95,23 @@ class _ServerListScreenState extends State<ServerListScreen> {
     ));
   }
 
+  Future<void> _openContainers() async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ContainerListScreen(apiClient: widget.apiClient),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Servers'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.view_list),
+            tooltip: 'Containers',
+            onPressed: _openContainers,
+          ),
           FutureBuilder<AppUser>(
             future: _meFuture,
             builder: (context, snapshot) {

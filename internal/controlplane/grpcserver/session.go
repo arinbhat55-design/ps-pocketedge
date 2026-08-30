@@ -24,15 +24,16 @@ import (
 type Server struct {
 	agentv1.UnimplementedAgentSessionServer
 
-	log          *slog.Logger
-	store        *store.Store
-	dispatcher   *deploy.Dispatcher
-	events       *deploy.EventBus
-	serverEvents *livestate.EventBus
+	log           *slog.Logger
+	store         *store.Store
+	dispatcher    *deploy.Dispatcher
+	events        *deploy.EventBus
+	serverEvents  *livestate.EventBus
+	inspectWaiter *deploy.InspectWaiter
 }
 
-func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus) *Server {
-	return &Server{log: log, store: st, dispatcher: dispatcher, events: events, serverEvents: serverEvents}
+func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, inspectWaiter *deploy.InspectWaiter) *Server {
+	return &Server{log: log, store: st, dispatcher: dispatcher, events: events, serverEvents: serverEvents, inspectWaiter: inspectWaiter}
 }
 
 func (s *Server) Enroll(ctx context.Context, req *agentv1.EnrollRequest) (*agentv1.EnrollResponse, error) {
@@ -144,27 +145,59 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 				s.log.Error("failed to record heartbeat", "server_id", serverID, "error", err)
 				continue
 			}
-			if err := s.store.InsertMetricSample(ctx, serverID, resources); err != nil {
+
+			heartbeatTime := time.Now()
+			recordedAt := heartbeatTime
+			if sentAt := hb.GetSentAt(); sentAt != nil {
+				// Buffered/replayed samples from the agent's offline buffer
+				// carry their original sample time here, not "now" — see
+				// edge-device tuning's offline heartbeat buffer.
+				recordedAt = sentAt.AsTime()
+			}
+			if err := s.store.InsertMetricSample(ctx, serverID, recordedAt, resources); err != nil {
 				s.log.Error("failed to record metric sample", "server_id", serverID, "error", err)
 			}
 
-			heartbeatTime := time.Now()
-			containers := make([]store.ContainerState, len(hb.GetContainers()))
-			for i, c := range hb.GetContainers() {
-				var deploymentID *string
-				if id := c.GetDeploymentId(); id != "" {
-					deploymentID = &id
+			// containers_included is false on a tick the agent deliberately
+			// skipped refreshing (edge-device tuning's container-list
+			// gating, cheaper than a Docker Engine API call on constrained
+			// hardware) — the last-known inventory is read back for the
+			// live-push payload below instead of being replaced.
+			var containers []store.ContainerState
+			if hb.GetContainersIncluded() {
+				containers = make([]store.ContainerState, len(hb.GetContainers()))
+				for i, c := range hb.GetContainers() {
+					var deploymentID *string
+					if id := c.GetDeploymentId(); id != "" {
+						deploymentID = &id
+					}
+					var createdAt *time.Time
+					if unix := c.GetCreatedUnix(); unix > 0 {
+						t := time.Unix(unix, 0)
+						createdAt = &t
+					}
+					containers[i] = store.ContainerState{
+						ContainerID:  c.GetId(),
+						Name:         c.GetName(),
+						State:        c.GetState(),
+						DeploymentID: deploymentID,
+						Image:        c.GetImage(),
+						ImageID:      c.GetImageId(),
+						CreatedAt:    createdAt,
+						Status:       c.GetStatus(),
+						Ports:        mapContainerPorts(c.GetPorts()),
+						Networks:     mapContainerNetworks(c.GetNetworks()),
+						Mounts:       mapContainerMounts(c.GetMounts()),
+						UpdatedAt:    heartbeatTime,
+					}
 				}
-				containers[i] = store.ContainerState{
-					ContainerID:  c.GetId(),
-					Name:         c.GetName(),
-					State:        c.GetState(),
-					DeploymentID: deploymentID,
-					UpdatedAt:    heartbeatTime,
+				if err := s.store.ReplaceContainers(ctx, serverID, containers); err != nil {
+					s.log.Error("failed to replace container inventory", "server_id", serverID, "error", err)
 				}
-			}
-			if err := s.store.ReplaceContainers(ctx, serverID, containers); err != nil {
-				s.log.Error("failed to replace container inventory", "server_id", serverID, "error", err)
+			} else if existing, err := s.store.ListContainers(ctx, serverID); err != nil {
+				s.log.Error("failed to load last-known container inventory", "server_id", serverID, "error", err)
+			} else {
+				containers = existing
 			}
 
 			s.log.Info("heartbeat recorded",
@@ -172,7 +205,8 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 				"cpu_percent", resources.CPUPercent,
 				"mem_percent", resources.MemPercent,
 				"disk_percent", resources.DiskPercent,
-				"containers", len(hb.GetContainers()),
+				"containers", len(containers),
+				"containers_included", hb.GetContainersIncluded(),
 			)
 
 			s.serverEvents.Publish(serverID, livestate.ServerUpdate{
@@ -242,10 +276,62 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 			// up with a normal deploy pipeline run, whose DeployStatus
 			// events (handled above) take over the deployment's status
 			// feed from this point.
+		case *agentv1.AgentMessage_ContainerDetail:
+			cd := payload.ContainerDetail
+			s.log.Info("container detail received",
+				"server_id", serverID,
+				"container_id", cd.GetContainerId(),
+				"found", cd.GetFound(),
+			)
+			s.inspectWaiter.Deliver(cd.GetRequestId(), cd)
 		default:
 			s.log.Warn("unknown agent message payload", "server_id", serverID)
 		}
 	}
+}
+
+func mapContainerPorts(ports []*agentv1.ContainerPort) []store.ContainerPort {
+	if len(ports) == 0 {
+		return nil
+	}
+	out := make([]store.ContainerPort, len(ports))
+	for i, p := range ports {
+		out[i] = store.ContainerPort{
+			IP:          p.GetIp(),
+			PrivatePort: uint16(p.GetPrivatePort()),
+			PublicPort:  uint16(p.GetPublicPort()),
+			Type:        p.GetType(),
+		}
+	}
+	return out
+}
+
+func mapContainerNetworks(networks []*agentv1.ContainerNetwork) []store.ContainerNetwork {
+	if len(networks) == 0 {
+		return nil
+	}
+	out := make([]store.ContainerNetwork, len(networks))
+	for i, n := range networks {
+		out[i] = store.ContainerNetwork{Name: n.GetName(), IPAddress: n.GetIpAddress()}
+	}
+	return out
+}
+
+func mapContainerMounts(mounts []*agentv1.ContainerMount) []store.ContainerMount {
+	if len(mounts) == 0 {
+		return nil
+	}
+	out := make([]store.ContainerMount, len(mounts))
+	for i, m := range mounts {
+		out[i] = store.ContainerMount{
+			Type:        m.GetType(),
+			Name:        m.GetName(),
+			Source:      m.GetSource(),
+			Destination: m.GetDestination(),
+			ReadWrite:   m.GetReadWrite(),
+		}
+	}
+	return out
 }
 
 func deployPhaseToString(phase agentv1.DeployPhase) string {
