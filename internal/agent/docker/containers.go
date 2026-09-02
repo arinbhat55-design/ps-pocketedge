@@ -31,6 +31,40 @@ type ContainerMount struct {
 	ReadWrite   bool
 }
 
+// ContainerPortSpec is one port mapping requested for a standalone
+// (non-stack) container.
+type ContainerPortSpec struct {
+	ContainerPort uint16
+	HostPort      uint16
+	Protocol      string
+}
+
+// ContainerVolumeSpec is one named-volume mount requested for a standalone
+// container. Bind mounts are deliberately unsupported here too — see
+// ensureVolumes' doc comment in deploy.go on why.
+type ContainerVolumeSpec struct {
+	VolumeName string
+	Target     string
+	ReadOnly   bool
+}
+
+// ContainerConfig is the full desired shape of a standalone container (one
+// created or recreated directly through container management, not part of
+// a deployed stack). Mirrors agentv1.ContainerConfig, kept as a separate
+// type so the docker package doesn't depend on agentv1 — same separation
+// ContainerDetail already follows for InspectContainer.
+type ContainerConfig struct {
+	Image                      string
+	Name                       string
+	Command                    []string
+	Env                        []string
+	Ports                      []ContainerPortSpec
+	Volumes                    []ContainerVolumeSpec
+	RestartPolicyName          string
+	RestartPolicyMaxRetryCount int
+	Labels                     map[string]string
+}
+
 // ContainerSummary is a snapshot of one container's identity and state, for
 // reporting on the agent's heartbeat. Every field here comes from the same
 // ContainerList call — no extra Docker API round-trip — so it's cheap

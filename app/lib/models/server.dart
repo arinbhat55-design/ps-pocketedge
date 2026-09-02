@@ -58,7 +58,8 @@ class Server {
       lastResources: json['lastResources'] == null
           ? null
           : ResourceSnapshot.fromJson(
-              json['lastResources'] as Map<String, dynamic>),
+              json['lastResources'] as Map<String, dynamic>,
+            ),
       createdAt: DateTime.parse(json['createdAt'] as String),
     );
   }

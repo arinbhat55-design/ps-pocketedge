@@ -90,7 +90,9 @@ class _CatalogScreenState extends State<CatalogScreen> {
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasError) {
-            return Center(child: Text('Failed to load catalog: ${snapshot.error}'));
+            return Center(
+              child: Text('Failed to load catalog: ${snapshot.error}'),
+            );
           }
           final stacks = snapshot.data ?? [];
           final categories = stacks.map((s) => s.category).toSet().toList()
@@ -103,27 +105,35 @@ class _CatalogScreenState extends State<CatalogScreen> {
             children: [
               if (categories.length > 1)
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
                   child: Wrap(
                     spacing: 8,
                     children: [
                       ChoiceChip(
                         label: const Text('All'),
                         selected: _selectedCategory == null,
-                        onSelected: (_) => setState(() => _selectedCategory = null),
+                        onSelected: (_) =>
+                            setState(() => _selectedCategory = null),
                       ),
                       for (final c in categories)
                         ChoiceChip(
                           label: Text(_categoryLabels[c] ?? c),
                           selected: _selectedCategory == c,
-                          onSelected: (_) => setState(() => _selectedCategory = c),
+                          onSelected: (_) =>
+                              setState(() => _selectedCategory = c),
                         ),
                     ],
                   ),
                 ),
               Expanded(
                 child: ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 4,
+                  ),
                   itemCount: visible.length,
                   itemBuilder: (context, index) {
                     final stack = visible[index];
@@ -201,11 +211,15 @@ class _DeployParamsSheetState extends State<_DeployParamsSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Deploy ${widget.stack.name}',
-                style: Theme.of(context).textTheme.titleLarge),
+            Text(
+              'Deploy ${widget.stack.name}',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
             const SizedBox(height: 4),
-            Text(widget.stack.description,
-                style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              widget.stack.description,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
             const SizedBox(height: 16),
             for (final p in widget.stack.parameters) ...[
               TextFormField(
@@ -216,10 +230,7 @@ class _DeployParamsSheetState extends State<_DeployParamsSheet> {
               ),
               const SizedBox(height: 12),
             ],
-            FilledButton(
-              onPressed: _submit,
-              child: const Text('Deploy'),
-            ),
+            FilledButton(onPressed: _submit, child: const Text('Deploy')),
           ],
         ),
       ),

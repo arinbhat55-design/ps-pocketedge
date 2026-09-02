@@ -44,28 +44,29 @@ class _AddServerDialogState extends State<AddServerDialog> {
         child: _error != null
             ? Text(_error!, style: const TextStyle(color: Colors.red))
             : _token == null
-                ? const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(24),
-                      child: CircularProgressIndicator(),
-                    ),
-                  )
-                : Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                          'Run this on the target machine (Linux server, mini-PC, or Raspberry Pi). '
-                          'The token is single-use.'),
-                      const SizedBox(height: 12),
-                      _CopyableCommand(command: _token!.installHint),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Token expires: ${_token!.expiresAt.toLocal()}',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
+            ? const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(24),
+                  child: CircularProgressIndicator(),
+                ),
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Run this on the target machine (Linux server, mini-PC, or Raspberry Pi). '
+                    'The token is single-use.',
                   ),
+                  const SizedBox(height: 12),
+                  _CopyableCommand(command: _token!.installHint),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Token expires: ${_token!.expiresAt.toLocal()}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
       ),
       actions: [
         TextButton(

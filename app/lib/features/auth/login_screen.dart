@@ -37,8 +37,10 @@ class _LoginScreenState extends State<LoginScreen> {
       _error = null;
     });
     try {
-      final token = await widget.apiClient
-          .login(_emailController.text.trim(), _passwordController.text);
+      final token = await widget.apiClient.login(
+        _emailController.text.trim(),
+        _passwordController.text,
+      );
       widget.onLoggedIn(token);
     } catch (e) {
       setState(() => _error = 'Login failed: $e');
@@ -61,9 +63,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text('PSpocketEdge',
-                      style: Theme.of(context).textTheme.headlineSmall,
-                      textAlign: TextAlign.center),
+                  Text(
+                    'PSpocketEdge',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                    textAlign: TextAlign.center,
+                  ),
                   const SizedBox(height: 24),
                   TextFormField(
                     controller: _emailController,

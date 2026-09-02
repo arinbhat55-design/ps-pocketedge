@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/compose-spec/compose-go/v2/loader"
+	"github.com/compose-spec/compose-go/v2/types"
+
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
@@ -57,6 +60,13 @@ func handleCreateDeployment(log *slog.Logger, st *store.Store, dispatcher *deplo
 		}
 		for k, v := range req.Env {
 			env[k] = v
+		}
+
+		if images, err := composeImages(r.Context(), stack.ComposeYAML, env); err == nil {
+			if err := enforceImagePolicy(r.Context(), st, images); err != nil {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 
 		deploymentID, err := st.CreateDeployment(r.Context(), stack.ID, req.ServerID, env, claims.UserID, req.Environment, req.Tags)
@@ -135,6 +145,13 @@ func handleRedeployDeployment(log *slog.Logger, st *store.Store, dispatcher *dep
 			return
 		}
 
+		if images, err := composeImages(r.Context(), stack.ComposeYAML, deployment.Env); err == nil {
+			if err := enforceImagePolicy(r.Context(), st, images); err != nil {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+
 		if event, err := st.AddDeploymentEvent(r.Context(), id, "pending", "redeploy requested"); err == nil {
 			events.Publish(id, event)
 		}
@@ -177,6 +194,31 @@ func handleUpdateDeploymentMetadata(log *slog.Logger, st *store.Store) http.Hand
 
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// composeImages parses composeYAML far enough to list every service's
+// image, for enforceImagePolicy to check before a stack is dispatched. A
+// parse failure here is deliberately swallowed by the caller (deploy still
+// proceeds and the agent's own parseCompose reports the real error) — this
+// is a policy pre-check, not compose validation.
+func composeImages(ctx context.Context, composeYAML string, env map[string]string) ([]string, error) {
+	details := types.ConfigDetails{
+		ConfigFiles: []types.ConfigFile{{Filename: "compose.yaml", Content: []byte(composeYAML)}},
+		Environment: env,
+	}
+	project, err := loader.LoadWithContext(ctx, details, func(o *loader.Options) {
+		o.SetProjectName("policy-check", true)
+		o.SkipConsistencyCheck = true
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	images := make([]string, 0, len(project.Services))
+	for _, svc := range project.Services {
+		images = append(images, svc.Image)
+	}
+	return images, nil
 }
 
 // dispatchDeploy sends a DeployStackCommand to serverID and, if that fails

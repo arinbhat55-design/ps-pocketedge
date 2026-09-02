@@ -45,6 +45,11 @@ const (
 const (
 	labelDeploymentID = "pspocketedge.deployment_id"
 	labelStack        = "pspocketedge.stack"
+	// labelManaged marks a standalone container created directly through
+	// container management (ops.go) — not part of a deployed stack, so it
+	// carries no labelDeploymentID and shows as "Unmanaged" in the fleet
+	// UI's existing grouping.
+	labelManaged = "pspocketedge.managed"
 )
 
 // StatusFunc reports a phase transition back to the control plane over the
@@ -229,13 +234,21 @@ func removeExisting(ctx context.Context, cli *client.Client, deploymentID string
 		return err
 	}
 	for _, c := range existing {
-		timeout := 10
-		_ = cli.ContainerStop(ctx, c.ID, container.StopOptions{Timeout: &timeout})
-		if err := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+		if err := stopAndRemoveContainer(ctx, cli, c.ID); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// stopAndRemoveContainer gracefully stops (with a short timeout) then
+// force-removes containerID. Shared by removeExisting (redeploy's
+// recreate-all-matching-containers path) and RecreateContainer (ops.go's
+// single-container recreate).
+func stopAndRemoveContainer(ctx context.Context, cli *client.Client, containerID string) error {
+	timeout := 10
+	_ = cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout})
+	return cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
 }
 
 // ensureNetwork creates (or reuses) a bridge network scoped to this
@@ -385,23 +398,31 @@ func buildPorts(ports []types.ServicePortConfig) (nat.PortSet, nat.PortMap, erro
 	exposed := nat.PortSet{}
 	bindings := nat.PortMap{}
 	for _, p := range ports {
-		proto := p.Protocol
-		if proto == "" {
-			proto = "tcp"
-		}
-		containerPort, err := nat.NewPort(proto, fmt.Sprintf("%d", p.Target))
-		if err != nil {
+		if err := addPortBinding(exposed, bindings, p.Protocol, p.Target, p.HostIP, p.Published); err != nil {
 			return nil, nil, err
-		}
-		exposed[containerPort] = struct{}{}
-		if p.Published != "" {
-			bindings[containerPort] = append(bindings[containerPort], nat.PortBinding{
-				HostIP:   p.HostIP,
-				HostPort: p.Published,
-			})
 		}
 	}
 	return exposed, bindings, nil
+}
+
+// addPortBinding computes containerPort's nat.Port and records it as
+// exposed, plus a host binding if hostPort is non-empty. Shared by
+// buildPorts (compose-derived ports, deploy.go) and buildPortsFromSpec
+// (standalone-container ports, ops.go) so both go through the same
+// nat.Port construction.
+func addPortBinding(exposed nat.PortSet, bindings nat.PortMap, protocol string, containerPort uint32, hostIP, hostPort string) error {
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	port, err := nat.NewPort(protocol, fmt.Sprintf("%d", containerPort))
+	if err != nil {
+		return err
+	}
+	exposed[port] = struct{}{}
+	if hostPort != "" {
+		bindings[port] = append(bindings[port], nat.PortBinding{HostIP: hostIP, HostPort: hostPort})
+	}
+	return nil
 }
 
 func parseRestartPolicy(restart string) container.RestartPolicy {

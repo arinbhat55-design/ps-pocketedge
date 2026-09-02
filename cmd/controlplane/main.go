@@ -20,6 +20,7 @@ import (
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/grpcserver"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/livestate"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/schedule"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version"
@@ -86,6 +87,10 @@ func main() {
 	events := deploy.NewEventBus()
 	serverEvents := livestate.NewEventBus()
 	inspectWaiter := deploy.NewInspectWaiter()
+	opWaiter := deploy.NewOpWaiter()
+	imageListWaiter := deploy.NewImageListWaiter()
+	imageDetailWaiter := deploy.NewImageDetailWaiter()
+	imageOpWaiter := deploy.NewImageOpWaiter()
 
 	blobs, err := backup.NewBlobStore(*backupDir)
 	if err != nil {
@@ -94,12 +99,14 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents, inspectWaiter))
+	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter))
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter),
 	}
+
+	scheduler := schedule.New(log, st, dispatcher, opWaiter)
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -111,6 +118,7 @@ func main() {
 		errCh <- httpServer.ListenAndServe()
 	}()
 	go pruneMetricsLoop(ctx, log, st)
+	go scheduler.Run(ctx)
 
 	select {
 	case <-ctx.Done():

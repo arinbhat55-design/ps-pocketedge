@@ -10,7 +10,7 @@ class AuthStorage {
   final FlutterSecureStorage _storage;
 
   AuthStorage({FlutterSecureStorage? storage})
-      : _storage = storage ?? const FlutterSecureStorage();
+    : _storage = storage ?? const FlutterSecureStorage();
 
   Future<String?> readToken() => _storage.read(key: _tokenKey);
 

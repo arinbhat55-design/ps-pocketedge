@@ -19,8 +19,7 @@ class DeploymentStatusScreen extends StatefulWidget {
   });
 
   @override
-  State<DeploymentStatusScreen> createState() =>
-      _DeploymentStatusScreenState();
+  State<DeploymentStatusScreen> createState() => _DeploymentStatusScreenState();
 }
 
 class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
@@ -44,7 +43,8 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
     _sub = channel.stream.listen(
       (data) {
         final event = DeploymentEvent.fromJson(
-            jsonDecode(data as String) as Map<String, dynamic>);
+          jsonDecode(data as String) as Map<String, dynamic>,
+        );
         setState(() {
           _events.add(event);
           if (event.isTerminal) _closed = true;
@@ -183,8 +183,11 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
                     itemBuilder: (context, index) {
                       final e = _events[index];
                       return ListTile(
-                        leading: Icon(Icons.circle,
-                            size: 10, color: _phaseColor(e.phase)),
+                        leading: Icon(
+                          Icons.circle,
+                          size: 10,
+                          color: _phaseColor(e.phase),
+                        ),
                         title: Text(e.phase),
                         subtitle: e.message.isEmpty ? null : Text(e.message),
                         trailing: Text(

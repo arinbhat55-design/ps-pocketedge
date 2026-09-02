@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'api/api_client.dart';
 import 'api/auth_storage.dart';
 import 'features/auth/login_screen.dart';
-import 'features/servers/server_list_screen.dart';
+import 'features/shell/app_shell.dart';
 
 /// Control-plane REST API base URL. Override at build/run time with
 /// `--dart-define=CONTROL_PLANE_URL=http://host:port`
@@ -25,7 +25,9 @@ class PSPocketEdgeApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'PSpocketEdge',
-      theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal)),
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
+      ),
       home: const SessionGate(),
     );
   }
@@ -68,7 +70,7 @@ class _SessionGateState extends State<SessionGate> {
   @override
   Widget build(BuildContext context) {
     if (_sessionToken != null) {
-      return ServerListScreen(apiClient: _apiClient, onLogout: _onLogout);
+      return AppShell(apiClient: _apiClient, onLogout: _onLogout);
     }
 
     return FutureBuilder<String?>(
@@ -82,7 +84,7 @@ class _SessionGateState extends State<SessionGate> {
         final restored = snapshot.data;
         if (restored != null) {
           _apiClient.authToken = restored;
-          return ServerListScreen(apiClient: _apiClient, onLogout: _onLogout);
+          return AppShell(apiClient: _apiClient, onLogout: _onLogout);
         }
         return LoginScreen(apiClient: _apiClient, onLoggedIn: _onLoggedIn);
       },

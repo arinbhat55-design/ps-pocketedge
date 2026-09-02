@@ -84,13 +84,154 @@ class ContainerDetail {
   factory ContainerDetail.fromJson(Map<String, dynamic> json) {
     return ContainerDetail(
       containerId: json['containerId'] as String,
-      env: (json['env'] as List<dynamic>? ?? []).map((e) => e as String).toList(),
+      env: (json['env'] as List<dynamic>? ?? [])
+          .map((e) => e as String)
+          .toList(),
       restartPolicyName: json['restartPolicyName'] as String? ?? '',
       restartPolicyMaxRetryCount:
           (json['restartPolicyMaxRetryCount'] as num?)?.toInt() ?? 0,
       healthStatus: json['healthStatus'] as String? ?? '',
       healthFailingStreak: (json['healthFailingStreak'] as num?)?.toInt() ?? 0,
       restartCount: (json['restartCount'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// One port mapping in a [ContainerConfig] request (create/recreate).
+class ContainerPortSpec {
+  final int containerPort;
+  final int hostPort;
+  final String protocol;
+
+  const ContainerPortSpec({
+    required this.containerPort,
+    this.hostPort = 0,
+    this.protocol = 'tcp',
+  });
+
+  Map<String, dynamic> toJson() => {
+    'containerPort': containerPort,
+    if (hostPort != 0) 'hostPort': hostPort,
+    'protocol': protocol,
+  };
+}
+
+/// One named-volume mount in a [ContainerConfig] request. Named volumes
+/// only — same bind-mount rejection as the stack-deploy path.
+class ContainerVolumeSpec {
+  final String volumeName;
+  final String target;
+  final bool readOnly;
+
+  const ContainerVolumeSpec({
+    required this.volumeName,
+    required this.target,
+    this.readOnly = false,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'volumeName': volumeName,
+    'target': target,
+    if (readOnly) 'readOnly': readOnly,
+  };
+}
+
+/// The full desired shape of a standalone container (not part of a
+/// deployed stack) — the request body for creating or recreating one.
+class ContainerConfig {
+  final String image;
+  final String name;
+  final List<String> command;
+  final List<String> env;
+  final List<ContainerPortSpec> ports;
+  final List<ContainerVolumeSpec> volumes;
+  final String restartPolicyName;
+  final int restartPolicyMaxRetryCount;
+  final Map<String, String> labels;
+
+  const ContainerConfig({
+    required this.image,
+    required this.name,
+    this.command = const [],
+    this.env = const [],
+    this.ports = const [],
+    this.volumes = const [],
+    this.restartPolicyName = 'no',
+    this.restartPolicyMaxRetryCount = 0,
+    this.labels = const {},
+  });
+
+  Map<String, dynamic> toJson() => {
+    'image': image,
+    'name': name,
+    if (command.isNotEmpty) 'command': command,
+    if (env.isNotEmpty) 'env': env,
+    if (ports.isNotEmpty) 'ports': ports.map((p) => p.toJson()).toList(),
+    if (volumes.isNotEmpty) 'volumes': volumes.map((v) => v.toJson()).toList(),
+    'restartPolicyName': restartPolicyName,
+    if (restartPolicyMaxRetryCount != 0)
+      'restartPolicyMaxRetryCount': restartPolicyMaxRetryCount,
+    if (labels.isNotEmpty) 'labels': labels,
+  };
+}
+
+/// Result of one container lifecycle command (action/create/rename/clone/
+/// recreate/restart-policy update) that completed its round trip to the
+/// agent.
+class ContainerOpResult {
+  final bool success;
+  final String? error;
+  final String? containerId;
+
+  const ContainerOpResult({
+    required this.success,
+    this.error,
+    this.containerId,
+  });
+
+  factory ContainerOpResult.fromJson(Map<String, dynamic> json) {
+    return ContainerOpResult(
+      success: json['success'] as bool? ?? false,
+      error: json['error'] as String?,
+      containerId: json['containerId'] as String?,
+    );
+  }
+}
+
+/// One {server, container} pair to act on within a bulk container action
+/// request.
+class BulkActionTarget {
+  final String serverId;
+  final String containerId;
+
+  const BulkActionTarget({required this.serverId, required this.containerId});
+
+  Map<String, dynamic> toJson() => {
+    'serverId': serverId,
+    'containerId': containerId,
+  };
+}
+
+/// One target's outcome within a bulk container action.
+class BulkActionResult {
+  final String serverId;
+  final String containerId;
+  final bool success;
+  final String? error;
+
+  const BulkActionResult({
+    required this.serverId,
+    required this.containerId,
+    required this.success,
+    this.error,
+  });
+
+  factory BulkActionResult.fromJson(Map<String, dynamic> json) {
+    return BulkActionResult(
+      serverId: json['serverId'] as String,
+      containerId: json['containerId'] as String,
+      success: json['success'] as bool? ?? false,
+      error: json['error'] as String?,
     );
   }
 }

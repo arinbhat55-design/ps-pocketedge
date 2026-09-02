@@ -68,7 +68,10 @@ class _BackupsScreenState extends State<BackupsScreen> {
   void _syncPolling() {
     final anyInFlight = _backups.any((b) => !b.isTerminal);
     if (anyInFlight && _pollTimer == null) {
-      _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _refresh());
+      _pollTimer = Timer.periodic(
+        const Duration(seconds: 3),
+        (_) => _refresh(),
+      );
     } else if (!anyInFlight && _pollTimer != null) {
       _pollTimer?.cancel();
       _pollTimer = null;
@@ -82,8 +85,9 @@ class _BackupsScreenState extends State<BackupsScreen> {
       await _refresh();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to start backup: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to start backup: $e')));
       }
     } finally {
       if (mounted) setState(() => _creating = false);
@@ -119,8 +123,9 @@ class _BackupsScreenState extends State<BackupsScreen> {
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to restore: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to restore: $e')));
       }
     }
   }
@@ -160,48 +165,52 @@ class _BackupsScreenState extends State<BackupsScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Center(child: Text(_error!))
-              : RefreshIndicator(
-                  onRefresh: _refresh,
-                  child: _backups.isEmpty
-                      ? ListView(
-                          children: const [
-                            Padding(
-                              padding: EdgeInsets.all(24),
-                              child: Text('No backups yet.'),
-                            ),
-                          ],
-                        )
-                      : ListView.builder(
-                          itemCount: _backups.length,
-                          itemBuilder: (context, index) {
-                            final b = _backups[index];
-                            return ListTile(
-                              leading: Icon(Icons.circle,
-                                  size: 12, color: _statusColor(b.status)),
-                              title: Text(b.createdAt.toLocal().toString()),
-                              subtitle: Text(
-                                b.status == 'failed' && b.message.isNotEmpty
-                                    ? '${b.status} — ${b.message}'
-                                    : '${b.status}${b.sizeBytes != null ? ' • ${_formatSize(b.sizeBytes)}' : ''}',
-                              ),
-                              trailing: b.status == 'completed'
-                                  ? OutlinedButton(
-                                      onPressed: () => _restore(b),
-                                      child: const Text('Restore'),
-                                    )
-                                  : (!b.isTerminal
-                                      ? const SizedBox(
-                                          width: 18,
-                                          height: 18,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2),
-                                        )
-                                      : null),
-                            );
-                          },
+          ? Center(child: Text(_error!))
+          : RefreshIndicator(
+              onRefresh: _refresh,
+              child: _backups.isEmpty
+                  ? ListView(
+                      children: const [
+                        Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Text('No backups yet.'),
                         ),
-                ),
+                      ],
+                    )
+                  : ListView.builder(
+                      itemCount: _backups.length,
+                      itemBuilder: (context, index) {
+                        final b = _backups[index];
+                        return ListTile(
+                          leading: Icon(
+                            Icons.circle,
+                            size: 12,
+                            color: _statusColor(b.status),
+                          ),
+                          title: Text(b.createdAt.toLocal().toString()),
+                          subtitle: Text(
+                            b.status == 'failed' && b.message.isNotEmpty
+                                ? '${b.status} — ${b.message}'
+                                : '${b.status}${b.sizeBytes != null ? ' • ${_formatSize(b.sizeBytes)}' : ''}',
+                          ),
+                          trailing: b.status == 'completed'
+                              ? OutlinedButton(
+                                  onPressed: () => _restore(b),
+                                  child: const Text('Restore'),
+                                )
+                              : (!b.isTerminal
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : null),
+                        );
+                      },
+                    ),
+            ),
     );
   }
 }

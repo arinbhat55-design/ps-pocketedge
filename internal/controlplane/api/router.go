@@ -34,7 +34,7 @@ const enrollmentTokenTTL = 1 * time.Hour
 // this API from its dev server origin during local development; this
 // should be tightened together with publicURL before any non-local
 // deployment.
-func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter) http.Handler {
+func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
@@ -67,6 +67,41 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 
 	mux.Handle("GET /api/containers", authMgr.RequireAuth(handleListContainers(log, st)))
 	mux.Handle("POST /api/servers/{id}/containers/{containerId}/inspect", authMgr.RequireAuth(handleInspectContainer(log, dispatcher, inspectWaiter)))
+	mux.Handle("POST /api/servers/{id}/containers", authMgr.RequireAuth(handleCreateContainer(log, st, dispatcher, opWaiter)))
+	mux.Handle("POST /api/servers/{id}/containers/{containerId}/action", authMgr.RequireAuth(handleContainerAction(log, dispatcher, opWaiter)))
+	mux.Handle("POST /api/containers/bulk-action", authMgr.RequireAuth(handleBulkContainerAction(log, dispatcher, opWaiter)))
+	mux.Handle("POST /api/servers/{id}/containers/{containerId}/rename", authMgr.RequireAuth(handleRenameContainer(log, dispatcher, opWaiter)))
+	mux.Handle("POST /api/servers/{id}/containers/{containerId}/clone", authMgr.RequireAuth(handleCloneContainer(log, dispatcher, opWaiter)))
+	mux.Handle("POST /api/servers/{id}/containers/{containerId}/recreate", authMgr.RequireAuth(handleRecreateContainer(log, st, dispatcher, opWaiter)))
+	mux.Handle("PATCH /api/servers/{id}/containers/{containerId}/restart-policy", authMgr.RequireAuth(handleUpdateRestartPolicy(log, dispatcher, opWaiter)))
+	mux.Handle("GET /api/servers/{id}/containers/{containerId}/rollback-history", authMgr.RequireAuth(handleListImageRollbackHistory(log, st)))
+	mux.Handle("POST /api/servers/{id}/containers/{containerId}/rollback", authMgr.RequireAuth(handleRollbackContainer(log, st, dispatcher, inspectWaiter, opWaiter)))
+
+	mux.Handle("GET /api/images", authMgr.RequireAuth(handleListImages(log, st, dispatcher, imageListWaiter)))
+	mux.Handle("GET /api/images/newer", authMgr.RequireAuth(handleImageUpdateAvailable(log, st, dispatcher, imageDetailWaiter)))
+	mux.Handle("POST /api/images/scan", authMgr.RequireAuth(handleScanImage(log, st)))
+	mux.Handle("GET /api/images/scan", authMgr.RequireAuth(handleGetImageScan(log, st)))
+	mux.Handle("GET /api/servers/{id}/images/{imageId}/inspect", authMgr.RequireAuth(handleInspectImage(log, dispatcher, imageDetailWaiter)))
+	mux.Handle("POST /api/servers/{id}/images/pull", authMgr.RequireAuth(handlePullImage(log, st, dispatcher, imageOpWaiter)))
+	mux.Handle("DELETE /api/servers/{id}/images/{imageId}", authMgr.RequireAuth(handleRemoveImage(log, dispatcher, imageOpWaiter)))
+	mux.Handle("POST /api/servers/{id}/images/prune", authMgr.RequireAuth(handlePruneImages(log, dispatcher, imageOpWaiter)))
+
+	mux.Handle("GET /api/registries", authMgr.RequireAdmin(handleListRegistries(log, st)))
+	mux.Handle("POST /api/registries", authMgr.RequireAdmin(handleCreateRegistry(log, st)))
+	mux.Handle("DELETE /api/registries/{id}", authMgr.RequireAdmin(handleDeleteRegistry(log, st)))
+	mux.Handle("GET /api/registries/search", authMgr.RequireAuth(handleSearchRegistries(log, st)))
+	mux.Handle("GET /api/registries/tags", authMgr.RequireAuth(handleListImageTags(log, st)))
+
+	mux.Handle("GET /api/image-policies", authMgr.RequireAdmin(handleListApprovedImages(log, st)))
+	mux.Handle("POST /api/image-policies", authMgr.RequireAdmin(handleCreateApprovedImage(log, st)))
+	mux.Handle("DELETE /api/image-policies/{id}", authMgr.RequireAdmin(handleDeleteApprovedImage(log, st)))
+	mux.Handle("GET /api/image-policies/settings", authMgr.RequireAuth(handleGetImagePolicySettings(log, st)))
+	mux.Handle("PATCH /api/image-policies/settings", authMgr.RequireAdmin(handleUpdateImagePolicySettings(log, st)))
+
+	mux.Handle("GET /api/schedules", authMgr.RequireAuth(handleListSchedules(log, st)))
+	mux.Handle("POST /api/schedules", authMgr.RequireAuth(handleCreateSchedule(log, st)))
+	mux.Handle("PATCH /api/schedules/{id}", authMgr.RequireAuth(handleUpdateSchedule(log, st)))
+	mux.Handle("DELETE /api/schedules/{id}", authMgr.RequireAuth(handleDeleteSchedule(log, st)))
 
 	mux.Handle("POST /api/deployments/{id}/backups", authMgr.RequireAuth(handleCreateBackup(log, st, dispatcher, publicURL)))
 	mux.Handle("GET /api/deployments/{id}/backups", authMgr.RequireAuth(handleListBackups(log, st)))

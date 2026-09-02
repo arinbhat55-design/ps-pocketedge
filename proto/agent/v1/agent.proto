@@ -40,6 +40,10 @@ message AgentMessage {
     BackupStatus backup_status = 3;
     RestoreStatus restore_status = 4;
     ContainerDetail container_detail = 5;
+    ContainerOpResult container_op_result = 6;
+    ImageListResult image_list_result = 7;
+    ImageDetail image_detail = 8;
+    ImageOpResult image_op_result = 9;
   }
 }
 
@@ -50,6 +54,17 @@ message ControlMessage {
     BackupCommand backup = 3;
     RestoreCommand restore = 4;
     InspectContainerCommand inspect_container = 5;
+    ContainerActionCommand container_action = 6;
+    CreateContainerCommand create_container = 7;
+    RenameContainerCommand rename_container = 8;
+    CloneContainerCommand clone_container = 9;
+    RecreateContainerCommand recreate_container = 10;
+    UpdateRestartPolicyCommand update_restart_policy = 11;
+    ListImagesCommand list_images = 12;
+    InspectImageCommand inspect_image = 13;
+    PullImageCommand pull_image = 14;
+    RemoveImageCommand remove_image = 15;
+    PruneImagesCommand prune_images = 16;
   }
 }
 
@@ -210,4 +225,208 @@ message ContainerDetail {
   string health_status = 8;
   int32 health_failing_streak = 9;
   int32 restart_count = 10;
+}
+
+// ContainerAction is a lifecycle operation applied to one existing
+// container, dispatched via ContainerActionCommand.
+enum ContainerAction {
+  CONTAINER_ACTION_UNSPECIFIED = 0;
+  CONTAINER_ACTION_START = 1;
+  CONTAINER_ACTION_STOP = 2;
+  CONTAINER_ACTION_RESTART = 3;
+  CONTAINER_ACTION_PAUSE = 4;
+  CONTAINER_ACTION_RESUME = 5;
+  CONTAINER_ACTION_KILL = 6; // force-kill (SIGKILL), for an unresponsive container
+  CONTAINER_ACTION_REMOVE = 7;
+}
+
+message ContainerPortSpec {
+  uint32 container_port = 1;
+  uint32 host_port = 2;
+  string protocol = 3;
+}
+
+message ContainerVolumeSpec {
+  string volume_name = 1;
+  string target = 2;
+  bool read_only = 3;
+}
+
+// ContainerConfig is the full desired shape of a standalone container (not
+// part of a deployed stack), used by both CreateContainerCommand and
+// RecreateContainerCommand. Named volumes only, same as the compose deploy
+// path (see docker/deploy.go's ensureVolumes doc comment on why bind
+// mounts are rejected rather than silently ignored).
+message ContainerConfig {
+  string image = 1;
+  string name = 2;
+  repeated string command = 3;
+  repeated string env = 4;
+  repeated ContainerPortSpec ports = 5;
+  repeated ContainerVolumeSpec volumes = 6;
+  string restart_policy_name = 7;
+  int32 restart_policy_max_retry_count = 8;
+  map<string, string> labels = 9;
+}
+
+message ContainerActionCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  ContainerAction action = 4;
+  int32 timeout_seconds = 5; // graceful stop/restart timeout; 0 = agent default
+  bool force = 6;            // for REMOVE: remove even if running
+}
+
+message CreateContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  ContainerConfig config = 3;
+}
+
+message RenameContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  string new_name = 4;
+}
+
+message CloneContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  string new_name = 4;
+}
+
+message RecreateContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  ContainerConfig config = 4;
+}
+
+message UpdateRestartPolicyCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  string restart_policy_name = 4;
+  int32 restart_policy_max_retry_count = 5;
+}
+
+// ContainerOpResult answers ContainerActionCommand, CreateContainerCommand,
+// RenameContainerCommand, CloneContainerCommand, RecreateContainerCommand,
+// and UpdateRestartPolicyCommand alike, correlated back to the request via
+// request_id — same one-request/one-reply correlation InspectWaiter
+// already does for InspectContainerCommand/ContainerDetail. container_id
+// is the newly created container's id for CreateContainer/CloneContainer/
+// RecreateContainer, and the acted-on container's id otherwise.
+message ContainerOpResult {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  string container_id = 4;
+}
+
+// ImageSummary is a snapshot of one locally-present image, from the same
+// ImageList call as Docker's `docker images` — cheap enough for the
+// on-demand list, unlike ImageDetail's per-image ImageInspect (see below).
+message ImageSummary {
+  string id = 1;
+  repeated string repo_tags = 2;
+  repeated string repo_digests = 3;
+  int64 size_bytes = 4;
+  int64 created_unix = 5;
+  // Dangling means repo_tags is empty (an untagged, superseded layer) —
+  // computed by the agent so the dashboard doesn't need to reimplement
+  // Docker's own definition of "dangling".
+  bool dangling = 6;
+  int64 containers_count = 7;
+}
+
+// ListImagesCommand asks the agent for its current local image inventory.
+// Unlike ContainerSummary, this is deliberately not part of Heartbeat: the
+// Images tab is visited far less often than the live container view, so an
+// on-demand round trip (same reasoning as InspectContainerCommand) avoids
+// bloating every heartbeat with a list that's usually not being watched.
+message ListImagesCommand {
+  string request_id = 1;
+  string server_id = 2;
+}
+
+message ImageListResult {
+  string request_id = 1;
+  repeated ImageSummary images = 2;
+}
+
+// InspectImageCommand asks for one image's full detail (layers, env,
+// labels, architecture) via ImageInspect — too expensive to run for every
+// image on every list request, so it's fetched only when a user opens an
+// image's detail view, same split as InspectContainerCommand/ContainerDetail.
+message InspectImageCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string image_id = 3;
+}
+
+message ImageLayer {
+  string digest = 1;
+  int64 size_bytes = 2;
+}
+
+message ImageDetail {
+  string request_id = 1;
+  bool found = 2;
+  string error_message = 3;
+  string id = 4;
+  repeated string repo_tags = 5;
+  repeated string repo_digests = 6;
+  int64 size_bytes = 7;
+  int64 created_unix = 8;
+  string architecture = 9;
+  string os = 10;
+  repeated ImageLayer layers = 11;
+  repeated string env = 12;
+  map<string, string> labels = 13;
+}
+
+// RegistryAuth carries credentials for a PullImageCommand against a private
+// registry; unset (both fields empty) means an anonymous/public pull.
+message RegistryAuth {
+  string username = 1;
+  string password = 2;
+}
+
+message PullImageCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string image_ref = 3;
+  RegistryAuth auth = 4;
+}
+
+message RemoveImageCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string image_id = 3;
+  bool force = 4;
+}
+
+message PruneImagesCommand {
+  string request_id = 1;
+  string server_id = 2;
+  // all=false removes only dangling images (docker image prune);
+  // all=true also removes any image not referenced by a container
+  // (docker image prune -a).
+  bool all = 3;
+}
+
+// ImageOpResult answers PullImageCommand, RemoveImageCommand, and
+// PruneImagesCommand alike, correlated via request_id — same one-request/
+// one-reply pattern ContainerOpResult already uses for container ops.
+// reclaimed_bytes is only meaningful for PruneImagesCommand.
+message ImageOpResult {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  string image_id = 4;
+  int64 reclaimed_bytes = 5;
 }

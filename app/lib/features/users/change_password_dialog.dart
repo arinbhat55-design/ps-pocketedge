@@ -58,12 +58,12 @@ class _ChangePasswordDialogState extends State<ChangePasswordDialog> {
             children: [
               TextFormField(
                 controller: _currentController,
-                decoration:
-                    const InputDecoration(labelText: 'Current password'),
+                decoration: const InputDecoration(
+                  labelText: 'Current password',
+                ),
                 obscureText: true,
                 autofocus: true,
-                validator: (v) =>
-                    (v == null || v.isEmpty) ? 'Required' : null,
+                validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
               ),
               const SizedBox(height: 12),
               TextFormField(

@@ -24,16 +24,24 @@ import (
 type Server struct {
 	agentv1.UnimplementedAgentSessionServer
 
-	log           *slog.Logger
-	store         *store.Store
-	dispatcher    *deploy.Dispatcher
-	events        *deploy.EventBus
-	serverEvents  *livestate.EventBus
-	inspectWaiter *deploy.InspectWaiter
+	log               *slog.Logger
+	store             *store.Store
+	dispatcher        *deploy.Dispatcher
+	events            *deploy.EventBus
+	serverEvents      *livestate.EventBus
+	inspectWaiter     *deploy.InspectWaiter
+	opWaiter          *deploy.OpWaiter
+	imageListWaiter   *deploy.ImageListWaiter
+	imageDetailWaiter *deploy.ImageDetailWaiter
+	imageOpWaiter     *deploy.ImageOpWaiter
 }
 
-func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, inspectWaiter *deploy.InspectWaiter) *Server {
-	return &Server{log: log, store: st, dispatcher: dispatcher, events: events, serverEvents: serverEvents, inspectWaiter: inspectWaiter}
+func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter) *Server {
+	return &Server{
+		log: log, store: st, dispatcher: dispatcher, events: events, serverEvents: serverEvents,
+		inspectWaiter: inspectWaiter, opWaiter: opWaiter,
+		imageListWaiter: imageListWaiter, imageDetailWaiter: imageDetailWaiter, imageOpWaiter: imageOpWaiter,
+	}
 }
 
 func (s *Server) Enroll(ctx context.Context, req *agentv1.EnrollRequest) (*agentv1.EnrollResponse, error) {
@@ -284,6 +292,26 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 				"found", cd.GetFound(),
 			)
 			s.inspectWaiter.Deliver(cd.GetRequestId(), cd)
+		case *agentv1.AgentMessage_ContainerOpResult:
+			result := payload.ContainerOpResult
+			s.log.Info("container op result received",
+				"server_id", serverID,
+				"container_id", result.GetContainerId(),
+				"success", result.GetSuccess(),
+			)
+			s.opWaiter.Deliver(result.GetRequestId(), result)
+		case *agentv1.AgentMessage_ImageListResult:
+			result := payload.ImageListResult
+			s.log.Info("image list result received", "server_id", serverID, "count", len(result.GetImages()))
+			s.imageListWaiter.Deliver(result.GetRequestId(), result)
+		case *agentv1.AgentMessage_ImageDetail:
+			detail := payload.ImageDetail
+			s.log.Info("image detail received", "server_id", serverID, "image_id", detail.GetId(), "found", detail.GetFound())
+			s.imageDetailWaiter.Deliver(detail.GetRequestId(), detail)
+		case *agentv1.AgentMessage_ImageOpResult:
+			result := payload.ImageOpResult
+			s.log.Info("image op result received", "server_id", serverID, "image_id", result.GetImageId(), "success", result.GetSuccess())
+			s.imageOpWaiter.Deliver(result.GetRequestId(), result)
 		default:
 			s.log.Warn("unknown agent message payload", "server_id", serverID)
 		}

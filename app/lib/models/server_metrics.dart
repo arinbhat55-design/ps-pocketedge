@@ -175,8 +175,9 @@ class ServerUpdate {
 
   factory ServerUpdate.fromJson(Map<String, dynamic> json) {
     return ServerUpdate(
-      resources:
-          ResourceSnapshot.fromJson(json['resources'] as Map<String, dynamic>),
+      resources: ResourceSnapshot.fromJson(
+        json['resources'] as Map<String, dynamic>,
+      ),
       containers: (json['containers'] as List<dynamic>)
           .map((e) => ContainerInfo.fromJson(e as Map<String, dynamic>))
           .toList(),

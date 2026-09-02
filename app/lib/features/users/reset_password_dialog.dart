@@ -36,8 +36,10 @@ class _ResetPasswordDialogState extends State<ResetPasswordDialog> {
       _error = null;
     });
     try {
-      await widget.apiClient
-          .resetUserPassword(widget.user.id, _passwordController.text);
+      await widget.apiClient.resetUserPassword(
+        widget.user.id,
+        _passwordController.text,
+      );
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       setState(() => _error = 'Failed to reset password: $e');

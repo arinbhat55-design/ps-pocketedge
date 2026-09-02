@@ -6,27 +6,29 @@ import (
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
 
-// InspectWaiter correlates an InspectContainerCommand sent to an agent
-// (from an HTTP handler goroutine) with the ContainerDetail reply that
-// arrives later on grpcserver.Session's receive loop — a different
-// goroutine, since the AgentSession stream is agent-initiated and only
-// that loop ever calls stream.Recv(). Unlike EventBus, this is a single
-// request/reply per request_id, not a fan-out subscription.
-type InspectWaiter struct {
+// Waiter correlates a command sent to an agent (from an HTTP handler
+// goroutine) with its reply, which arrives later on grpcserver.Session's
+// receive loop — a different goroutine, since the AgentSession stream is
+// agent-initiated and only that loop ever calls stream.Recv(). Unlike
+// EventBus, this is a single request/reply per request_id, not a fan-out
+// subscription. Generic so the same correlation logic serves both
+// InspectContainerCommand/ContainerDetail and the container lifecycle
+// commands/ContainerOpResult.
+type Waiter[T any] struct {
 	mu      sync.Mutex
-	waiters map[string]chan *agentv1.ContainerDetail
+	waiters map[string]chan T
 }
 
-func NewInspectWaiter() *InspectWaiter {
-	return &InspectWaiter{waiters: make(map[string]chan *agentv1.ContainerDetail)}
+func NewWaiter[T any]() *Waiter[T] {
+	return &Waiter[T]{waiters: make(map[string]chan T)}
 }
 
 // Await registers requestID and returns a buffered (size 1) channel that
-// receives the matching ContainerDetail if Deliver is called before the
-// caller gives up. The caller must call cleanup exactly once (typically
-// deferred) to unregister, whether or not a reply arrived.
-func (w *InspectWaiter) Await(requestID string) (ch chan *agentv1.ContainerDetail, cleanup func()) {
-	ch = make(chan *agentv1.ContainerDetail, 1)
+// receives the matching reply if Deliver is called before the caller gives
+// up. The caller must call cleanup exactly once (typically deferred) to
+// unregister, whether or not a reply arrived.
+func (w *Waiter[T]) Await(requestID string) (ch chan T, cleanup func()) {
+	ch = make(chan T, 1)
 
 	w.mu.Lock()
 	w.waiters[requestID] = ch
@@ -45,7 +47,7 @@ func (w *InspectWaiter) Await(requestID string) (ch chan *agentv1.ContainerDetai
 // registered. A reply for an unknown/already-timed-out/already-delivered
 // request_id is silently dropped — the HTTP request that asked for it has
 // already given up and returned an error to its caller.
-func (w *InspectWaiter) Deliver(requestID string, result *agentv1.ContainerDetail) {
+func (w *Waiter[T]) Deliver(requestID string, result T) {
 	w.mu.Lock()
 	ch, ok := w.waiters[requestID]
 	w.mu.Unlock()
@@ -58,3 +60,33 @@ func (w *InspectWaiter) Deliver(requestID string, result *agentv1.ContainerDetai
 	default:
 	}
 }
+
+// InspectWaiter correlates an InspectContainerCommand with its
+// ContainerDetail reply.
+type InspectWaiter = Waiter[*agentv1.ContainerDetail]
+
+func NewInspectWaiter() *InspectWaiter { return NewWaiter[*agentv1.ContainerDetail]() }
+
+// OpWaiter correlates a container lifecycle command (action/create/rename/
+// clone/recreate/restart-policy update) with its ContainerOpResult reply.
+type OpWaiter = Waiter[*agentv1.ContainerOpResult]
+
+func NewOpWaiter() *OpWaiter { return NewWaiter[*agentv1.ContainerOpResult]() }
+
+// ImageListWaiter correlates a ListImagesCommand with its ImageListResult
+// reply.
+type ImageListWaiter = Waiter[*agentv1.ImageListResult]
+
+func NewImageListWaiter() *ImageListWaiter { return NewWaiter[*agentv1.ImageListResult]() }
+
+// ImageDetailWaiter correlates an InspectImageCommand with its ImageDetail
+// reply.
+type ImageDetailWaiter = Waiter[*agentv1.ImageDetail]
+
+func NewImageDetailWaiter() *ImageDetailWaiter { return NewWaiter[*agentv1.ImageDetail]() }
+
+// ImageOpWaiter correlates an image lifecycle command (pull/remove/prune)
+// with its ImageOpResult reply.
+type ImageOpWaiter = Waiter[*agentv1.ImageOpResult]
+
+func NewImageOpWaiter() *ImageOpWaiter { return NewWaiter[*agentv1.ImageOpResult]() }

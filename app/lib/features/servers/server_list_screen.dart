@@ -2,20 +2,15 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/server.dart';
-import '../../models/user.dart';
-import '../containers/container_list_screen.dart';
 import '../deployments/catalog_screen.dart';
 import '../deployments/deployment_status_screen.dart';
-import '../users/change_password_dialog.dart';
-import '../users/user_list_screen.dart';
 import 'add_server_dialog.dart';
 import 'server_detail_screen.dart';
 
 class ServerListScreen extends StatefulWidget {
   final ApiClient apiClient;
-  final VoidCallback? onLogout;
 
-  const ServerListScreen({super.key, required this.apiClient, this.onLogout});
+  const ServerListScreen({super.key, required this.apiClient});
 
   @override
   State<ServerListScreen> createState() => _ServerListScreenState();
@@ -23,13 +18,11 @@ class ServerListScreen extends StatefulWidget {
 
 class _ServerListScreenState extends State<ServerListScreen> {
   late Future<List<Server>> _serversFuture;
-  late Future<AppUser> _meFuture;
 
   @override
   void initState() {
     super.initState();
     _serversFuture = widget.apiClient.listServers();
-    _meFuture = widget.apiClient.getMe();
   }
 
   Future<void> _refresh() async {
@@ -50,22 +43,26 @@ class _ServerListScreenState extends State<ServerListScreen> {
       ),
     );
     if (deploymentId == null || !mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => DeploymentStatusScreen(
-        apiClient: widget.apiClient,
-        deploymentId: deploymentId,
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => DeploymentStatusScreen(
+          apiClient: widget.apiClient,
+          deploymentId: deploymentId,
+        ),
       ),
-    ));
+    );
   }
 
   Future<void> _openDetail(Server server) async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => ServerDetailScreen(
-        apiClient: widget.apiClient,
-        serverId: server.id,
-        serverName: server.name,
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ServerDetailScreen(
+          apiClient: widget.apiClient,
+          serverId: server.id,
+          serverName: server.name,
+        ),
       ),
-    ));
+    );
   }
 
   Future<void> _openAddServer() async {
@@ -79,69 +76,10 @@ class _ServerListScreenState extends State<ServerListScreen> {
     await _refresh();
   }
 
-  Future<void> _openChangePassword() async {
-    await showDialog<bool>(
-      context: context,
-      builder: (_) => ChangePasswordDialog(apiClient: widget.apiClient),
-    );
-  }
-
-  Future<void> _openManageUsers(String currentUserId) async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => UserListScreen(
-        apiClient: widget.apiClient,
-        currentUserId: currentUserId,
-      ),
-    ));
-  }
-
-  Future<void> _openContainers() async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => ContainerListScreen(apiClient: widget.apiClient),
-    ));
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Servers'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.view_list),
-            tooltip: 'Containers',
-            onPressed: _openContainers,
-          ),
-          FutureBuilder<AppUser>(
-            future: _meFuture,
-            builder: (context, snapshot) {
-              final me = snapshot.data;
-              if (me == null) return const SizedBox.shrink();
-              return Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.lock_outline),
-                    tooltip: 'Change password',
-                    onPressed: _openChangePassword,
-                  ),
-                  if (me.isAdmin)
-                    IconButton(
-                      icon: const Icon(Icons.people_outline),
-                      tooltip: 'Manage users',
-                      onPressed: () => _openManageUsers(me.id),
-                    ),
-                ],
-              );
-            },
-          ),
-          if (widget.onLogout != null)
-            IconButton(
-              icon: const Icon(Icons.logout),
-              tooltip: 'Log out',
-              onPressed: widget.onLogout,
-            ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Servers')),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _openAddServer,
         icon: const Icon(Icons.add),
@@ -189,8 +127,9 @@ class _ServerListScreenState extends State<ServerListScreen> {
                         : Colors.grey,
                   ),
                   title: Text(server.name),
-                  subtitle:
-                      Text('${server.os}/${server.arch} • ${server.status}'),
+                  subtitle: Text(
+                    '${server.os}/${server.arch} • ${server.status}',
+                  ),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [

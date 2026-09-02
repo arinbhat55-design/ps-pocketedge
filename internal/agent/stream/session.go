@@ -6,6 +6,7 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -280,6 +281,28 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 				go r.handleRestore(sessionCtx, dockerCli, msg.GetRestore(), identity.Credential, outbound)
 			case msg.GetInspectContainer() != nil:
 				go r.handleInspectContainer(sessionCtx, dockerCli, msg.GetInspectContainer(), outbound)
+			case msg.GetContainerAction() != nil:
+				go r.handleContainerAction(sessionCtx, dockerCli, msg.GetContainerAction(), outbound)
+			case msg.GetCreateContainer() != nil:
+				go r.handleCreateContainer(sessionCtx, dockerCli, msg.GetCreateContainer(), outbound)
+			case msg.GetRenameContainer() != nil:
+				go r.handleRenameContainer(sessionCtx, dockerCli, msg.GetRenameContainer(), outbound)
+			case msg.GetCloneContainer() != nil:
+				go r.handleCloneContainer(sessionCtx, dockerCli, msg.GetCloneContainer(), outbound)
+			case msg.GetRecreateContainer() != nil:
+				go r.handleRecreateContainer(sessionCtx, dockerCli, msg.GetRecreateContainer(), outbound)
+			case msg.GetUpdateRestartPolicy() != nil:
+				go r.handleUpdateRestartPolicy(sessionCtx, dockerCli, msg.GetUpdateRestartPolicy(), outbound)
+			case msg.GetListImages() != nil:
+				go r.handleListImages(sessionCtx, dockerCli, msg.GetListImages(), outbound)
+			case msg.GetInspectImage() != nil:
+				go r.handleInspectImage(sessionCtx, dockerCli, msg.GetInspectImage(), outbound)
+			case msg.GetPullImage() != nil:
+				go r.handlePullImage(sessionCtx, dockerCli, msg.GetPullImage(), outbound)
+			case msg.GetRemoveImage() != nil:
+				go r.handleRemoveImage(sessionCtx, dockerCli, msg.GetRemoveImage(), outbound)
+			case msg.GetPruneImages() != nil:
+				go r.handlePruneImages(sessionCtx, dockerCli, msg.GetPruneImages(), outbound)
 			}
 		}
 	}()
@@ -492,6 +515,191 @@ func (r *Runner) handleInspectContainer(ctx context.Context, dockerCli *dockercl
 	reply(docker.InspectContainer(ctx, dockerCli, cmd.GetContainerId()))
 }
 
+// handleContainerAction, handleCreateContainer, handleRenameContainer,
+// handleCloneContainer, handleRecreateContainer, and
+// handleUpdateRestartPolicy all follow the same shape as
+// handleInspectContainer above: run the matching docker/ops.go call in this
+// goroutine (so a slow one doesn't block heartbeats), then reply with a
+// ContainerOpResult carrying the command's request_id.
+
+func (r *Runner) handleContainerAction(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.ContainerActionCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetContainerId(), errors.New("docker client unavailable on this agent"))
+		return
+	}
+	err := docker.ContainerAction(ctx, dockerCli, cmd.GetContainerId(), cmd.GetAction(), cmd.GetTimeoutSeconds(), cmd.GetForce())
+	r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetContainerId(), err)
+}
+
+func (r *Runner) handleCreateContainer(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.CreateContainerCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyOp(ctx, outbound, cmd.GetRequestId(), "", errors.New("docker client unavailable on this agent"))
+		return
+	}
+	id, err := docker.CreateContainer(ctx, dockerCli, containerConfigFromProto(cmd.GetConfig()))
+	r.replyOp(ctx, outbound, cmd.GetRequestId(), id, err)
+}
+
+func (r *Runner) handleRenameContainer(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.RenameContainerCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetContainerId(), errors.New("docker client unavailable on this agent"))
+		return
+	}
+	err := docker.RenameContainer(ctx, dockerCli, cmd.GetContainerId(), cmd.GetNewName())
+	r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetContainerId(), err)
+}
+
+func (r *Runner) handleCloneContainer(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.CloneContainerCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyOp(ctx, outbound, cmd.GetRequestId(), "", errors.New("docker client unavailable on this agent"))
+		return
+	}
+	id, err := docker.CloneContainer(ctx, dockerCli, cmd.GetContainerId(), cmd.GetNewName())
+	r.replyOp(ctx, outbound, cmd.GetRequestId(), id, err)
+}
+
+func (r *Runner) handleRecreateContainer(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.RecreateContainerCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyOp(ctx, outbound, cmd.GetRequestId(), "", errors.New("docker client unavailable on this agent"))
+		return
+	}
+	id, err := docker.RecreateContainer(ctx, dockerCli, cmd.GetContainerId(), containerConfigFromProto(cmd.GetConfig()))
+	r.replyOp(ctx, outbound, cmd.GetRequestId(), id, err)
+}
+
+func (r *Runner) handleUpdateRestartPolicy(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.UpdateRestartPolicyCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetContainerId(), errors.New("docker client unavailable on this agent"))
+		return
+	}
+	err := docker.UpdateRestartPolicy(ctx, dockerCli, cmd.GetContainerId(), cmd.GetRestartPolicyName(), cmd.GetRestartPolicyMaxRetryCount())
+	r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetContainerId(), err)
+}
+
+// replyOp sends a ContainerOpResult for requestID onto outbound,
+// success iff err is nil.
+func (r *Runner) replyOp(ctx context.Context, outbound chan<- *agentv1.AgentMessage, requestID, containerID string, err error) {
+	select {
+	case outbound <- containerOpResultMessage(requestID, containerID, err):
+	case <-ctx.Done():
+	}
+}
+
+// handleListImages, handleInspectImage, handlePullImage, handleRemoveImage,
+// and handlePruneImages follow the same shape as handleInspectContainer/
+// handleContainerAction above: run the matching docker/images.go call in
+// this goroutine (so a slow pull doesn't block heartbeats), then reply with
+// the result carrying the command's request_id.
+
+func (r *Runner) handleListImages(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.ListImagesCommand, outbound chan<- *agentv1.AgentMessage) {
+	reply := func(images []docker.ImageSummary) {
+		select {
+		case outbound <- imageListResultMessage(cmd.GetRequestId(), images):
+		case <-ctx.Done():
+		}
+	}
+
+	if dockerCli == nil {
+		reply(nil)
+		return
+	}
+	images, err := docker.ListImages(ctx, dockerCli)
+	if err != nil {
+		r.log.Warn("failed to list images", "error", err)
+	}
+	reply(images)
+}
+
+func (r *Runner) handleInspectImage(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.InspectImageCommand, outbound chan<- *agentv1.AgentMessage) {
+	reply := func(d docker.ImageDetail) {
+		select {
+		case outbound <- imageDetailMessage(cmd.GetRequestId(), d):
+		case <-ctx.Done():
+		}
+	}
+
+	if dockerCli == nil {
+		reply(docker.ImageDetail{Found: false, ErrorMessage: "docker client unavailable on this agent"})
+		return
+	}
+	reply(docker.InspectImage(ctx, dockerCli, cmd.GetImageId()))
+}
+
+func (r *Runner) handlePullImage(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.PullImageCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyImageOp(ctx, outbound, cmd.GetRequestId(), "", 0, errors.New("docker client unavailable on this agent"))
+		return
+	}
+	var auth *docker.RegistryAuth
+	if a := cmd.GetAuth(); a != nil && (a.GetUsername() != "" || a.GetPassword() != "") {
+		auth = &docker.RegistryAuth{Username: a.GetUsername(), Password: a.GetPassword()}
+	}
+	err := docker.PullImage(ctx, dockerCli, cmd.GetImageRef(), auth)
+	r.replyImageOp(ctx, outbound, cmd.GetRequestId(), cmd.GetImageRef(), 0, err)
+}
+
+func (r *Runner) handleRemoveImage(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.RemoveImageCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyImageOp(ctx, outbound, cmd.GetRequestId(), cmd.GetImageId(), 0, errors.New("docker client unavailable on this agent"))
+		return
+	}
+	err := docker.RemoveImage(ctx, dockerCli, cmd.GetImageId(), cmd.GetForce())
+	r.replyImageOp(ctx, outbound, cmd.GetRequestId(), cmd.GetImageId(), 0, err)
+}
+
+func (r *Runner) handlePruneImages(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.PruneImagesCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyImageOp(ctx, outbound, cmd.GetRequestId(), "", 0, errors.New("docker client unavailable on this agent"))
+		return
+	}
+	reclaimed, err := docker.PruneImages(ctx, dockerCli, cmd.GetAll())
+	r.replyImageOp(ctx, outbound, cmd.GetRequestId(), "", reclaimed, err)
+}
+
+// replyImageOp sends an ImageOpResult for requestID onto outbound, success
+// iff err is nil — the image-op counterpart to replyOp above.
+func (r *Runner) replyImageOp(ctx context.Context, outbound chan<- *agentv1.AgentMessage, requestID, imageID string, reclaimedBytes int64, err error) {
+	select {
+	case outbound <- imageOpResultMessage(requestID, imageID, reclaimedBytes, err):
+	case <-ctx.Done():
+	}
+}
+
+// containerConfigFromProto converts the wire ContainerConfig into
+// docker.ContainerConfig, which ops.go's Create/Recreate functions operate
+// on — keeps the docker package's config type free of agentv1, matching
+// how ContainerDetail (inspect.go) is already kept separate from its proto
+// counterpart.
+func containerConfigFromProto(cfg *agentv1.ContainerConfig) docker.ContainerConfig {
+	ports := make([]docker.ContainerPortSpec, 0, len(cfg.GetPorts()))
+	for _, p := range cfg.GetPorts() {
+		ports = append(ports, docker.ContainerPortSpec{
+			ContainerPort: uint16(p.GetContainerPort()),
+			HostPort:      uint16(p.GetHostPort()),
+			Protocol:      p.GetProtocol(),
+		})
+	}
+	volumes := make([]docker.ContainerVolumeSpec, 0, len(cfg.GetVolumes()))
+	for _, v := range cfg.GetVolumes() {
+		volumes = append(volumes, docker.ContainerVolumeSpec{
+			VolumeName: v.GetVolumeName(),
+			Target:     v.GetTarget(),
+			ReadOnly:   v.GetReadOnly(),
+		})
+	}
+	return docker.ContainerConfig{
+		Image:                      cfg.GetImage(),
+		Name:                       cfg.GetName(),
+		Command:                    cfg.GetCommand(),
+		Env:                        cfg.GetEnv(),
+		Ports:                      ports,
+		Volumes:                    volumes,
+		RestartPolicyName:          cfg.GetRestartPolicyName(),
+		RestartPolicyMaxRetryCount: int(cfg.GetRestartPolicyMaxRetryCount()),
+		Labels:                     cfg.GetLabels(),
+	}
+}
+
 func uploadBlob(ctx context.Context, url, credential string, body io.Reader) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
@@ -689,5 +897,80 @@ func containerDetailMessage(requestID, containerID string, d docker.ContainerDet
 				RestartCount:               int32(d.RestartCount),
 			},
 		},
+	}
+}
+
+func containerOpResultMessage(requestID, containerID string, err error) *agentv1.AgentMessage {
+	result := &agentv1.ContainerOpResult{
+		RequestId:   requestID,
+		Success:     err == nil,
+		ContainerId: containerID,
+	}
+	if err != nil {
+		result.ErrorMessage = err.Error()
+	}
+	return &agentv1.AgentMessage{
+		Payload: &agentv1.AgentMessage_ContainerOpResult{ContainerOpResult: result},
+	}
+}
+
+func imageListResultMessage(requestID string, images []docker.ImageSummary) *agentv1.AgentMessage {
+	out := make([]*agentv1.ImageSummary, len(images))
+	for i, img := range images {
+		out[i] = &agentv1.ImageSummary{
+			Id:              img.ID,
+			RepoTags:        img.RepoTags,
+			RepoDigests:     img.RepoDigests,
+			SizeBytes:       img.SizeBytes,
+			CreatedUnix:     img.CreatedUnix,
+			Dangling:        img.Dangling,
+			ContainersCount: img.ContainersCount,
+		}
+	}
+	return &agentv1.AgentMessage{
+		Payload: &agentv1.AgentMessage_ImageListResult{
+			ImageListResult: &agentv1.ImageListResult{RequestId: requestID, Images: out},
+		},
+	}
+}
+
+func imageDetailMessage(requestID string, d docker.ImageDetail) *agentv1.AgentMessage {
+	layers := make([]*agentv1.ImageLayer, len(d.Layers))
+	for i, l := range d.Layers {
+		layers[i] = &agentv1.ImageLayer{Digest: l.Digest, SizeBytes: l.SizeBytes}
+	}
+	return &agentv1.AgentMessage{
+		Payload: &agentv1.AgentMessage_ImageDetail{
+			ImageDetail: &agentv1.ImageDetail{
+				RequestId:    requestID,
+				Found:        d.Found,
+				ErrorMessage: d.ErrorMessage,
+				Id:           d.ID,
+				RepoTags:     d.RepoTags,
+				RepoDigests:  d.RepoDigests,
+				SizeBytes:    d.SizeBytes,
+				CreatedUnix:  d.CreatedUnix,
+				Architecture: d.Architecture,
+				Os:           d.OS,
+				Layers:       layers,
+				Env:          d.Env,
+				Labels:       d.Labels,
+			},
+		},
+	}
+}
+
+func imageOpResultMessage(requestID, imageID string, reclaimedBytes int64, err error) *agentv1.AgentMessage {
+	result := &agentv1.ImageOpResult{
+		RequestId:      requestID,
+		Success:        err == nil,
+		ImageId:        imageID,
+		ReclaimedBytes: reclaimedBytes,
+	}
+	if err != nil {
+		result.ErrorMessage = err.Error()
+	}
+	return &agentv1.AgentMessage{
+		Payload: &agentv1.AgentMessage_ImageOpResult{ImageOpResult: result},
 	}
 }

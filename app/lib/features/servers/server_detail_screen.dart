@@ -52,8 +52,7 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
 
   Future<void> _loadHistory() async {
     try {
-      final samples =
-          await widget.apiClient.getServerMetrics(widget.serverId);
+      final samples = await widget.apiClient.getServerMetrics(widget.serverId);
       if (!mounted) return;
       setState(() {
         _cpuHistory.addAll(samples.map((s) => s.cpuPercent));
@@ -73,7 +72,8 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
     _sub = channel.stream.listen(
       (data) {
         final update = ServerUpdate.fromJson(
-            jsonDecode(data as String) as Map<String, dynamic>);
+          jsonDecode(data as String) as Map<String, dynamic>,
+        );
         setState(() {
           _cpuHistory.add(update.resources.cpuPercent);
           _memHistory.add(update.resources.memPercent);
@@ -109,7 +109,8 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
           }
           if (snapshot.hasError) {
             return Center(
-                child: Text('Failed to load server: ${snapshot.error}'));
+              child: Text('Failed to load server: ${snapshot.error}'),
+            );
           }
           final server = snapshot.data!.server;
           return ListView(
@@ -119,8 +120,10 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
               if (_streamError != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
-                  child: Text(_streamError!,
-                      style: const TextStyle(color: Colors.orange)),
+                  child: Text(
+                    _streamError!,
+                    style: const TextStyle(color: Colors.orange),
+                  ),
                 ),
               const SizedBox(height: 24),
               _MetricChart(
@@ -141,7 +144,10 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
                 color: Colors.teal,
               ),
               const SizedBox(height: 24),
-              Text('Containers', style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                'Containers',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const SizedBox(height: 8),
               if (_containers.isEmpty)
                 const Padding(
@@ -149,23 +155,31 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
                   child: Text('No containers on this server.'),
                 )
               else
-                ..._containers.map((c) => ListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      leading: Icon(Icons.circle,
-                          size: 10, color: containerStateColor(c.state)),
-                      title: Text(c.name),
-                      subtitle: Text(
-                          '${c.containerId.substring(0, c.containerId.length < 12 ? c.containerId.length : 12)} • ${c.state}'),
-                      onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                ..._containers.map(
+                  (c) => ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      Icons.circle,
+                      size: 10,
+                      color: containerStateColor(c.state),
+                    ),
+                    title: Text(c.name),
+                    subtitle: Text(
+                      '${c.containerId.substring(0, c.containerId.length < 12 ? c.containerId.length : 12)} • ${c.state}',
+                    ),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
                         builder: (_) => ContainerDetailScreen(
                           apiClient: widget.apiClient,
                           serverId: widget.serverId,
                           serverName: widget.serverName,
                           container: c,
                         ),
-                      )),
-                    )),
+                      ),
+                    ),
+                  ),
+                ),
             ],
           );
         },
@@ -192,10 +206,14 @@ class _ServerHeader extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(server.hostname,
-                  style: Theme.of(context).textTheme.bodyMedium),
-              Text('${server.os}/${server.arch} • ${server.status}',
-                  style: Theme.of(context).textTheme.bodySmall),
+              Text(
+                server.hostname,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              Text(
+                '${server.os}/${server.arch} • ${server.status}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ],
           ),
         ),
@@ -227,10 +245,9 @@ class _MetricChart extends StatelessWidget {
             Text(label, style: Theme.of(context).textTheme.titleSmall),
             Text(
               current == null ? '—' : '${current.toStringAsFixed(0)}%',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleSmall
-                  ?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(
+                context,
+              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
             ),
           ],
         ),
@@ -239,8 +256,11 @@ class _MetricChart extends StatelessWidget {
           height: 80,
           child: values.length < 2
               ? Center(
-                  child: Text('Waiting for data…',
-                      style: Theme.of(context).textTheme.bodySmall))
+                  child: Text(
+                    'Waiting for data…',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                )
               : LineChart(
                   LineChartData(
                     minY: 0,

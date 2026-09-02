@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../api/api_client.dart';
 import '../../models/container.dart';
 import 'container_detail_screen.dart';
+import 'create_container_dialog.dart';
 
 const _groupByLabels = {
   'none': 'None',
@@ -15,10 +16,15 @@ const _groupByLabels = {
   'tag': 'Tag',
 };
 
+/// One row's unique key across the fleet — containerId alone isn't
+/// guaranteed unique across different servers/Docker daemons.
+String _selectionKey(FleetContainer c) =>
+    '${c.serverId}:${c.container.containerId}';
+
 /// Fleet-wide container inventory: search + filter (server-side, since the
-/// list spans every server) and client-side grouping by whichever
-/// dimension is selected — every dimension a group could use is already
-/// present on each [FleetContainer] the list endpoint returns.
+/// list spans every server), client-side grouping by whichever dimension
+/// is selected, a multi-select mode for bulk start/stop/restart/remove
+/// across servers, and a "Create container" entry point.
 class ContainerListScreen extends StatefulWidget {
   final ApiClient apiClient;
 
@@ -40,6 +46,13 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
   String? _selectedEnvironment;
   String? _selectedTag;
   String _groupBy = 'none';
+
+  bool _selectionMode = false;
+  final Set<String> _selectedKeys = {};
+  // Populated on every load so bulk actions can map a selected key back to
+  // its {serverId, containerId} without re-scanning the current snapshot.
+  Map<String, FleetContainer> _byKey = {};
+  bool _bulkRunning = false;
 
   @override
   void initState() {
@@ -110,21 +123,142 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
     return groups;
   }
 
-  void _openDetail(FleetContainer c) {
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => ContainerDetailScreen(
-        apiClient: widget.apiClient,
-        serverId: c.serverId,
-        serverName: c.serverName,
-        container: c.container,
+  Future<void> _openDetail(FleetContainer c) async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ContainerDetailScreen(
+          apiClient: widget.apiClient,
+          serverId: c.serverId,
+          serverName: c.serverName,
+          container: c.container,
+        ),
       ),
-    ));
+    );
+    if (changed == true) _refresh();
+  }
+
+  Future<void> _openCreateContainer() async {
+    final newId = await showCreateContainerDialog(
+      context,
+      apiClient: widget.apiClient,
+    );
+    if (newId != null) _refresh();
+  }
+
+  void _toggleSelectionMode() {
+    setState(() {
+      _selectionMode = !_selectionMode;
+      if (!_selectionMode) _selectedKeys.clear();
+    });
+  }
+
+  void _toggleSelected(FleetContainer c) {
+    setState(() {
+      final key = _selectionKey(c);
+      if (_selectedKeys.contains(key)) {
+        _selectedKeys.remove(key);
+      } else {
+        _selectedKeys.add(key);
+      }
+    });
+  }
+
+  Future<void> _runBulkAction(String action) async {
+    final targets = [
+      for (final key in _selectedKeys)
+        if (_byKey[key] != null)
+          BulkActionTarget(
+            serverId: _byKey[key]!.serverId,
+            containerId: _byKey[key]!.container.containerId,
+          ),
+    ];
+    if (targets.isEmpty) return;
+
+    if (action == 'remove') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: Text('Remove ${targets.length} container(s)?'),
+          content: const Text(
+            'This permanently deletes them, stopping any that are still running. '
+            'Any data outside a named volume is lost.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Remove'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
+    setState(() => _bulkRunning = true);
+    try {
+      final results = await widget.apiClient.bulkContainerAction(
+        targets,
+        action,
+        force: action == 'remove',
+      );
+      final succeeded = results.where((r) => r.success).length;
+      final failed = results.length - succeeded;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '$action: $succeeded succeeded'
+              '${failed > 0 ? ', $failed failed' : ''}',
+            ),
+          ),
+        );
+      }
+      setState(() {
+        _selectionMode = false;
+        _selectedKeys.clear();
+      });
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Bulk $action failed: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _bulkRunning = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Containers')),
+      appBar: AppBar(
+        title: Text(
+          _selectionMode ? '${_selectedKeys.length} selected' : 'Containers',
+        ),
+        actions: [
+          IconButton(
+            icon: Icon(_selectionMode ? Icons.close : Icons.checklist),
+            tooltip: _selectionMode ? 'Cancel selection' : 'Select',
+            onPressed: _toggleSelectionMode,
+          ),
+        ],
+      ),
+      floatingActionButton: _selectionMode
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _openCreateContainer,
+              icon: const Icon(Icons.add),
+              label: const Text('Create container'),
+            ),
+      bottomNavigationBar: _selectionMode && _selectedKeys.isNotEmpty
+          ? _BulkActionBar(running: _bulkRunning, onAction: _runBulkAction)
+          : null,
       body: Column(
         children: [
           Padding(
@@ -149,32 +283,38 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
                 }
                 if (snapshot.hasError) {
                   return Center(
-                      child: Text('Failed to load containers: ${snapshot.error}'));
+                    child: Text('Failed to load containers: ${snapshot.error}'),
+                  );
                 }
                 final containers = snapshot.data ?? [];
+                _byKey = {for (final c in containers) _selectionKey(c): c};
 
                 final servers = <String, String>{
                   for (final c in containers) c.serverId: c.serverName,
                 };
-                final images = containers
-                    .map((c) => c.container.image)
-                    .whereType<String>()
-                    .where((i) => i.isNotEmpty)
-                    .toSet()
-                    .toList()
-                  ..sort();
-                final statuses = containers.map((c) => c.container.state).toSet().toList()
-                  ..sort();
+                final images =
+                    containers
+                        .map((c) => c.container.image)
+                        .whereType<String>()
+                        .where((i) => i.isNotEmpty)
+                        .toSet()
+                        .toList()
+                      ..sort();
+                final statuses =
+                    containers.map((c) => c.container.state).toSet().toList()
+                      ..sort();
                 final owners = <String, String>{
                   for (final c in containers)
-                    if (c.ownerId != null && c.ownerEmail != null) c.ownerId!: c.ownerEmail!,
+                    if (c.ownerId != null && c.ownerEmail != null)
+                      c.ownerId!: c.ownerEmail!,
                 };
-                final environments = containers
-                    .map((c) => c.environment)
-                    .whereType<String>()
-                    .toSet()
-                    .toList()
-                  ..sort();
+                final environments =
+                    containers
+                        .map((c) => c.environment)
+                        .whereType<String>()
+                        .toSet()
+                        .toList()
+                      ..sort();
                 final tags = containers.expand((c) => c.tags).toSet().toList()
                   ..sort();
 
@@ -184,7 +324,10 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
                 return Column(
                   children: [
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                       child: Wrap(
                         spacing: 8,
                         runSpacing: 8,
@@ -336,7 +479,8 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
                                 ),
                             ],
                             onChanged: (value) {
-                              if (value != null) setState(() => _groupBy = value);
+                              if (value != null)
+                                setState(() => _groupBy = value);
                             },
                           ),
                         ],
@@ -348,17 +492,17 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
                           : ListView(
                               padding: const EdgeInsets.symmetric(vertical: 4),
                               children: _groupBy == 'none'
-                                  ? containers.map(_ContainerTile.new).map(
-                                      (tile) => tile.build(context, _openDetail)).toList()
+                                  ? containers.map(_buildTile).toList()
                                   : [
                                       for (final key in groupKeys)
                                         ExpansionTile(
                                           title: Text(key),
-                                          subtitle: Text('${grouped[key]!.length} container(s)'),
+                                          subtitle: Text(
+                                            '${grouped[key]!.length} container(s)',
+                                          ),
                                           initiallyExpanded: true,
                                           children: grouped[key]!
-                                              .map(_ContainerTile.new)
-                                              .map((tile) => tile.build(context, _openDetail))
+                                              .map(_buildTile)
                                               .toList(),
                                         ),
                                     ],
@@ -373,26 +517,83 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
       ),
     );
   }
-}
 
-class _ContainerTile {
-  final FleetContainer fleetContainer;
-  _ContainerTile(this.fleetContainer);
-
-  Widget build(BuildContext context, void Function(FleetContainer) onTap) {
-    final c = fleetContainer.container;
+  Widget _buildTile(FleetContainer c) {
+    final selected = _selectedKeys.contains(_selectionKey(c));
     return ListTile(
       dense: true,
-      leading: Icon(Icons.circle, size: 10, color: containerStateColor(c.state)),
-      title: Text(c.name),
+      leading: _selectionMode
+          ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(c))
+          : Icon(
+              Icons.circle,
+              size: 10,
+              color: containerStateColor(c.container.state),
+            ),
+      title: Text(c.container.name),
       subtitle: Text(
         [
-          fleetContainer.serverName,
-          if (c.image != null && c.image!.isNotEmpty) c.image!,
-          c.state,
+          c.serverName,
+          if (c.container.image != null && c.container.image!.isNotEmpty)
+            c.container.image!,
+          c.container.state,
         ].join(' • '),
       ),
-      onTap: () => onTap(fleetContainer),
+      onTap: _selectionMode ? () => _toggleSelected(c) : () => _openDetail(c),
+      onLongPress: () {
+        if (!_selectionMode) setState(() => _selectionMode = true);
+        _toggleSelected(c);
+      },
+    );
+  }
+}
+
+class _BulkActionBar extends StatelessWidget {
+  final bool running;
+  final void Function(String action) onAction;
+
+  const _BulkActionBar({required this.running, required this.onAction});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: running
+            ? const Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            : Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: () => onAction('start'),
+                    icon: const Icon(Icons.play_arrow, size: 18),
+                    label: const Text('Start'),
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: () => onAction('stop'),
+                    icon: const Icon(Icons.stop, size: 18),
+                    label: const Text('Stop'),
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: () => onAction('restart'),
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('Restart'),
+                  ),
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                    onPressed: () => onAction('remove'),
+                    icon: const Icon(Icons.delete, size: 18),
+                    label: const Text('Remove'),
+                  ),
+                ],
+              ),
+      ),
     );
   }
 }
