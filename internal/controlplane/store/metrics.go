@@ -15,6 +15,23 @@ type MetricSample struct {
 	DiskPercent float64   `json:"diskPercent"`
 }
 
+// ContainerResourceUsage mirrors a row in container_metric_samples — one
+// point in a single container's resource-usage history, the per-container
+// counterpart to MetricSample above.
+type ContainerResourceUsage struct {
+	ContainerID     string    `json:"containerId"`
+	RecordedAt      time.Time `json:"recordedAt"`
+	CPUPercent      float64   `json:"cpuPercent"`
+	MemUsageBytes   int64     `json:"memUsageBytes"`
+	MemLimitBytes   int64     `json:"memLimitBytes"`
+	MemPercent      float64   `json:"memPercent"`
+	NetRxBytes      int64     `json:"netRxBytes"`
+	NetTxBytes      int64     `json:"netTxBytes"`
+	BlockReadBytes  int64     `json:"blockReadBytes"`
+	BlockWriteBytes int64     `json:"blockWriteBytes"`
+	PIDs            int64     `json:"pids"`
+}
+
 // ContainerPort is one published or exposed port on a container.
 type ContainerPort struct {
 	IP          string `json:"ip,omitempty"`
@@ -120,6 +137,54 @@ func (s *Store) ListMetricSamples(ctx context.Context, serverID string, since ti
 // are dropped outright, not aggregated into coarser history.
 func (s *Store) PruneMetricSamplesOlderThan(ctx context.Context, cutoff time.Time) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM server_metric_samples WHERE recorded_at < $1`, cutoff)
+	return err
+}
+
+// InsertContainerMetricSample appends one resource-usage sample for one
+// container on serverID — the per-container counterpart to
+// InsertMetricSample above, recorded at the same heartbeat-carried time for
+// the same offline-buffer-replay reason.
+func (s *Store) InsertContainerMetricSample(ctx context.Context, serverID string, recordedAt time.Time, usage ContainerResourceUsage) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO container_metric_samples
+			(server_id, container_id, recorded_at, cpu_percent, mem_usage_bytes, mem_limit_bytes, mem_percent, net_rx_bytes, net_tx_bytes, block_read_bytes, block_write_bytes, pids)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, serverID, usage.ContainerID, recordedAt, usage.CPUPercent, usage.MemUsageBytes, usage.MemLimitBytes, usage.MemPercent, usage.NetRxBytes, usage.NetTxBytes, usage.BlockReadBytes, usage.BlockWriteBytes, usage.PIDs)
+	return err
+}
+
+// ListContainerMetricSamples returns one container's samples recorded at or
+// after since, oldest first — the per-container counterpart to
+// ListMetricSamples above.
+func (s *Store) ListContainerMetricSamples(ctx context.Context, serverID, containerID string, since time.Time) ([]ContainerResourceUsage, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT container_id, recorded_at, cpu_percent, mem_usage_bytes, mem_limit_bytes, mem_percent, net_rx_bytes, net_tx_bytes, block_read_bytes, block_write_bytes, pids
+		FROM container_metric_samples
+		WHERE server_id = $1 AND container_id = $2 AND recorded_at >= $3
+		ORDER BY recorded_at ASC
+	`, serverID, containerID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	samples := []ContainerResourceUsage{}
+	for rows.Next() {
+		var u ContainerResourceUsage
+		if err := rows.Scan(&u.ContainerID, &u.RecordedAt, &u.CPUPercent, &u.MemUsageBytes, &u.MemLimitBytes, &u.MemPercent, &u.NetRxBytes, &u.NetTxBytes, &u.BlockReadBytes, &u.BlockWriteBytes, &u.PIDs); err != nil {
+			return nil, err
+		}
+		samples = append(samples, u)
+	}
+	return samples, rows.Err()
+}
+
+// PruneContainerMetricSamplesOlderThan deletes container samples recorded
+// before cutoff, across all servers/containers — the per-container
+// counterpart to PruneMetricSamplesOlderThan above, called by the same
+// retention loop (see cmd/controlplane).
+func (s *Store) PruneContainerMetricSamplesOlderThan(ctx context.Context, cutoff time.Time) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM container_metric_samples WHERE recorded_at < $1`, cutoff)
 	return err
 }
 

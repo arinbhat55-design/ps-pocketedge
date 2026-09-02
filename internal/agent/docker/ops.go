@@ -102,6 +102,21 @@ func UpdateRestartPolicy(ctx context.Context, cli *client.Client, containerID, n
 	return err
 }
 
+// UpdateResourceLimits changes containerID's CPU/memory/process limits in
+// place via the same ContainerUpdate call UpdateRestartPolicy uses — no
+// recreate needed. 0 on any field clears that limit.
+func UpdateResourceLimits(ctx context.Context, cli *client.Client, containerID string, nanoCPUs, memoryLimitBytes, memoryReservationBytes, pidsLimit int64) error {
+	_, err := cli.ContainerUpdate(ctx, containerID, container.UpdateConfig{
+		Resources: resourcesFromConfig(ContainerConfig{
+			NanoCPUs:               nanoCPUs,
+			MemoryLimitBytes:       memoryLimitBytes,
+			MemoryReservationBytes: memoryReservationBytes,
+			PidsLimit:              pidsLimit,
+		}),
+	})
+	return err
+}
+
 // createStandaloneContainer builds and creates (but does not start) a
 // container from cfg. Shared by CreateContainer (starts it immediately)
 // and CloneContainer (deliberately does not).
@@ -136,6 +151,7 @@ func createStandaloneContainer(ctx context.Context, cli *client.Client, cfg Cont
 		PortBindings:  portBindings,
 		RestartPolicy: restartPolicyFromConfig(cfg.RestartPolicyName, cfg.RestartPolicyMaxRetryCount),
 		Mounts:        mounts,
+		Resources:     resourcesFromConfig(cfg),
 	}
 
 	resp, err := cli.ContainerCreate(ctx, config, hostConfig, nil, nil, cfg.Name)
@@ -154,6 +170,24 @@ func restartPolicyFromConfig(name string, maxRetry int) container.RestartPolicy 
 		policy.MaximumRetryCount = maxRetry
 	}
 	return policy
+}
+
+// resourcesFromConfig translates cfg's resource-limit fields into a
+// container.Resources — 0 on any field means "not set" (see
+// ContainerConfig's doc comment), which for NanoCPUs/Memory/
+// MemoryReservation is already Docker's own zero-value-means-unlimited
+// convention. PidsLimit needs an explicit pointer since the Engine API
+// distinguishes an omitted limit (nil) from an explicit "no limit" (-1).
+func resourcesFromConfig(cfg ContainerConfig) container.Resources {
+	res := container.Resources{
+		NanoCPUs:          cfg.NanoCPUs,
+		Memory:            cfg.MemoryLimitBytes,
+		MemoryReservation: cfg.MemoryReservationBytes,
+	}
+	if cfg.PidsLimit > 0 {
+		res.PidsLimit = &cfg.PidsLimit
+	}
+	return res
 }
 
 // buildPortsFromSpec is buildPorts' (deploy.go) counterpart for a
@@ -236,6 +270,12 @@ func configFromInspect(info container.InspectResponse, newName string) Container
 		cfg.RestartPolicyName = string(info.HostConfig.RestartPolicy.Name)
 		cfg.RestartPolicyMaxRetryCount = info.HostConfig.RestartPolicy.MaximumRetryCount
 		cfg.Ports = portSpecsFromBindings(info.HostConfig.PortBindings)
+		cfg.NanoCPUs = info.HostConfig.NanoCPUs
+		cfg.MemoryLimitBytes = info.HostConfig.Memory
+		cfg.MemoryReservationBytes = info.HostConfig.MemoryReservation
+		if info.HostConfig.PidsLimit != nil {
+			cfg.PidsLimit = *info.HostConfig.PidsLimit
+		}
 	}
 
 	for _, m := range info.Mounts {

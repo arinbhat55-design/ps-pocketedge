@@ -88,6 +88,9 @@ class _RecreateContainerSheetState extends State<_RecreateContainerSheet> {
         style: TextStyle(fontStyle: FontStyle.italic),
       ),
       onSubmit: _submit,
+      apiClient: widget.apiClient,
+      serverId: widget.serverId,
+      excludeContainerId: widget.containerId,
     );
   }
 }

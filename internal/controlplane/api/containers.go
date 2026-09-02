@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,13 +36,14 @@ func handleListContainers(log *slog.Logger, st *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		filter := store.ContainerFilter{
-			Name:        q.Get("name"),
-			Image:       q.Get("image"),
-			ServerID:    q.Get("serverId"),
-			Status:      q.Get("status"),
-			OwnerID:     q.Get("ownerId"),
-			Environment: q.Get("environment"),
-			Tags:        q["tag"],
+			Name:         q.Get("name"),
+			Image:        q.Get("image"),
+			ServerID:     q.Get("serverId"),
+			Status:       q.Get("status"),
+			OwnerID:      q.Get("ownerId"),
+			Environment:  q.Get("environment"),
+			Tags:         q["tag"],
+			DeploymentID: q.Get("deploymentId"),
 		}
 
 		containers, err := st.ListContainersFiltered(r.Context(), filter)
@@ -57,15 +59,36 @@ func handleListContainers(log *slog.Logger, st *store.Store) http.HandlerFunc {
 
 // containerDetailResponse is the JSON shape for a successful inspect
 // response — the expensive fields InspectContainerCommand fetched on
-// demand from the agent.
+// demand from the agent. HealthLog/Command/Entrypoint/WorkingDir/Labels/
+// Image back the troubleshooting view's health-check history and
+// container-configuration inspect panel.
 type containerDetailResponse struct {
-	ContainerID                string   `json:"containerId"`
-	Env                        []string `json:"env"`
-	RestartPolicyName          string   `json:"restartPolicyName"`
-	RestartPolicyMaxRetryCount int      `json:"restartPolicyMaxRetryCount"`
-	HealthStatus               string   `json:"healthStatus"`
-	HealthFailingStreak        int      `json:"healthFailingStreak"`
-	RestartCount               int      `json:"restartCount"`
+	ContainerID                string            `json:"containerId"`
+	Env                        []string          `json:"env"`
+	RestartPolicyName          string            `json:"restartPolicyName"`
+	RestartPolicyMaxRetryCount int               `json:"restartPolicyMaxRetryCount"`
+	HealthStatus               string            `json:"healthStatus"`
+	HealthFailingStreak        int               `json:"healthFailingStreak"`
+	RestartCount               int               `json:"restartCount"`
+	HealthLog                  []healthCheckJSON `json:"healthLog"`
+	Command                    []string          `json:"command"`
+	Entrypoint                 []string          `json:"entrypoint"`
+	WorkingDir                 string            `json:"workingDir"`
+	Labels                     map[string]string `json:"labels"`
+	Image                      string            `json:"image"`
+	NanoCPUs                   int64             `json:"nanoCpus"`
+	MemoryLimitBytes           int64             `json:"memoryLimitBytes"`
+	MemoryReservationBytes     int64             `json:"memoryReservationBytes"`
+	PidsLimit                  int64             `json:"pidsLimit"`
+}
+
+// healthCheckJSON is one entry in a container's bounded health-check
+// result history (Docker keeps its last 5 runs).
+type healthCheckJSON struct {
+	StartUnix int64  `json:"startUnix"`
+	EndUnix   int64  `json:"endUnix"`
+	ExitCode  int    `json:"exitCode"`
+	Output    string `json:"output"`
 }
 
 // handleInspectContainer dispatches an InspectContainerCommand to the
@@ -108,6 +131,15 @@ func handleInspectContainer(log *slog.Logger, dispatcher *deploy.Dispatcher, wai
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": detail.GetErrorMessage()})
 				return
 			}
+			healthLog := make([]healthCheckJSON, len(detail.GetHealthLog()))
+			for i, h := range detail.GetHealthLog() {
+				healthLog[i] = healthCheckJSON{
+					StartUnix: h.GetStartUnix(),
+					EndUnix:   h.GetEndUnix(),
+					ExitCode:  int(h.GetExitCode()),
+					Output:    h.GetOutput(),
+				}
+			}
 			writeJSON(w, http.StatusOK, containerDetailResponse{
 				ContainerID:                detail.GetContainerId(),
 				Env:                        detail.GetEnv(),
@@ -116,6 +148,16 @@ func handleInspectContainer(log *slog.Logger, dispatcher *deploy.Dispatcher, wai
 				HealthStatus:               detail.GetHealthStatus(),
 				HealthFailingStreak:        int(detail.GetHealthFailingStreak()),
 				RestartCount:               int(detail.GetRestartCount()),
+				HealthLog:                  healthLog,
+				Command:                    detail.GetCommand(),
+				Entrypoint:                 detail.GetEntrypoint(),
+				WorkingDir:                 detail.GetWorkingDir(),
+				Labels:                     detail.GetLabels(),
+				Image:                      detail.GetImage(),
+				NanoCPUs:                   detail.GetNanoCpus(),
+				MemoryLimitBytes:           detail.GetMemoryLimitBytes(),
+				MemoryReservationBytes:     detail.GetMemoryReservationBytes(),
+				PidsLimit:                  detail.GetPidsLimit(),
 			})
 		case <-time.After(inspectTimeout):
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "timed out waiting for agent response"})
@@ -370,6 +412,11 @@ type containerConfigRequest struct {
 	RestartPolicyName          string                    `json:"restartPolicyName,omitempty"`
 	RestartPolicyMaxRetryCount int32                     `json:"restartPolicyMaxRetryCount,omitempty"`
 	Labels                     map[string]string         `json:"labels,omitempty"`
+	// Resource limits — 0/omitted means "not set" (unlimited).
+	NanoCPUs               int64 `json:"nanoCpus,omitempty"`
+	MemoryLimitBytes       int64 `json:"memoryLimitBytes,omitempty"`
+	MemoryReservationBytes int64 `json:"memoryReservationBytes,omitempty"`
+	PidsLimit              int64 `json:"pidsLimit,omitempty"`
 }
 
 type containerPortSpecJSON struct {
@@ -411,7 +458,39 @@ func (req containerConfigRequest) toProto() *agentv1.ContainerConfig {
 		RestartPolicyName:          req.RestartPolicyName,
 		RestartPolicyMaxRetryCount: req.RestartPolicyMaxRetryCount,
 		Labels:                     req.Labels,
+		NanoCpus:                   req.NanoCPUs,
+		MemoryLimitBytes:           req.MemoryLimitBytes,
+		MemoryReservationBytes:     req.MemoryReservationBytes,
+		PidsLimit:                  req.PidsLimit,
 	}
+}
+
+// checkPortConflicts looks up each requested host port against
+// store.FindPortConflict (the same cached-container-inventory check
+// handleCheckPortConflict, volumes.go, exposes standalone), so create/
+// recreate get the guard for free without the client needing a separate
+// round trip first. excludeContainerID lets handleRecreateContainer ignore
+// a match against the very container being recreated, which is about to
+// give up that port itself. A HostPort of 0 (agent-assigned) never
+// conflicts.
+func checkPortConflicts(ctx context.Context, st *store.Store, serverID, excludeContainerID string, ports []containerPortSpecJSON) (message string, conflict bool, err error) {
+	for _, p := range ports {
+		if p.HostPort == 0 {
+			continue
+		}
+		protocol := p.Protocol
+		if protocol == "" {
+			protocol = "tcp"
+		}
+		containerID, found, err := st.FindPortConflict(ctx, serverID, uint16(p.HostPort), protocol)
+		if err != nil {
+			return "", false, err
+		}
+		if found && containerID != excludeContainerID {
+			return fmt.Sprintf("host port %d/%s already used by container %s", p.HostPort, protocol, containerID), true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // handleCreateContainer creates and starts a new standalone container
@@ -431,6 +510,14 @@ func handleCreateContainer(log *slog.Logger, st *store.Store, dispatcher *deploy
 		}
 		if err := enforceImagePolicy(r.Context(), st, []string{req.Image}); err != nil {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+		if msg, conflict, err := checkPortConflicts(r.Context(), st, serverID, "", req.Ports); err != nil {
+			log.Error("failed to check port conflicts", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		} else if conflict {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": msg})
 			return
 		}
 
@@ -546,6 +633,14 @@ func handleRecreateContainer(log *slog.Logger, st *store.Store, dispatcher *depl
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 			return
 		}
+		if msg, conflict, err := checkPortConflicts(r.Context(), st, serverID, containerID, req.Ports); err != nil {
+			log.Error("failed to check port conflicts", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		} else if conflict {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": msg})
+			return
+		}
 
 		previousImage, _ := findContainerState(r.Context(), st, serverID, containerID)
 
@@ -619,6 +714,49 @@ func handleUpdateRestartPolicy(log *slog.Logger, dispatcher *deploy.Dispatcher, 
 					ContainerId:                containerID,
 					RestartPolicyName:          req.RestartPolicyName,
 					RestartPolicyMaxRetryCount: req.RestartPolicyMaxRetryCount,
+				},
+			},
+		}
+		writeContainerOpResult(w, log, dispatcher, opWaiter, serverID, requestID, cmd, http.StatusOK)
+	}
+}
+
+// handleUpdateResourceLimits changes an existing container's CPU/memory/
+// process limits live, without recreating it — same shape as
+// handleUpdateRestartPolicy above.
+func handleUpdateResourceLimits(log *slog.Logger, dispatcher *deploy.Dispatcher, opWaiter *deploy.OpWaiter) http.HandlerFunc {
+	type request struct {
+		NanoCPUs               int64 `json:"nanoCpus"`
+		MemoryLimitBytes       int64 `json:"memoryLimitBytes"`
+		MemoryReservationBytes int64 `json:"memoryReservationBytes"`
+		PidsLimit              int64 `json:"pidsLimit"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		serverID := r.PathValue("id")
+		containerID := r.PathValue("containerId")
+
+		var req request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		requestID, ok := newRequestID(w, log)
+		if !ok {
+			return
+		}
+
+		cmd := &agentv1.ControlMessage{
+			Payload: &agentv1.ControlMessage_UpdateResourceLimits{
+				UpdateResourceLimits: &agentv1.UpdateResourceLimitsCommand{
+					RequestId:              requestID,
+					ServerId:               serverID,
+					ContainerId:            containerID,
+					NanoCpus:               req.NanoCPUs,
+					MemoryLimitBytes:       req.MemoryLimitBytes,
+					MemoryReservationBytes: req.MemoryReservationBytes,
+					PidsLimit:              req.PidsLimit,
 				},
 			},
 		}

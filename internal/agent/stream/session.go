@@ -264,6 +264,14 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 	// select loop below ever calls stream.Send directly.
 	outbound := make(chan *agentv1.AgentMessage, 16)
 
+	// streams tracks in-progress log tails and exec sessions by
+	// request_id, so a later message for the same request_id (a
+	// StopStreamCommand, or an ExecInputCommand carrying keystrokes) can be
+	// routed to that already-running goroutine instead of the switch below
+	// spawning a new one — unlike every other command, these two are
+	// multi-message conversations, not one-shot request/reply.
+	streams := newActiveStreams()
+
 	recvErrCh := make(chan error, 1)
 	go func() {
 		for {
@@ -273,6 +281,10 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 				return
 			}
 			switch {
+			case msg.GetStopStream() != nil:
+				streams.stop(msg.GetStopStream().GetRequestId())
+			case msg.GetExecInput() != nil:
+				streams.sendInput(msg.GetExecInput())
 			case msg.GetDeployStack() != nil:
 				go r.handleDeploy(sessionCtx, dockerCli, msg.GetDeployStack(), outbound)
 			case msg.GetBackup() != nil:
@@ -293,6 +305,12 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 				go r.handleRecreateContainer(sessionCtx, dockerCli, msg.GetRecreateContainer(), outbound)
 			case msg.GetUpdateRestartPolicy() != nil:
 				go r.handleUpdateRestartPolicy(sessionCtx, dockerCli, msg.GetUpdateRestartPolicy(), outbound)
+			case msg.GetUpdateResourceLimits() != nil:
+				go r.handleUpdateResourceLimits(sessionCtx, dockerCli, msg.GetUpdateResourceLimits(), outbound)
+			case msg.GetUndeploy() != nil:
+				go r.handleUndeploy(sessionCtx, dockerCli, msg.GetUndeploy(), outbound)
+			case msg.GetDeployService() != nil:
+				go r.handleDeployService(sessionCtx, dockerCli, msg.GetDeployService(), outbound)
 			case msg.GetListImages() != nil:
 				go r.handleListImages(sessionCtx, dockerCli, msg.GetListImages(), outbound)
 			case msg.GetInspectImage() != nil:
@@ -303,6 +321,30 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 				go r.handleRemoveImage(sessionCtx, dockerCli, msg.GetRemoveImage(), outbound)
 			case msg.GetPruneImages() != nil:
 				go r.handlePruneImages(sessionCtx, dockerCli, msg.GetPruneImages(), outbound)
+			case msg.GetStreamLogs() != nil:
+				go r.handleStreamLogs(sessionCtx, dockerCli, msg.GetStreamLogs(), outbound, streams)
+			case msg.GetListEvents() != nil:
+				go r.handleListEvents(sessionCtx, dockerCli, msg.GetListEvents(), outbound)
+			case msg.GetExecStart() != nil:
+				go r.handleExecStart(sessionCtx, dockerCli, msg.GetExecStart(), outbound, streams)
+			case msg.GetListNetworks() != nil:
+				go r.handleListNetworks(sessionCtx, dockerCli, msg.GetListNetworks(), outbound)
+			case msg.GetCreateNetwork() != nil:
+				go r.handleCreateNetwork(sessionCtx, dockerCli, msg.GetCreateNetwork(), outbound)
+			case msg.GetRemoveNetwork() != nil:
+				go r.handleRemoveNetwork(sessionCtx, dockerCli, msg.GetRemoveNetwork(), outbound)
+			case msg.GetConnectContainerToNetwork() != nil:
+				go r.handleConnectContainerToNetwork(sessionCtx, dockerCli, msg.GetConnectContainerToNetwork(), outbound)
+			case msg.GetDisconnectContainerFromNetwork() != nil:
+				go r.handleDisconnectContainerFromNetwork(sessionCtx, dockerCli, msg.GetDisconnectContainerFromNetwork(), outbound)
+			case msg.GetListVolumes() != nil:
+				go r.handleListVolumes(sessionCtx, dockerCli, msg.GetListVolumes(), outbound)
+			case msg.GetCreateVolume() != nil:
+				go r.handleCreateVolume(sessionCtx, dockerCli, msg.GetCreateVolume(), outbound)
+			case msg.GetRemoveVolume() != nil:
+				go r.handleRemoveVolume(sessionCtx, dockerCli, msg.GetRemoveVolume(), outbound)
+			case msg.GetInspectVolume() != nil:
+				go r.handleInspectVolume(sessionCtx, dockerCli, msg.GetInspectVolume(), outbound)
 			}
 		}
 	}()
@@ -375,7 +417,7 @@ func (r *Runner) flushBufferedHeartbeats(ctx context.Context, stream agentv1.Age
 			CPUPercent:  s.CPUPercent,
 			MemPercent:  s.MemPercent,
 			DiskPercent: s.DiskPercent,
-		}, nil, false)
+		}, nil, false, nil, false)
 		if err := stream.Send(msg); err != nil {
 			r.log.Warn("failed to send buffered heartbeat, remaining samples dropped", "error", err)
 			return
@@ -576,6 +618,39 @@ func (r *Runner) handleUpdateRestartPolicy(ctx context.Context, dockerCli *docke
 	r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetContainerId(), err)
 }
 
+func (r *Runner) handleUpdateResourceLimits(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.UpdateResourceLimitsCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetContainerId(), errors.New("docker client unavailable on this agent"))
+		return
+	}
+	err := docker.UpdateResourceLimits(ctx, dockerCli, cmd.GetContainerId(), cmd.GetNanoCpus(), cmd.GetMemoryLimitBytes(), cmd.GetMemoryReservationBytes(), cmd.GetPidsLimit())
+	r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetContainerId(), err)
+}
+
+// handleUndeploy tears down a whole deployment (stack-level remove) — see
+// docker.Undeploy. Answered with a ContainerOpResult like every other
+// op-style command above, correlated by request_id.
+func (r *Runner) handleUndeploy(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.UndeployCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetDeploymentId(), errors.New("docker client unavailable on this agent"))
+		return
+	}
+	err := docker.Undeploy(ctx, dockerCli, cmd.GetDeploymentId())
+	r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetDeploymentId(), err)
+}
+
+// handleDeployService redeploys one service within an already-deployed
+// stack — see docker.DeployService. Answered with a ContainerOpResult,
+// correlated by request_id.
+func (r *Runner) handleDeployService(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.DeployServiceCommand, outbound chan<- *agentv1.AgentMessage) {
+	if dockerCli == nil {
+		r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetServiceName(), errors.New("docker client unavailable on this agent"))
+		return
+	}
+	err := docker.DeployService(ctx, dockerCli, cmd.GetDeploymentId(), cmd.GetStackName(), cmd.GetComposeYaml(), cmd.GetEnv(), cmd.GetServiceName())
+	r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetServiceName(), err)
+}
+
 // replyOp sends a ContainerOpResult for requestID onto outbound,
 // success iff err is nil.
 func (r *Runner) replyOp(ctx context.Context, outbound chan<- *agentv1.AgentMessage, requestID, containerID string, err error) {
@@ -697,6 +772,10 @@ func containerConfigFromProto(cfg *agentv1.ContainerConfig) docker.ContainerConf
 		RestartPolicyName:          cfg.GetRestartPolicyName(),
 		RestartPolicyMaxRetryCount: int(cfg.GetRestartPolicyMaxRetryCount()),
 		Labels:                     cfg.GetLabels(),
+		NanoCPUs:                   cfg.GetNanoCpus(),
+		MemoryLimitBytes:           cfg.GetMemoryLimitBytes(),
+		MemoryReservationBytes:     cfg.GetMemoryReservationBytes(),
+		PidsLimit:                  cfg.GetPidsLimit(),
 	}
 }
 
@@ -761,6 +840,7 @@ func (r *Runner) heartbeatMessage(ctx context.Context, dockerCli *dockerclient.C
 	refreshContainers := tick%containerListEvery == 0
 
 	var containers []*agentv1.ContainerSummary
+	var containerStats []*agentv1.ContainerResourceUsage
 	if refreshContainers && dockerCli != nil {
 		list, err := docker.ListContainers(ctx, dockerCli)
 		if err != nil {
@@ -782,9 +862,69 @@ func (r *Runner) heartbeatMessage(ctx context.Context, dockerCli *dockerclient.C
 				Mounts:       mapContainerMounts(c.Mounts),
 			}
 		}
+		containerStats = r.collectContainerStats(ctx, dockerCli, list)
 	}
 
-	return buildHeartbeat(serverID, time.Now(), snap, containers, refreshContainers)
+	return buildHeartbeat(serverID, time.Now(), snap, containers, refreshContainers, containerStats, refreshContainers)
+}
+
+// containerStatsTimeout bounds each container's stats call so one stuck
+// cgroup read can't stall the whole heartbeat.
+const containerStatsTimeout = 5 * time.Second
+
+// collectContainerStats samples resource usage for every running container
+// in list, concurrently (each ContainerStats call briefly blocks daemon-side
+// to compute a CPU delta, so doing them one at a time would multiply that
+// wait by the container count). Rides the same refresh cadence as the
+// container list itself — see heartbeatMessage's doc comment.
+func (r *Runner) collectContainerStats(ctx context.Context, dockerCli *dockerclient.Client, list []docker.ContainerSummary) []*agentv1.ContainerResourceUsage {
+	type result struct {
+		id    string
+		stats docker.ContainerStats
+		err   error
+	}
+
+	var running []docker.ContainerSummary
+	for _, c := range list {
+		if c.State == "running" {
+			running = append(running, c)
+		}
+	}
+	if len(running) == 0 {
+		return nil
+	}
+
+	results := make(chan result, len(running))
+	for _, c := range running {
+		go func(id string) {
+			statsCtx, cancel := context.WithTimeout(ctx, containerStatsTimeout)
+			defer cancel()
+			stats, err := docker.CollectContainerStats(statsCtx, dockerCli, id)
+			results <- result{id: id, stats: stats, err: err}
+		}(c.ID)
+	}
+
+	out := make([]*agentv1.ContainerResourceUsage, 0, len(running))
+	for range running {
+		res := <-results
+		if res.err != nil {
+			r.log.Warn("failed to collect container stats", "container_id", res.id, "error", res.err)
+			continue
+		}
+		out = append(out, &agentv1.ContainerResourceUsage{
+			ContainerId:     res.id,
+			CpuPercent:      res.stats.CPUPercent,
+			MemUsageBytes:   res.stats.MemUsageBytes,
+			MemLimitBytes:   res.stats.MemLimitBytes,
+			MemPercent:      res.stats.MemPercent,
+			NetRxBytes:      res.stats.NetRxBytes,
+			NetTxBytes:      res.stats.NetTxBytes,
+			BlockReadBytes:  res.stats.BlockReadBytes,
+			BlockWriteBytes: res.stats.BlockWriteBytes,
+			Pids:            res.stats.PIDs,
+		})
+	}
+	return out
 }
 
 func mapContainerPorts(ports []docker.ContainerPort) []*agentv1.ContainerPort {
@@ -825,7 +965,7 @@ func mapContainerMounts(mounts []docker.ContainerMount) []*agentv1.ContainerMoun
 // buildHeartbeat assembles a Heartbeat AgentMessage from already-collected
 // data — shared by the live path above and flushBufferedHeartbeats, which
 // replays historical samples with no live container refresh.
-func buildHeartbeat(serverID string, sentAt time.Time, snap health.Snapshot, containers []*agentv1.ContainerSummary, containersIncluded bool) *agentv1.AgentMessage {
+func buildHeartbeat(serverID string, sentAt time.Time, snap health.Snapshot, containers []*agentv1.ContainerSummary, containersIncluded bool, containerStats []*agentv1.ContainerResourceUsage, containerStatsIncluded bool) *agentv1.AgentMessage {
 	return &agentv1.AgentMessage{
 		Payload: &agentv1.AgentMessage_Heartbeat{
 			Heartbeat: &agentv1.Heartbeat{
@@ -836,8 +976,10 @@ func buildHeartbeat(serverID string, sentAt time.Time, snap health.Snapshot, con
 					MemPercent:  snap.MemPercent,
 					DiskPercent: snap.DiskPercent,
 				},
-				Containers:         containers,
-				ContainersIncluded: containersIncluded,
+				Containers:             containers,
+				ContainersIncluded:     containersIncluded,
+				ContainerStats:         containerStats,
+				ContainerStatsIncluded: containerStatsIncluded,
 			},
 		},
 	}
@@ -882,6 +1024,15 @@ func restoreStatusMessage(backupID, deploymentID string, phase agentv1.TaskPhase
 }
 
 func containerDetailMessage(requestID, containerID string, d docker.ContainerDetail) *agentv1.AgentMessage {
+	healthLog := make([]*agentv1.HealthCheckEntry, len(d.HealthLog))
+	for i, h := range d.HealthLog {
+		healthLog[i] = &agentv1.HealthCheckEntry{
+			StartUnix: h.Start.Unix(),
+			EndUnix:   h.End.Unix(),
+			ExitCode:  int32(h.ExitCode),
+			Output:    h.Output,
+		}
+	}
 	return &agentv1.AgentMessage{
 		Payload: &agentv1.AgentMessage_ContainerDetail{
 			ContainerDetail: &agentv1.ContainerDetail{
@@ -895,6 +1046,16 @@ func containerDetailMessage(requestID, containerID string, d docker.ContainerDet
 				HealthStatus:               d.HealthStatus,
 				HealthFailingStreak:        int32(d.HealthFailingStreak),
 				RestartCount:               int32(d.RestartCount),
+				HealthLog:                  healthLog,
+				Command:                    d.Command,
+				Entrypoint:                 d.Entrypoint,
+				WorkingDir:                 d.WorkingDir,
+				Labels:                     d.Labels,
+				Image:                      d.Image,
+				NanoCpus:                   d.NanoCPUs,
+				MemoryLimitBytes:           d.MemoryLimitBytes,
+				MemoryReservationBytes:     d.MemoryReservationBytes,
+				PidsLimit:                  d.PidsLimit,
 			},
 		},
 	}

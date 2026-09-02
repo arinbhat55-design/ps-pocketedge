@@ -63,6 +63,12 @@ type ContainerConfig struct {
 	RestartPolicyName          string
 	RestartPolicyMaxRetryCount int
 	Labels                     map[string]string
+	// Resource limits — 0 means "not set" (unlimited), same convention as
+	// RestartPolicyMaxRetryCount/ContainerPortSpec.HostPort above.
+	NanoCPUs               int64
+	MemoryLimitBytes       int64
+	MemoryReservationBytes int64
+	PidsLimit              int64
 }
 
 // ContainerSummary is a snapshot of one container's identity and state, for

@@ -135,11 +135,18 @@ func (s *Store) IsImageApproved(ctx context.Context, ref string) (bool, error) {
 		return false, err
 	}
 	for _, p := range patterns {
-		if ref == p.Pattern || strings.HasPrefix(ref, p.Pattern) {
+		if matchesImagePattern(ref, p.Pattern) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// matchesImagePattern reports whether ref matches pattern by exact equality
+// or prefix — factored out of IsImageApproved so the matching rule itself
+// is unit-testable without a database.
+func matchesImagePattern(ref, pattern string) bool {
+	return ref == pattern || strings.HasPrefix(ref, pattern)
 }
 
 // AddImageRollbackHistory records previousImage as containerID's prior

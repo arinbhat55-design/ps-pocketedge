@@ -92,7 +92,13 @@ func Run(ctx context.Context, ref string) (*Result, error) {
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		return nil, errors.New("failed to parse trivy output: " + err.Error())
 	}
+	return summarize(out), nil
+}
 
+// summarize reduces a trivy JSON report down to severity counts plus a
+// capped vulnerability list — factored out of Run so this pure
+// transformation is unit-testable without shelling out to trivy.
+func summarize(out trivyOutput) *Result {
 	result := &Result{}
 	for _, r := range out.Results {
 		for _, v := range r.Vulnerabilities {
@@ -119,5 +125,5 @@ func Run(ctx context.Context, ref string) (*Result, error) {
 			}
 		}
 	}
-	return result, nil
+	return result
 }

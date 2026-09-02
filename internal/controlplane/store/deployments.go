@@ -10,10 +10,13 @@ import (
 )
 
 // Deployment mirrors a row in the deployments table: one instance of a
-// stack applied to a server.
+// compose definition applied to a server. Exactly one of StackID (the
+// curated stacks catalog) or ComposeFileID (a user-authored compose_files
+// row) is set — see the deployments_exactly_one_source check constraint.
 type Deployment struct {
 	ID                string            `json:"id"`
-	StackID           string            `json:"stackId"`
+	StackID           *string           `json:"stackId,omitempty"`
+	ComposeFileID     *string           `json:"composeFileId,omitempty"`
 	ServerID          string            `json:"serverId"`
 	Env               map[string]string `json:"env"`
 	Phase             string            `json:"phase"`
@@ -33,11 +36,21 @@ type DeploymentEvent struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
-// CreateDeployment inserts a new deployment row in the 'pending' phase.
-// environment/tags are optional grouping metadata a caller can set at
-// creation time; they can also be changed later via
-// UpdateDeploymentMetadata.
+// CreateDeployment inserts a new deployment row sourced from the stacks
+// catalog, in the 'pending' phase. environment/tags are optional grouping
+// metadata a caller can set at creation time; they can also be changed
+// later via UpdateDeploymentMetadata.
 func (s *Store) CreateDeployment(ctx context.Context, stackID, serverID string, env map[string]string, createdBy string, environment *string, tags []string) (string, error) {
+	return s.createDeployment(ctx, &stackID, nil, serverID, env, createdBy, environment, tags)
+}
+
+// CreateComposeDeployment is CreateDeployment's counterpart for a
+// user-authored compose_files row rather than the curated stacks catalog.
+func (s *Store) CreateComposeDeployment(ctx context.Context, composeFileID, serverID string, env map[string]string, createdBy string, environment *string, tags []string) (string, error) {
+	return s.createDeployment(ctx, nil, &composeFileID, serverID, env, createdBy, environment, tags)
+}
+
+func (s *Store) createDeployment(ctx context.Context, stackID, composeFileID *string, serverID string, env map[string]string, createdBy string, environment *string, tags []string) (string, error) {
 	payload, err := json.Marshal(env)
 	if err != nil {
 		return "", err
@@ -47,10 +60,10 @@ func (s *Store) CreateDeployment(ctx context.Context, stackID, serverID string, 
 	}
 	var id string
 	err = s.pool.QueryRow(ctx, `
-		INSERT INTO deployments (stack_id, server_id, env, phase, created_by, deploy_environment, tags)
-		VALUES ($1, $2, $3, 'pending', $4, $5, $6)
+		INSERT INTO deployments (stack_id, compose_file_id, server_id, env, phase, created_by, deploy_environment, tags)
+		VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
 		RETURNING id
-	`, stackID, serverID, payload, createdBy, environment, tags).Scan(&id)
+	`, stackID, composeFileID, serverID, payload, createdBy, environment, tags).Scan(&id)
 	return id, err
 }
 
@@ -60,9 +73,9 @@ func (s *Store) GetDeployment(ctx context.Context, id string) (*Deployment, erro
 	var d Deployment
 	var env []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, stack_id, server_id, env, phase, created_by, deploy_environment, tags, created_at, updated_at
+		SELECT id, stack_id, compose_file_id, server_id, env, phase, created_by, deploy_environment, tags, created_at, updated_at
 		FROM deployments WHERE id = $1
-	`, id).Scan(&d.ID, &d.StackID, &d.ServerID, &env, &d.Phase, &d.CreatedBy, &d.DeployEnvironment, &d.Tags, &d.CreatedAt, &d.UpdatedAt)
+	`, id).Scan(&d.ID, &d.StackID, &d.ComposeFileID, &d.ServerID, &env, &d.Phase, &d.CreatedBy, &d.DeployEnvironment, &d.Tags, &d.CreatedAt, &d.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -73,6 +86,29 @@ func (s *Store) GetDeployment(ctx context.Context, id string) (*Deployment, erro
 		return nil, err
 	}
 	return &d, nil
+}
+
+// ResolveDeploymentSource looks up the name and Compose YAML a deployment
+// was created from, regardless of whether it came from the stacks catalog
+// or a user-authored compose file — the one place that distinction is
+// resolved, so redeploy/restore/backup call sites don't need to branch on
+// it themselves.
+func (s *Store) ResolveDeploymentSource(ctx context.Context, d *Deployment) (name string, composeYAML string, err error) {
+	if d.StackID != nil {
+		stack, err := s.GetStack(ctx, *d.StackID)
+		if err != nil {
+			return "", "", err
+		}
+		return stack.Name, stack.ComposeYAML, nil
+	}
+	if d.ComposeFileID != nil {
+		file, err := s.GetComposeFile(ctx, *d.ComposeFileID)
+		if err != nil {
+			return "", "", err
+		}
+		return file.Name, file.Content, nil
+	}
+	return "", "", errors.New("deployment has no source (neither stack_id nor compose_file_id is set)")
 }
 
 // UpdateDeploymentPhase sets a deployment's current phase.

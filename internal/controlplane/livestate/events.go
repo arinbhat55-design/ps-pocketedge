@@ -18,7 +18,11 @@ import (
 type ServerUpdate struct {
 	Resources  store.ResourceSnapshot `json:"resources"`
 	Containers []store.ContainerState `json:"containers"`
-	UpdatedAt  time.Time              `json:"updatedAt"`
+	// ContainerStats is empty on a tick that didn't sample per-container
+	// resource usage (see grpcserver/session.go's doc comment) — a
+	// subscriber should treat that as "no new sample", not "zero usage".
+	ContainerStats []store.ContainerResourceUsage `json:"containerStats"`
+	UpdatedAt      time.Time                      `json:"updatedAt"`
 }
 
 // EventBus fans out ServerUpdates to subscribers of a given server_id.

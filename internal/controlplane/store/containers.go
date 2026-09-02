@@ -40,13 +40,14 @@ type FleetContainer struct {
 // field is ANDed together; Tags matches containers whose deployment has at
 // least one of the listed tags (array overlap), not all of them.
 type ContainerFilter struct {
-	Name        string
-	Image       string
-	ServerID    string
-	Status      string
-	OwnerID     string
-	Environment string
-	Tags        []string
+	Name         string
+	Image        string
+	ServerID     string
+	Status       string
+	OwnerID      string
+	Environment  string
+	Tags         []string
+	DeploymentID string
 }
 
 // ListContainersFiltered returns the fleet-wide container inventory,
@@ -58,12 +59,13 @@ func (s *Store) ListContainersFiltered(ctx context.Context, f ContainerFilter) (
 	query := `
 		SELECT sc.server_id, srv.name, sc.container_id, sc.name, sc.state, sc.status,
 		       sc.image, sc.image_id, sc.created_at, sc.ports, sc.networks, sc.mounts,
-		       sc.deployment_id, d.stack_id, st.name, d.created_by, u.email,
-		       d.deploy_environment, d.tags, sc.updated_at
+		       sc.deployment_id, COALESCE(d.stack_id, d.compose_file_id), COALESCE(st.name, cf.name),
+		       d.created_by, u.email, d.deploy_environment, d.tags, sc.updated_at
 		FROM server_containers sc
 		JOIN servers srv ON srv.id = sc.server_id
 		LEFT JOIN deployments d ON d.id = sc.deployment_id
 		LEFT JOIN stacks st ON st.id = d.stack_id
+		LEFT JOIN compose_files cf ON cf.id = d.compose_file_id
 		LEFT JOIN users u ON u.id = d.created_by
 	`
 
@@ -93,6 +95,9 @@ func (s *Store) ListContainersFiltered(ctx context.Context, f ContainerFilter) (
 	}
 	if len(f.Tags) > 0 {
 		add("d.tags && $%d", f.Tags)
+	}
+	if f.DeploymentID != "" {
+		add("sc.deployment_id = $%d", f.DeploymentID)
 	}
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
@@ -129,4 +134,27 @@ func (s *Store) ListContainersFiltered(ctx context.Context, f ContainerFilter) (
 		containers = append(containers, c)
 	}
 	return containers, rows.Err()
+}
+
+// FindPortConflict reports the container currently bound to hostPort/
+// protocol on serverID, using the same cached sc.ports JSONB
+// ListContainersFiltered already reads (refreshed on every heartbeat — see
+// migrations/0006_container_management.up.sql) rather than a live agent
+// round trip. Filtered in Go rather than via a JSONB containment query,
+// consistent with this codebase's general preference for explicit Go logic
+// over query-builder cleverness (see ListContainersFiltered's WHERE
+// builder). found is false if no container currently claims that port.
+func (s *Store) FindPortConflict(ctx context.Context, serverID string, hostPort uint16, protocol string) (containerID string, found bool, err error) {
+	containers, err := s.ListContainersFiltered(ctx, ContainerFilter{ServerID: serverID})
+	if err != nil {
+		return "", false, err
+	}
+	for _, c := range containers {
+		for _, p := range c.Ports {
+			if p.PublicPort == hostPort && p.Type == protocol {
+				return c.ContainerID, true, nil
+			}
+		}
+	}
+	return "", false, nil
 }

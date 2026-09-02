@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/ai"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/backup"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
@@ -34,7 +35,8 @@ const enrollmentTokenTTL = 1 * time.Hour
 // this API from its dev server origin during local development; this
 // should be tightened together with publicURL before any non-local
 // deployment.
-func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter) http.Handler {
+func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter) http.Handler {
+	aiClient := ai.New()
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
@@ -57,10 +59,35 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 
 	mux.Handle("GET /api/stacks", authMgr.RequireAuth(handleListStacks(log, st)))
 
+	// Deployment Management > Docker Compose: user-authored Compose files,
+	// distinct from the /api/stacks catalog above.
+	mux.Handle("GET /api/compose-files", authMgr.RequireAuth(handleListComposeFiles(log, st)))
+	mux.Handle("POST /api/compose-files", authMgr.RequireAuth(handleCreateComposeFile(log, st)))
+	mux.Handle("POST /api/compose-files/parse", authMgr.RequireAuth(handleParseComposeYAML(log, st)))
+	mux.Handle("POST /api/compose-files/render", authMgr.RequireAuth(handleRenderComposeYAML(log, st)))
+	mux.Handle("GET /api/compose-files/{id}", authMgr.RequireAuth(handleGetComposeFile(log, st)))
+	mux.Handle("PATCH /api/compose-files/{id}", authMgr.RequireAuth(handleUpdateComposeFile(log, st)))
+	mux.Handle("DELETE /api/compose-files/{id}", authMgr.RequireAuth(handleDeleteComposeFile(log, st)))
+	mux.Handle("GET /api/compose-files/{id}/versions", authMgr.RequireAuth(handleListComposeFileVersions(log, st)))
+	mux.Handle("GET /api/compose-files/{id}/versions/{versionId}", authMgr.RequireAuth(handleGetComposeFileVersion(log, st)))
+	mux.Handle("POST /api/compose-files/{id}/versions/{versionId}/restore", authMgr.RequireAuth(handleRestoreComposeFileVersion(log, st)))
+
+	// Deployment Management > Docker Compose > Configuration management:
+	// reusable, environment-tagged sets of env vars.
+	mux.Handle("GET /api/env-var-groups", authMgr.RequireAuth(handleListEnvVarGroups(log, st)))
+	mux.Handle("POST /api/env-var-groups", authMgr.RequireAuth(handleCreateEnvVarGroup(log, st)))
+	mux.Handle("GET /api/env-var-groups/{id}", authMgr.RequireAuth(handleGetEnvVarGroup(log, st)))
+	mux.Handle("PATCH /api/env-var-groups/{id}", authMgr.RequireAuth(handleUpdateEnvVarGroup(log, st)))
+	mux.Handle("DELETE /api/env-var-groups/{id}", authMgr.RequireAuth(handleDeleteEnvVarGroup(log, st)))
+
+	mux.Handle("POST /api/deployments/preview", authMgr.RequireAuth(handlePreviewDeployment(log, st)))
 	mux.Handle("POST /api/deployments", authMgr.RequireAuth(handleCreateDeployment(log, st, dispatcher, events)))
 	mux.Handle("GET /api/deployments/{id}", authMgr.RequireAuth(handleGetDeployment(log, st)))
 	mux.Handle("PATCH /api/deployments/{id}/metadata", authMgr.RequireAuth(handleUpdateDeploymentMetadata(log, st)))
 	mux.Handle("POST /api/deployments/{id}/redeploy", authMgr.RequireAuth(handleRedeployDeployment(log, st, dispatcher, events)))
+	mux.Handle("POST /api/deployments/{id}/services/{service}/redeploy", authMgr.RequireAuth(handleRedeployService(log, st, dispatcher, opWaiter, events)))
+	mux.Handle("POST /api/deployments/{id}/rollback", authMgr.RequireAuth(handleRollbackDeployment(log, st, dispatcher, events)))
+	mux.Handle("POST /api/deployments/{id}/action", authMgr.RequireAuth(handleDeploymentAction(log, st, dispatcher, opWaiter, events)))
 	// Auth via ?token= query param, not the Authorization header — see
 	// handleDeploymentStream's doc comment for why.
 	mux.HandleFunc("GET /api/deployments/{id}/stream", handleDeploymentStream(log, st, authMgr, events))
@@ -74,8 +101,21 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("POST /api/servers/{id}/containers/{containerId}/clone", authMgr.RequireAuth(handleCloneContainer(log, dispatcher, opWaiter)))
 	mux.Handle("POST /api/servers/{id}/containers/{containerId}/recreate", authMgr.RequireAuth(handleRecreateContainer(log, st, dispatcher, opWaiter)))
 	mux.Handle("PATCH /api/servers/{id}/containers/{containerId}/restart-policy", authMgr.RequireAuth(handleUpdateRestartPolicy(log, dispatcher, opWaiter)))
+	mux.Handle("PATCH /api/servers/{id}/containers/{containerId}/resources", authMgr.RequireAuth(handleUpdateResourceLimits(log, dispatcher, opWaiter)))
+	mux.Handle("GET /api/servers/{id}/containers/{containerId}/metrics", authMgr.RequireAuth(handleGetContainerMetrics(log, st)))
 	mux.Handle("GET /api/servers/{id}/containers/{containerId}/rollback-history", authMgr.RequireAuth(handleListImageRollbackHistory(log, st)))
 	mux.Handle("POST /api/servers/{id}/containers/{containerId}/rollback", authMgr.RequireAuth(handleRollbackContainer(log, st, dispatcher, inspectWaiter, opWaiter)))
+
+	// Logs and troubleshooting. Auth via ?token= query param on the two WS
+	// endpoints, not the Authorization header — same documented exception
+	// as handleServerStream (browsers can't set custom headers on a
+	// WebSocket handshake).
+	mux.HandleFunc("GET /api/servers/{id}/containers/{containerId}/logs/stream", handleContainerLogsStream(log, authMgr, dispatcher, logStreamRelay))
+	mux.Handle("GET /api/servers/{id}/containers/{containerId}/logs/download", authMgr.RequireAuth(handleDownloadContainerLogs(log, dispatcher, logStreamRelay)))
+	mux.Handle("POST /api/servers/{id}/containers/{containerId}/logs/analyze", authMgr.RequireAuth(handleAnalyzeContainerLogs(log, st, dispatcher, logStreamRelay, aiClient)))
+	mux.Handle("GET /api/servers/{id}/containers/{containerId}/events", authMgr.RequireAuth(handleListContainerEvents(log, dispatcher, eventListWaiter)))
+	mux.HandleFunc("GET /api/servers/{id}/containers/{containerId}/exec", handleContainerExec(log, authMgr, dispatcher, execStreamRelay))
+	mux.Handle("GET /api/ai/status", authMgr.RequireAuth(handleAIStatus(aiClient)))
 
 	mux.Handle("GET /api/images", authMgr.RequireAuth(handleListImages(log, st, dispatcher, imageListWaiter)))
 	mux.Handle("GET /api/images/newer", authMgr.RequireAuth(handleImageUpdateAvailable(log, st, dispatcher, imageDetailWaiter)))
@@ -85,6 +125,18 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("POST /api/servers/{id}/images/pull", authMgr.RequireAuth(handlePullImage(log, st, dispatcher, imageOpWaiter)))
 	mux.Handle("DELETE /api/servers/{id}/images/{imageId}", authMgr.RequireAuth(handleRemoveImage(log, dispatcher, imageOpWaiter)))
 	mux.Handle("POST /api/servers/{id}/images/prune", authMgr.RequireAuth(handlePruneImages(log, dispatcher, imageOpWaiter)))
+
+	mux.Handle("GET /api/networks", authMgr.RequireAuth(handleListNetworks(log, st, dispatcher, networkListWaiter)))
+	mux.Handle("POST /api/servers/{id}/networks", authMgr.RequireAuth(handleCreateNetwork(log, dispatcher, networkOpWaiter)))
+	mux.Handle("DELETE /api/servers/{id}/networks/{networkId}", authMgr.RequireAuth(handleRemoveNetwork(log, dispatcher, networkOpWaiter)))
+	mux.Handle("POST /api/servers/{id}/networks/{networkId}/connect", authMgr.RequireAuth(handleConnectContainerToNetwork(log, dispatcher, networkOpWaiter)))
+	mux.Handle("POST /api/servers/{id}/networks/{networkId}/disconnect", authMgr.RequireAuth(handleDisconnectContainerFromNetwork(log, dispatcher, networkOpWaiter)))
+
+	mux.Handle("GET /api/volumes", authMgr.RequireAuth(handleListVolumes(log, st, dispatcher, volumeListWaiter)))
+	mux.Handle("POST /api/servers/{id}/volumes", authMgr.RequireAuth(handleCreateVolume(log, dispatcher, volumeOpWaiter)))
+	mux.Handle("GET /api/servers/{id}/volumes/{name}", authMgr.RequireAuth(handleInspectVolume(log, dispatcher, volumeDetailWaiter)))
+	mux.Handle("DELETE /api/servers/{id}/volumes/{name}", authMgr.RequireAuth(handleRemoveVolume(log, dispatcher, volumeOpWaiter)))
+	mux.Handle("GET /api/servers/{id}/ports/check", authMgr.RequireAuth(handleCheckPortConflict(log, st)))
 
 	mux.Handle("GET /api/registries", authMgr.RequireAdmin(handleListRegistries(log, st)))
 	mux.Handle("POST /api/registries", authMgr.RequireAdmin(handleCreateRegistry(log, st)))
@@ -220,6 +272,35 @@ func handleGetServerMetrics(log *slog.Logger, st *store.Store) http.HandlerFunc 
 		samples, err := st.ListMetricSamples(r.Context(), id, time.Now().Add(-window))
 		if err != nil {
 			log.Error("failed to list metric samples", "server_id", id, "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, samples)
+	}
+}
+
+// handleGetContainerMetrics serves one container's resource-usage history —
+// the per-container counterpart to handleGetServerMetrics above, same
+// ?since= duration query param and default window.
+func handleGetContainerMetrics(log *slog.Logger, st *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		serverID := r.PathValue("id")
+		containerID := r.PathValue("containerId")
+
+		window := defaultMetricsWindow
+		if raw := r.URL.Query().Get("since"); raw != "" {
+			parsed, err := time.ParseDuration(raw)
+			if err != nil {
+				http.Error(w, "invalid since duration", http.StatusBadRequest)
+				return
+			}
+			window = parsed
+		}
+
+		samples, err := st.ListContainerMetricSamples(r.Context(), serverID, containerID, time.Now().Add(-window))
+		if err != nil {
+			log.Error("failed to list container metric samples", "server_id", serverID, "container_id", containerID, "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}

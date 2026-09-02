@@ -90,3 +90,33 @@ func NewImageDetailWaiter() *ImageDetailWaiter { return NewWaiter[*agentv1.Image
 type ImageOpWaiter = Waiter[*agentv1.ImageOpResult]
 
 func NewImageOpWaiter() *ImageOpWaiter { return NewWaiter[*agentv1.ImageOpResult]() }
+
+// NetworkListWaiter correlates a ListNetworksCommand with its
+// NetworkListResult reply.
+type NetworkListWaiter = Waiter[*agentv1.NetworkListResult]
+
+func NewNetworkListWaiter() *NetworkListWaiter { return NewWaiter[*agentv1.NetworkListResult]() }
+
+// NetworkOpWaiter correlates a network lifecycle command (create/remove/
+// connect/disconnect) with its NetworkOpResult reply.
+type NetworkOpWaiter = Waiter[*agentv1.NetworkOpResult]
+
+func NewNetworkOpWaiter() *NetworkOpWaiter { return NewWaiter[*agentv1.NetworkOpResult]() }
+
+// VolumeListWaiter correlates a ListVolumesCommand with its VolumeListResult
+// reply.
+type VolumeListWaiter = Waiter[*agentv1.VolumeListResult]
+
+func NewVolumeListWaiter() *VolumeListWaiter { return NewWaiter[*agentv1.VolumeListResult]() }
+
+// VolumeDetailWaiter correlates an InspectVolumeCommand with its
+// VolumeDetail reply.
+type VolumeDetailWaiter = Waiter[*agentv1.VolumeDetail]
+
+func NewVolumeDetailWaiter() *VolumeDetailWaiter { return NewWaiter[*agentv1.VolumeDetail]() }
+
+// VolumeOpWaiter correlates a volume lifecycle command (create/remove) with
+// its VolumeOpResult reply.
+type VolumeOpWaiter = Waiter[*agentv1.VolumeOpResult]
+
+func NewVolumeOpWaiter() *VolumeOpWaiter { return NewWaiter[*agentv1.VolumeOpResult]() }

@@ -24,23 +24,34 @@ import (
 type Server struct {
 	agentv1.UnimplementedAgentSessionServer
 
-	log               *slog.Logger
-	store             *store.Store
-	dispatcher        *deploy.Dispatcher
-	events            *deploy.EventBus
-	serverEvents      *livestate.EventBus
-	inspectWaiter     *deploy.InspectWaiter
-	opWaiter          *deploy.OpWaiter
-	imageListWaiter   *deploy.ImageListWaiter
-	imageDetailWaiter *deploy.ImageDetailWaiter
-	imageOpWaiter     *deploy.ImageOpWaiter
+	log                *slog.Logger
+	store              *store.Store
+	dispatcher         *deploy.Dispatcher
+	events             *deploy.EventBus
+	serverEvents       *livestate.EventBus
+	inspectWaiter      *deploy.InspectWaiter
+	opWaiter           *deploy.OpWaiter
+	imageListWaiter    *deploy.ImageListWaiter
+	imageDetailWaiter  *deploy.ImageDetailWaiter
+	imageOpWaiter      *deploy.ImageOpWaiter
+	logStreamRelay     *deploy.LogStreamRelay
+	eventListWaiter    *deploy.EventListWaiter
+	execStreamRelay    *deploy.ExecStreamRelay
+	networkListWaiter  *deploy.NetworkListWaiter
+	networkOpWaiter    *deploy.NetworkOpWaiter
+	volumeListWaiter   *deploy.VolumeListWaiter
+	volumeDetailWaiter *deploy.VolumeDetailWaiter
+	volumeOpWaiter     *deploy.VolumeOpWaiter
 }
 
-func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter) *Server {
+func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter) *Server {
 	return &Server{
 		log: log, store: st, dispatcher: dispatcher, events: events, serverEvents: serverEvents,
 		inspectWaiter: inspectWaiter, opWaiter: opWaiter,
 		imageListWaiter: imageListWaiter, imageDetailWaiter: imageDetailWaiter, imageOpWaiter: imageOpWaiter,
+		logStreamRelay: logStreamRelay, eventListWaiter: eventListWaiter, execStreamRelay: execStreamRelay,
+		networkListWaiter: networkListWaiter, networkOpWaiter: networkOpWaiter,
+		volumeListWaiter: volumeListWaiter, volumeDetailWaiter: volumeDetailWaiter, volumeOpWaiter: volumeOpWaiter,
 	}
 }
 
@@ -208,6 +219,36 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 				containers = existing
 			}
 
+			// container_stats_included rides the same refresh tick as
+			// containers (see agent/stream/session.go's collectContainerStats)
+			// — there's no "last-known" fallback the way containers has one,
+			// since these are time-series samples, not current state: a tick
+			// that doesn't include them just contributes nothing new to the
+			// history, and the live push carries an empty slice.
+			var containerStats []store.ContainerResourceUsage
+			if hb.GetContainerStatsIncluded() {
+				containerStats = make([]store.ContainerResourceUsage, len(hb.GetContainerStats()))
+				for i, u := range hb.GetContainerStats() {
+					usage := store.ContainerResourceUsage{
+						ContainerID:     u.GetContainerId(),
+						RecordedAt:      recordedAt,
+						CPUPercent:      u.GetCpuPercent(),
+						MemUsageBytes:   u.GetMemUsageBytes(),
+						MemLimitBytes:   u.GetMemLimitBytes(),
+						MemPercent:      u.GetMemPercent(),
+						NetRxBytes:      u.GetNetRxBytes(),
+						NetTxBytes:      u.GetNetTxBytes(),
+						BlockReadBytes:  u.GetBlockReadBytes(),
+						BlockWriteBytes: u.GetBlockWriteBytes(),
+						PIDs:            u.GetPids(),
+					}
+					containerStats[i] = usage
+					if err := s.store.InsertContainerMetricSample(ctx, serverID, recordedAt, usage); err != nil {
+						s.log.Error("failed to record container metric sample", "server_id", serverID, "container_id", usage.ContainerID, "error", err)
+					}
+				}
+			}
+
 			s.log.Info("heartbeat recorded",
 				"server_id", serverID,
 				"cpu_percent", resources.CPUPercent,
@@ -218,9 +259,10 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 			)
 
 			s.serverEvents.Publish(serverID, livestate.ServerUpdate{
-				Resources:  resources,
-				Containers: containers,
-				UpdatedAt:  heartbeatTime,
+				Resources:      resources,
+				Containers:     containers,
+				ContainerStats: containerStats,
+				UpdatedAt:      heartbeatTime,
 			})
 		case *agentv1.AgentMessage_DeployStatus:
 			ds := payload.DeployStatus
@@ -312,6 +354,34 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 			result := payload.ImageOpResult
 			s.log.Info("image op result received", "server_id", serverID, "image_id", result.GetImageId(), "success", result.GetSuccess())
 			s.imageOpWaiter.Deliver(result.GetRequestId(), result)
+		case *agentv1.AgentMessage_LogChunk:
+			s.logStreamRelay.Publish(payload.LogChunk.GetRequestId(), payload.LogChunk)
+		case *agentv1.AgentMessage_EventListResult:
+			result := payload.EventListResult
+			s.log.Info("event list result received", "server_id", serverID, "count", len(result.GetEvents()))
+			s.eventListWaiter.Deliver(result.GetRequestId(), result)
+		case *agentv1.AgentMessage_ExecOutput:
+			s.execStreamRelay.Publish(payload.ExecOutput.GetRequestId(), payload.ExecOutput)
+		case *agentv1.AgentMessage_NetworkListResult:
+			result := payload.NetworkListResult
+			s.log.Info("network list result received", "server_id", serverID, "count", len(result.GetNetworks()))
+			s.networkListWaiter.Deliver(result.GetRequestId(), result)
+		case *agentv1.AgentMessage_NetworkOpResult:
+			result := payload.NetworkOpResult
+			s.log.Info("network op result received", "server_id", serverID, "network_id", result.GetNetworkId(), "success", result.GetSuccess())
+			s.networkOpWaiter.Deliver(result.GetRequestId(), result)
+		case *agentv1.AgentMessage_VolumeListResult:
+			result := payload.VolumeListResult
+			s.log.Info("volume list result received", "server_id", serverID, "count", len(result.GetVolumes()))
+			s.volumeListWaiter.Deliver(result.GetRequestId(), result)
+		case *agentv1.AgentMessage_VolumeDetail:
+			detail := payload.VolumeDetail
+			s.log.Info("volume detail received", "server_id", serverID, "name", detail.GetVolume().GetName(), "found", detail.GetFound())
+			s.volumeDetailWaiter.Deliver(detail.GetRequestId(), detail)
+		case *agentv1.AgentMessage_VolumeOpResult:
+			result := payload.VolumeOpResult
+			s.log.Info("volume op result received", "server_id", serverID, "name", result.GetName(), "success", result.GetSuccess())
+			s.volumeOpWaiter.Deliver(result.GetRequestId(), result)
 		default:
 			s.log.Warn("unknown agent message payload", "server_id", serverID)
 		}

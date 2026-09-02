@@ -120,9 +120,9 @@ func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.D
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		stack, err := st.GetStack(r.Context(), deployment.StackID)
+		stackName, composeYAML, err := st.ResolveDeploymentSource(r.Context(), deployment)
 		if err != nil {
-			log.Error("failed to load stack", "error", err)
+			log.Error("failed to resolve deployment source", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -137,8 +137,8 @@ func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.D
 					BackupId:     backupID,
 					DeploymentId: deployment.ID,
 					DownloadUrl:  publicURL + "/api/agent/backups/" + backupID + "/blob",
-					StackName:    stack.Name,
-					ComposeYaml:  stack.ComposeYAML,
+					StackName:    stackName,
+					ComposeYaml:  composeYAML,
 					Env:          deployment.Env,
 				},
 			},

@@ -60,6 +60,37 @@ class FleetContainer {
   }
 }
 
+/// One entry in a container's bounded health-check result history (Docker
+/// keeps its last 5 runs).
+class HealthCheckEntry {
+  final DateTime? start;
+  final DateTime? end;
+  final int exitCode;
+  final String output;
+
+  const HealthCheckEntry({
+    this.start,
+    this.end,
+    required this.exitCode,
+    required this.output,
+  });
+
+  factory HealthCheckEntry.fromJson(Map<String, dynamic> json) {
+    DateTime? unixOrNull(dynamic v) {
+      final n = (v as num?)?.toInt();
+      if (n == null || n == 0) return null;
+      return DateTime.fromMillisecondsSinceEpoch(n * 1000);
+    }
+
+    return HealthCheckEntry(
+      start: unixOrNull(json['startUnix']),
+      end: unixOrNull(json['endUnix']),
+      exitCode: (json['exitCode'] as num?)?.toInt() ?? 0,
+      output: json['output'] as String? ?? '',
+    );
+  }
+}
+
 /// Expensive per-container fields, fetched on demand from
 /// POST /api/servers/{id}/containers/{containerId}/inspect.
 class ContainerDetail {
@@ -70,6 +101,16 @@ class ContainerDetail {
   final String healthStatus;
   final int healthFailingStreak;
   final int restartCount;
+  final List<HealthCheckEntry> healthLog;
+  final List<String> command;
+  final List<String> entrypoint;
+  final String workingDir;
+  final Map<String, String> labels;
+  final String image;
+  final int nanoCpus;
+  final int memoryLimitBytes;
+  final int memoryReservationBytes;
+  final int pidsLimit;
 
   const ContainerDetail({
     required this.containerId,
@@ -79,6 +120,16 @@ class ContainerDetail {
     required this.healthStatus,
     required this.healthFailingStreak,
     required this.restartCount,
+    this.healthLog = const [],
+    this.command = const [],
+    this.entrypoint = const [],
+    this.workingDir = '',
+    this.labels = const {},
+    this.image = '',
+    this.nanoCpus = 0,
+    this.memoryLimitBytes = 0,
+    this.memoryReservationBytes = 0,
+    this.pidsLimit = 0,
   });
 
   factory ContainerDetail.fromJson(Map<String, dynamic> json) {
@@ -93,6 +144,25 @@ class ContainerDetail {
       healthStatus: json['healthStatus'] as String? ?? '',
       healthFailingStreak: (json['healthFailingStreak'] as num?)?.toInt() ?? 0,
       restartCount: (json['restartCount'] as num?)?.toInt() ?? 0,
+      healthLog: (json['healthLog'] as List<dynamic>? ?? [])
+          .map((e) => HealthCheckEntry.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      command: (json['command'] as List<dynamic>? ?? [])
+          .map((e) => e as String)
+          .toList(),
+      entrypoint: (json['entrypoint'] as List<dynamic>? ?? [])
+          .map((e) => e as String)
+          .toList(),
+      workingDir: json['workingDir'] as String? ?? '',
+      labels: (json['labels'] as Map<String, dynamic>? ?? {}).map(
+        (k, v) => MapEntry(k, v as String),
+      ),
+      image: json['image'] as String? ?? '',
+      nanoCpus: (json['nanoCpus'] as num?)?.toInt() ?? 0,
+      memoryLimitBytes: (json['memoryLimitBytes'] as num?)?.toInt() ?? 0,
+      memoryReservationBytes:
+          (json['memoryReservationBytes'] as num?)?.toInt() ?? 0,
+      pidsLimit: (json['pidsLimit'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -148,6 +218,11 @@ class ContainerConfig {
   final String restartPolicyName;
   final int restartPolicyMaxRetryCount;
   final Map<String, String> labels;
+  // Resource limits — 0 means "not set" (unlimited).
+  final int nanoCpus;
+  final int memoryLimitBytes;
+  final int memoryReservationBytes;
+  final int pidsLimit;
 
   const ContainerConfig({
     required this.image,
@@ -159,6 +234,10 @@ class ContainerConfig {
     this.restartPolicyName = 'no',
     this.restartPolicyMaxRetryCount = 0,
     this.labels = const {},
+    this.nanoCpus = 0,
+    this.memoryLimitBytes = 0,
+    this.memoryReservationBytes = 0,
+    this.pidsLimit = 0,
   });
 
   Map<String, dynamic> toJson() => {
@@ -172,6 +251,11 @@ class ContainerConfig {
     if (restartPolicyMaxRetryCount != 0)
       'restartPolicyMaxRetryCount': restartPolicyMaxRetryCount,
     if (labels.isNotEmpty) 'labels': labels,
+    if (nanoCpus != 0) 'nanoCpus': nanoCpus,
+    if (memoryLimitBytes != 0) 'memoryLimitBytes': memoryLimitBytes,
+    if (memoryReservationBytes != 0)
+      'memoryReservationBytes': memoryReservationBytes,
+    if (pidsLimit != 0) 'pidsLimit': pidsLimit,
   };
 }
 

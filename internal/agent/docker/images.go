@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/filters"
@@ -129,12 +130,29 @@ func InspectImage(ctx context.Context, cli *client.Client, imageID string) Image
 		RepoTags:     cleanRepoList(inspect.RepoTags),
 		RepoDigests:  cleanRepoList(inspect.RepoDigests),
 		SizeBytes:    inspect.Size,
+		CreatedUnix:  parseImageCreated(inspect.Created),
 		Architecture: inspect.Architecture,
 		OS:           inspect.Os,
 		Layers:       layers,
 		Env:          env,
 		Labels:       labels,
 	}
+}
+
+// parseImageCreated converts ImageInspect's RFC3339Nano Created string into
+// a Unix timestamp. Created is only present "if present in the image" per
+// the Docker API's own doc comment, so an empty/unparseable value yields 0
+// rather than an error — the caller (ImageDetail) treats 0 as "unknown",
+// same convention ContainerDetail already uses for its own optional fields.
+func parseImageCreated(created string) int64 {
+	if created == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }
 
 // PullImage pulls ref from its registry, authenticating with auth if

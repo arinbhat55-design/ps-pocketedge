@@ -91,6 +91,14 @@ func main() {
 	imageListWaiter := deploy.NewImageListWaiter()
 	imageDetailWaiter := deploy.NewImageDetailWaiter()
 	imageOpWaiter := deploy.NewImageOpWaiter()
+	logStreamRelay := deploy.NewLogStreamRelay()
+	eventListWaiter := deploy.NewEventListWaiter()
+	execStreamRelay := deploy.NewExecStreamRelay()
+	networkListWaiter := deploy.NewNetworkListWaiter()
+	networkOpWaiter := deploy.NewNetworkOpWaiter()
+	volumeListWaiter := deploy.NewVolumeListWaiter()
+	volumeDetailWaiter := deploy.NewVolumeDetailWaiter()
+	volumeOpWaiter := deploy.NewVolumeOpWaiter()
 
 	blobs, err := backup.NewBlobStore(*backupDir)
 	if err != nil {
@@ -99,11 +107,11 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter))
+	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter))
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter),
 	}
 
 	scheduler := schedule.New(log, st, dispatcher, opWaiter)
@@ -148,6 +156,9 @@ func pruneMetricsLoop(ctx context.Context, log *slog.Logger, st *store.Store) {
 			cutoff := time.Now().Add(-metricSampleRetention)
 			if err := st.PruneMetricSamplesOlderThan(ctx, cutoff); err != nil {
 				log.Error("failed to prune old metric samples", "error", err)
+			}
+			if err := st.PruneContainerMetricSamplesOlderThan(ctx, cutoff); err != nil {
+				log.Error("failed to prune old container metric samples", "error", err)
 			}
 		}
 	}

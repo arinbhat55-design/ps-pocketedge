@@ -25,9 +25,14 @@ class ImageSummary {
   });
 
   /// A short id (matches `docker images`' 12-char short id), for display
-  /// where the full sha256 id would be too wide.
-  String get shortId =>
-      id.startsWith('sha256:') ? id.substring(7, 19) : id.substring(0, 12);
+  /// where the full sha256 id would be too wide. Real Docker image ids are
+  /// always a full 64-char digest, but this clamps to the string's actual
+  /// length regardless, so a shorter/malformed id can't crash the list
+  /// (RangeError) instead of just showing a shorter-than-usual id.
+  String get shortId {
+    final stripped = id.startsWith('sha256:') ? id.substring(7) : id;
+    return stripped.length <= 12 ? stripped : stripped.substring(0, 12);
+  }
 
   DateTime get createdAt =>
       DateTime.fromMillisecondsSinceEpoch(createdUnix * 1000);
@@ -330,5 +335,10 @@ String formatBytes(int bytes) {
     size /= 1024;
     unitIndex++;
   }
-  return '${size.toStringAsFixed(size >= 10 || unitIndex == 0 ? 0 : 1)} ${units[unitIndex]}';
+  // A whole number (e.g. exactly 1024 bytes -> 1 KB) shouldn't show a
+  // trailing ".0" — only a genuine fraction below the "show as an integer
+  // past 10" threshold gets one decimal place.
+  final isWhole = size == size.roundToDouble();
+  final decimals = unitIndex == 0 || size >= 10 || isWhole ? 0 : 1;
+  return '${size.toStringAsFixed(decimals)} ${units[unitIndex]}';
 }

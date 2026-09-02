@@ -86,6 +86,54 @@ class ContainerMountInfo {
   }
 }
 
+/// One point-in-time resource-usage sample for a single container — from
+/// either GET .../containers/{id}/metrics (history) or a live server-stream
+/// update (see ServerUpdate.containerStats below). Mirrors
+/// store.ContainerResourceUsage on the control plane.
+class ContainerResourceUsage {
+  final String containerId;
+  final DateTime recordedAt;
+  final double cpuPercent;
+  final int memUsageBytes;
+  final int memLimitBytes;
+  final double memPercent;
+  final int netRxBytes;
+  final int netTxBytes;
+  final int blockReadBytes;
+  final int blockWriteBytes;
+  final int pids;
+
+  const ContainerResourceUsage({
+    required this.containerId,
+    required this.recordedAt,
+    required this.cpuPercent,
+    required this.memUsageBytes,
+    required this.memLimitBytes,
+    required this.memPercent,
+    required this.netRxBytes,
+    required this.netTxBytes,
+    required this.blockReadBytes,
+    required this.blockWriteBytes,
+    required this.pids,
+  });
+
+  factory ContainerResourceUsage.fromJson(Map<String, dynamic> json) {
+    return ContainerResourceUsage(
+      containerId: json['containerId'] as String,
+      recordedAt: DateTime.parse(json['recordedAt'] as String),
+      cpuPercent: (json['cpuPercent'] as num).toDouble(),
+      memUsageBytes: (json['memUsageBytes'] as num).toInt(),
+      memLimitBytes: (json['memLimitBytes'] as num).toInt(),
+      memPercent: (json['memPercent'] as num).toDouble(),
+      netRxBytes: (json['netRxBytes'] as num).toInt(),
+      netTxBytes: (json['netTxBytes'] as num).toInt(),
+      blockReadBytes: (json['blockReadBytes'] as num).toInt(),
+      blockWriteBytes: (json['blockWriteBytes'] as num).toInt(),
+      pids: (json['pids'] as num).toInt(),
+    );
+  }
+}
+
 /// Cheap per-container fields, populated from the agent's ContainerList
 /// call and refreshed on every heartbeat. Fields that require the agent to
 /// run ContainerInspect (env vars, restart policy, health) live separately
@@ -165,11 +213,16 @@ class ServerDetail {
 class ServerUpdate {
   final ResourceSnapshot resources;
   final List<ContainerInfo> containers;
+  // Empty on a tick that didn't sample per-container resource usage (see
+  // the control plane's grpcserver/session.go) — treat that as "no new
+  // sample", not "zero usage".
+  final List<ContainerResourceUsage> containerStats;
   final DateTime updatedAt;
 
   const ServerUpdate({
     required this.resources,
     required this.containers,
+    this.containerStats = const [],
     required this.updatedAt,
   });
 
@@ -180,6 +233,9 @@ class ServerUpdate {
       ),
       containers: (json['containers'] as List<dynamic>)
           .map((e) => ContainerInfo.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      containerStats: (json['containerStats'] as List<dynamic>? ?? [])
+          .map((e) => ContainerResourceUsage.fromJson(e as Map<String, dynamic>))
           .toList(),
       updatedAt: DateTime.parse(json['updatedAt'] as String),
     );

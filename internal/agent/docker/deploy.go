@@ -62,10 +62,28 @@ type StatusFunc func(phase agentv1.DeployPhase, message string)
 // labeled with this deployment_id are stopped and removed first, so this
 // same function handles both first-deploy and redeploy.
 //
-// MVP scope: no partial-failure rollback (see the plan's risk notes) — on
-// error, whatever was already created is left in place for inspection, and
-// FAILED is reported with the error detail.
-func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, report StatusFunc) error {
+// Partial-failure cleanup: once removeExisting below has run, the
+// deployment's previous containers (if any) are already gone — we've
+// committed to replacing them — so a later failure (network, volumes, or
+// any service's create/start) would otherwise leave a half-built stack
+// with only some services running. The deferred cleanup below removes
+// whatever got created in this attempt and the per-deployment network,
+// leaving a clean "nothing running" state instead. Named volumes are
+// deliberately left alone (see docker.Undeploy's doc comment) so a failed
+// redeploy can never destroy an existing database's data, and a failure
+// before removeExisting runs (compose parse, image pull) never triggers
+// this — the previous deployment, if any, is still untouched and correctly
+// left running.
+func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, report StatusFunc) (err error) {
+	deploymentID := cmd.GetDeploymentId()
+	var committed bool
+	defer func() {
+		if err != nil && committed {
+			_ = removeExisting(ctx, cli, deploymentID)
+			_ = cli.NetworkRemove(ctx, "pe-"+deploymentID)
+		}
+	}()
+
 	project, err := parseCompose(ctx, cmd.GetComposeYaml(), cmd.GetEnv(), cmd.GetStackName())
 	if err != nil {
 		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to parse compose file: "+err.Error())
@@ -74,7 +92,7 @@ func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCom
 
 	report(agentv1.DeployPhase_DEPLOY_PHASE_PULLING, "")
 	for name, svc := range project.Services {
-		if err := pullImage(ctx, cli, svc.Image); err != nil {
+		if err = pullImage(ctx, cli, svc.Image); err != nil {
 			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, fmt.Sprintf("failed to pull image for service %q: %v", name, err))
 			return err
 		}
@@ -82,12 +100,13 @@ func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCom
 
 	report(agentv1.DeployPhase_DEPLOY_PHASE_CREATING, "")
 
-	if err := removeExisting(ctx, cli, cmd.GetDeploymentId()); err != nil {
+	if err = removeExisting(ctx, cli, deploymentID); err != nil {
 		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to remove previous containers: "+err.Error())
 		return err
 	}
+	committed = true
 
-	networkName, err := ensureNetwork(ctx, cli, cmd.GetDeploymentId(), cmd.GetStackName())
+	networkName, err := ensureNetwork(ctx, cli, deploymentID, cmd.GetStackName())
 	if err != nil {
 		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to create network: "+err.Error())
 		return err
@@ -98,19 +117,20 @@ func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCom
 	// database's rows, a model cache) instead of starting fresh every
 	// time, which is the whole point of supporting them for stateful
 	// catalog entries like Postgres/Ollama/Qdrant.
-	volumeNames, err := ensureVolumes(ctx, cli, cmd.GetDeploymentId(), cmd.GetStackName(), project)
+	volumeNames, err := ensureVolumes(ctx, cli, deploymentID, cmd.GetStackName(), project)
 	if err != nil {
 		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to create volumes: "+err.Error())
 		return err
 	}
 
 	for name, svc := range project.Services {
-		containerID, err := createContainer(ctx, cli, cmd.GetDeploymentId(), cmd.GetStackName(), name, svc, networkName, volumeNames)
+		var containerID string
+		containerID, err = createContainer(ctx, cli, deploymentID, cmd.GetStackName(), name, svc, networkName, volumeNames)
 		if err != nil {
 			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, fmt.Sprintf("failed to create container for service %q: %v", name, err))
 			return err
 		}
-		if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		if err = cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, fmt.Sprintf("failed to start container for service %q: %v", name, err))
 			return err
 		}
@@ -241,6 +261,71 @@ func removeExisting(ctx context.Context, cli *client.Client, deploymentID string
 	return nil
 }
 
+// Undeploy tears down a deployment entirely: stops and removes every
+// container labeled with deploymentID (removeExisting, the same helper
+// redeploy uses before recreating), then removes the per-deployment
+// network ensureNetwork created for it. Named volumes are deliberately
+// left in place — matching `docker compose down`'s default (no -v) — so a
+// stack removal can't silently destroy data the backup/restore feature is
+// meant to protect.
+func Undeploy(ctx context.Context, cli *client.Client, deploymentID string) error {
+	if err := removeExisting(ctx, cli, deploymentID); err != nil {
+		return err
+	}
+	name := "pe-" + deploymentID
+	if err := cli.NetworkRemove(ctx, name); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// DeployService redeploys a single service within an already-deployed
+// stack: pulls its image, then stops/removes and recreates just that
+// service's container (found by the same deterministic
+// "pe-<deployment_id>-<service_name>" name createContainer gives it),
+// leaving every other service's container untouched. The network and
+// named volumes are ensured first (idempotently, same as Deploy) since a
+// redeployed service still needs to reach them.
+func DeployService(ctx context.Context, cli *client.Client, deploymentID, stackName, composeYAML string, env map[string]string, serviceName string) error {
+	project, err := parseCompose(ctx, composeYAML, env, stackName)
+	if err != nil {
+		return err
+	}
+	svc, ok := project.Services[serviceName]
+	if !ok {
+		return fmt.Errorf("service %q not found in compose file", serviceName)
+	}
+
+	if err := pullImage(ctx, cli, svc.Image); err != nil {
+		return err
+	}
+
+	networkName, err := ensureNetwork(ctx, cli, deploymentID, stackName)
+	if err != nil {
+		return err
+	}
+
+	volumeNames, err := ensureVolumes(ctx, cli, deploymentID, stackName, project)
+	if err != nil {
+		return err
+	}
+
+	containerName := "pe-" + deploymentID + "-" + serviceName
+	if existing, err := cli.ContainerInspect(ctx, containerName); err == nil {
+		if err := stopAndRemoveContainer(ctx, cli, existing.ID); err != nil {
+			return err
+		}
+	} else if !errdefs.IsNotFound(err) {
+		return err
+	}
+
+	containerID, err := createContainer(ctx, cli, deploymentID, stackName, serviceName, svc, networkName, volumeNames)
+	if err != nil {
+		return err
+	}
+	return cli.ContainerStart(ctx, containerID, container.StartOptions{})
+}
+
 // stopAndRemoveContainer gracefully stops (with a short timeout) then
 // force-removes containerID. Shared by removeExisting (redeploy's
 // recreate-all-matching-containers path) and RecreateContainer (ops.go's
@@ -349,11 +434,13 @@ func createContainer(ctx context.Context, cli *client.Client, deploymentID, stac
 		Cmd:          strslice.StrSlice(svc.Command),
 		Labels:       labels,
 		ExposedPorts: exposedPorts,
+		Healthcheck:  healthCheckFromCompose(svc.HealthCheck),
 	}
 	hostConfig := &container.HostConfig{
 		PortBindings:  portBindings,
 		RestartPolicy: parseRestartPolicy(svc.Restart),
 		Mounts:        mounts,
+		Resources:     resourcesFromDeploy(svc.Deploy),
 	}
 	networkingConfig := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
@@ -436,4 +523,57 @@ func parseRestartPolicy(restart string) container.RestartPolicy {
 	default:
 		return container.RestartPolicy{Name: container.RestartPolicyDisabled}
 	}
+}
+
+// resourcesFromDeploy translates a compose service's deploy.resources
+// (limits/reservations) into Docker's container.Resources — the same
+// nanoCPUs/bytes shape resourcesFromConfig (ops.go) already uses for
+// standalone containers' UpdateResourceLimits, so a Compose-declared
+// limit behaves identically to one set afterward via the Containers UI.
+// A service with no "deploy:" section (the common case) gets a zero
+// value, i.e. unlimited.
+func resourcesFromDeploy(deploy *types.DeployConfig) container.Resources {
+	if deploy == nil {
+		return container.Resources{}
+	}
+	var res container.Resources
+	if limits := deploy.Resources.Limits; limits != nil {
+		res.NanoCPUs = int64(float64(limits.NanoCPUs) * 1e9)
+		res.Memory = int64(limits.MemoryBytes)
+	}
+	if reservations := deploy.Resources.Reservations; reservations != nil {
+		res.MemoryReservation = int64(reservations.MemoryBytes)
+	}
+	return res
+}
+
+// healthCheckFromCompose translates a compose service's healthcheck
+// config into Docker's container.HealthConfig. A service with no
+// "healthcheck:" section (the common case) gets a nil config, meaning
+// "use whatever HEALTHCHECK the image itself declares, if any" — the same
+// default Docker applies when a container is created without one.
+func healthCheckFromCompose(hc *types.HealthCheckConfig) *container.HealthConfig {
+	if hc == nil {
+		return nil
+	}
+	if hc.Disable {
+		return &container.HealthConfig{Test: []string{"NONE"}}
+	}
+	cfg := &container.HealthConfig{Test: []string(hc.Test)}
+	if hc.Interval != nil {
+		cfg.Interval = time.Duration(*hc.Interval)
+	}
+	if hc.Timeout != nil {
+		cfg.Timeout = time.Duration(*hc.Timeout)
+	}
+	if hc.StartPeriod != nil {
+		cfg.StartPeriod = time.Duration(*hc.StartPeriod)
+	}
+	if hc.StartInterval != nil {
+		cfg.StartInterval = time.Duration(*hc.StartInterval)
+	}
+	if hc.Retries != nil {
+		cfg.Retries = int(*hc.Retries)
+	}
+	return cfg
 }

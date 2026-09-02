@@ -2,12 +2,17 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/container.dart';
-import '../../models/image.dart';
+import '../../models/image.dart' show ImageRollbackEntry, formatBytes;
 import '../../models/server_metrics.dart';
 import 'clone_container_dialog.dart';
+import 'container_events_screen.dart';
+import 'container_logs_screen.dart';
+import 'container_resources_screen.dart';
 import 'container_schedules_screen.dart';
+import 'container_terminal_screen.dart';
 import 'recreate_container_dialog.dart';
 import 'rename_container_dialog.dart';
+import 'resource_limits_dialog.dart';
 import 'restart_policy_dialog.dart';
 
 /// Full detail for one container: the cheap [ContainerInfo] fields (already
@@ -34,7 +39,12 @@ class ContainerDetailScreen extends StatefulWidget {
   State<ContainerDetailScreen> createState() => _ContainerDetailScreenState();
 }
 
-class _ContainerDetailScreenState extends State<ContainerDetailScreen> {
+class _ContainerDetailScreenState extends State<ContainerDetailScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController = TabController(
+    length: 5,
+    vsync: this,
+  );
   late Future<ContainerDetail> _detailFuture;
   late final String _currentName = widget.container.name;
   List<ImageRollbackEntry> _rollbackHistory = [];
@@ -100,9 +110,9 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen> {
       );
       if (!mounted) return;
       if (!result.success) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(result.error ?? 'Rollback failed')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.error ?? 'Rollback failed')),
+        );
         return;
       }
       // Recreate mints a new container id — this screen is built around the
@@ -258,6 +268,10 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen> {
           ? 'no'
           : detail.restartPolicyName,
       restartPolicyMaxRetryCount: detail.restartPolicyMaxRetryCount,
+      nanoCpus: detail.nanoCpus,
+      memoryLimitBytes: detail.memoryLimitBytes,
+      memoryReservationBytes: detail.memoryReservationBytes,
+      pidsLimit: detail.pidsLimit,
     );
     final newId = await showRecreateContainerDialog(
       context,
@@ -270,6 +284,23 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen> {
       // The container id changed, so this screen (built around the old
       // id) can no longer act on it — pop back so the caller refreshes.
       Navigator.of(context).pop(true);
+    }
+  }
+
+  Future<void> _resizeResources(ContainerDetail detail) async {
+    final ok = await showResourceLimitsDialog(
+      context,
+      apiClient: widget.apiClient,
+      serverId: widget.serverId,
+      containerId: widget.container.containerId,
+      currentNanoCpus: detail.nanoCpus,
+      currentMemoryLimitBytes: detail.memoryLimitBytes,
+      currentMemoryReservationBytes: detail.memoryReservationBytes,
+      currentPidsLimit: detail.pidsLimit,
+    );
+    if (ok == true) {
+      _changed = true;
+      _refreshDetail();
     }
   }
 
@@ -288,6 +319,12 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen> {
       _changed = true;
       _refreshDetail();
     }
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
   }
 
   Future<void> _openSchedules() async {
@@ -318,6 +355,16 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: Text(_currentName),
+          bottom: TabBar(
+            controller: _tabController,
+            tabs: const [
+              Tab(text: 'Overview'),
+              Tab(text: 'Resources'),
+              Tab(text: 'Logs'),
+              Tab(text: 'Terminal'),
+              Tab(text: 'Events'),
+            ],
+          ),
           actions: [
             if (_busy)
               const Padding(
@@ -367,222 +414,344 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen> {
             ),
           ],
         ),
-        body: ListView(
-          padding: const EdgeInsets.all(16),
+        body: TabBarView(
+          controller: _tabController,
           children: [
-            if (c.deploymentId != null)
-              Card(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                child: const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: Row(
-                    children: [
-                      Icon(Icons.info_outline, size: 18),
-                      SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'This container belongs to a deployed stack. Lifecycle '
-                          "actions here act on the container directly and won't "
-                          "update the stack's desired configuration.",
-                          style: TextStyle(fontSize: 12),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            if (c.deploymentId != null) const SizedBox(height: 16),
-            Row(
-              children: [
-                Icon(
-                  Icons.circle,
-                  size: 10,
-                  color: containerStateColor(c.state),
-                ),
-                const SizedBox(width: 8),
-                Text(c.status?.isNotEmpty == true ? c.status! : c.state),
-              ],
+            _buildOverview(context, c),
+            ContainerResourcesScreen(
+              apiClient: widget.apiClient,
+              serverId: widget.serverId,
+              containerId: c.containerId,
+              containerState: c.state,
             ),
-            const SizedBox(height: 16),
-            _DetailSection(
-              title: 'Overview',
-              rows: [
-                _DetailRow('Container ID', c.containerId),
-                _DetailRow('Server', widget.serverName),
-                _DetailRow('Image', c.image ?? '—'),
-                if (c.imageId != null && c.imageId!.isNotEmpty)
-                  _DetailRow('Image ID', c.imageId!),
-                _DetailRow(
-                  'Created',
-                  c.createdAt == null ? '—' : c.createdAt!.toLocal().toString(),
-                ),
-                _DetailRow('Uptime', _uptime(c.createdAt)),
-              ],
+            ContainerLogsScreen(
+              apiClient: widget.apiClient,
+              serverId: widget.serverId,
+              containerId: c.containerId,
+              containerName: _currentName,
+              deploymentId: c.deploymentId,
             ),
-            const SizedBox(height: 16),
-            _DetailSection(
-              title: 'Ports',
-              rows: c.ports.isEmpty
-                  ? [_DetailRow('', 'No published ports')]
-                  : c.ports
-                        .map(
-                          (p) => _DetailRow(
-                            '${p.privatePort}/${p.type}',
-                            p.publicPort == 0
-                                ? 'not published'
-                                : '${p.ip.isEmpty ? '0.0.0.0' : p.ip}:${p.publicPort}',
-                          ),
-                        )
-                        .toList(),
+            ContainerTerminalScreen(
+              apiClient: widget.apiClient,
+              serverId: widget.serverId,
+              containerId: c.containerId,
+              containerName: _currentName,
             ),
-            const SizedBox(height: 16),
-            _DetailSection(
-              title: 'Networks',
-              rows: c.networks.isEmpty
-                  ? [_DetailRow('', 'No networks')]
-                  : c.networks
-                        .map(
-                          (n) => _DetailRow(
-                            n.name,
-                            n.ipAddress.isEmpty ? '—' : n.ipAddress,
-                          ),
-                        )
-                        .toList(),
-            ),
-            const SizedBox(height: 16),
-            _DetailSection(
-              title: 'Volumes / Mounts',
-              rows: c.mounts.isEmpty
-                  ? [_DetailRow('', 'No mounts')]
-                  : c.mounts
-                        .map(
-                          (m) => _DetailRow(
-                            m.name.isEmpty ? m.source : m.name,
-                            '${m.destination} (${m.readWrite ? 'rw' : 'ro'})',
-                          ),
-                        )
-                        .toList(),
-            ),
-            const SizedBox(height: 16),
-            Text('Details', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            FutureBuilder<ContainerDetail>(
-              future: _detailFuture,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Center(child: CircularProgressIndicator()),
-                  );
-                }
-                if (snapshot.hasError) {
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Text(
-                      'Failed to load container details: ${snapshot.error}',
-                      style: const TextStyle(color: Colors.orange),
-                    ),
-                  );
-                }
-                final detail = snapshot.data!;
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Restart policy',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        TextButton(
-                          onPressed: _busy
-                              ? null
-                              : () => _restartPolicy(detail),
-                          child: const Text('Change'),
-                        ),
-                      ],
-                    ),
-                    _DetailSection(
-                      title: '',
-                      rows: [
-                        _DetailRow(
-                          'Policy',
-                          detail.restartPolicyName.isEmpty
-                              ? '—'
-                              : detail.restartPolicyName,
-                        ),
-                        if (detail.restartPolicyMaxRetryCount > 0)
-                          _DetailRow(
-                            'Max retries',
-                            '${detail.restartPolicyMaxRetryCount}',
-                          ),
-                        _DetailRow('Restart count', '${detail.restartCount}'),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    _DetailSection(
-                      title: 'Health',
-                      rows: [
-                        _DetailRow(
-                          'Status',
-                          detail.healthStatus.isEmpty
-                              ? 'no healthcheck configured'
-                              : detail.healthStatus,
-                        ),
-                        if (detail.healthFailingStreak > 0)
-                          _DetailRow(
-                            'Failing streak',
-                            '${detail.healthFailingStreak}',
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Environment variables',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (_rollbackHistory.isNotEmpty)
-                              TextButton.icon(
-                                onPressed: _busy ? null : _rollback,
-                                icon: const Icon(Icons.history, size: 16),
-                                label: const Text('Rollback'),
-                              ),
-                            TextButton.icon(
-                              onPressed: _busy ? null : () => _recreate(detail),
-                              icon: const Icon(Icons.refresh, size: 16),
-                              label: const Text('Recreate'),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    _DetailSection(
-                      title: '',
-                      rows: detail.env.isEmpty
-                          ? [_DetailRow('', 'No environment variables')]
-                          : detail.env.map((e) {
-                              final parts = e.split('=');
-                              final key = parts.first;
-                              final value = parts.length > 1
-                                  ? parts.sublist(1).join('=')
-                                  : '';
-                              return _DetailRow(key, value);
-                            }).toList(),
-                    ),
-                  ],
-                );
-              },
+            ContainerEventsScreen(
+              apiClient: widget.apiClient,
+              serverId: widget.serverId,
+              containerId: c.containerId,
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildOverview(BuildContext context, ContainerInfo c) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        if (c.deploymentId != null)
+          Card(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: const Padding(
+              padding: EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 18),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'This container belongs to a deployed stack. Lifecycle '
+                      "actions here act on the container directly and won't "
+                      "update the stack's desired configuration.",
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (c.deploymentId != null) const SizedBox(height: 16),
+        Row(
+          children: [
+            Icon(Icons.circle, size: 10, color: containerStateColor(c.state)),
+            const SizedBox(width: 8),
+            Text(c.status?.isNotEmpty == true ? c.status! : c.state),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _DetailSection(
+          title: 'Overview',
+          rows: [
+            _DetailRow('Container ID', c.containerId),
+            _DetailRow('Server', widget.serverName),
+            _DetailRow('Image', c.image ?? '—'),
+            if (c.imageId != null && c.imageId!.isNotEmpty)
+              _DetailRow('Image ID', c.imageId!),
+            _DetailRow(
+              'Created',
+              c.createdAt == null ? '—' : c.createdAt!.toLocal().toString(),
+            ),
+            _DetailRow('Uptime', _uptime(c.createdAt)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _DetailSection(
+          title: 'Ports',
+          rows: c.ports.isEmpty
+              ? [_DetailRow('', 'No published ports')]
+              : c.ports
+                    .map(
+                      (p) => _DetailRow(
+                        '${p.privatePort}/${p.type}',
+                        p.publicPort == 0
+                            ? 'not published'
+                            : '${p.ip.isEmpty ? '0.0.0.0' : p.ip}:${p.publicPort}',
+                      ),
+                    )
+                    .toList(),
+        ),
+        const SizedBox(height: 16),
+        _DetailSection(
+          title: 'Networks',
+          rows: c.networks.isEmpty
+              ? [_DetailRow('', 'No networks')]
+              : c.networks
+                    .map(
+                      (n) => _DetailRow(
+                        n.name,
+                        n.ipAddress.isEmpty ? '—' : n.ipAddress,
+                      ),
+                    )
+                    .toList(),
+        ),
+        const SizedBox(height: 16),
+        _DetailSection(
+          title: 'Volumes / Mounts',
+          rows: c.mounts.isEmpty
+              ? [_DetailRow('', 'No mounts')]
+              : c.mounts
+                    .map(
+                      (m) => _DetailRow(
+                        m.name.isEmpty ? m.source : m.name,
+                        '${m.destination} (${m.readWrite ? 'rw' : 'ro'})',
+                      ),
+                    )
+                    .toList(),
+        ),
+        const SizedBox(height: 16),
+        Text('Details', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        FutureBuilder<ContainerDetail>(
+          future: _detailFuture,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'Failed to load container details: ${snapshot.error}',
+                  style: const TextStyle(color: Colors.orange),
+                ),
+              );
+            }
+            final detail = snapshot.data!;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Restart policy',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    TextButton(
+                      onPressed: _busy ? null : () => _restartPolicy(detail),
+                      child: const Text('Change'),
+                    ),
+                  ],
+                ),
+                _DetailSection(
+                  title: '',
+                  rows: [
+                    _DetailRow(
+                      'Policy',
+                      detail.restartPolicyName.isEmpty
+                          ? '—'
+                          : detail.restartPolicyName,
+                    ),
+                    if (detail.restartPolicyMaxRetryCount > 0)
+                      _DetailRow(
+                        'Max retries',
+                        '${detail.restartPolicyMaxRetryCount}',
+                      ),
+                    _DetailRow('Restart count', '${detail.restartCount}'),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Resource limits',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    TextButton(
+                      onPressed: _busy ? null : () => _resizeResources(detail),
+                      child: const Text('Resize'),
+                    ),
+                  ],
+                ),
+                _DetailSection(
+                  title: '',
+                  rows: [
+                    _DetailRow(
+                      'CPU',
+                      detail.nanoCpus == 0
+                          ? 'unlimited'
+                          : '${(detail.nanoCpus / 1000000000).toStringAsFixed(2)} cores',
+                    ),
+                    _DetailRow(
+                      'Memory limit',
+                      detail.memoryLimitBytes == 0
+                          ? 'unlimited'
+                          : formatBytes(detail.memoryLimitBytes),
+                    ),
+                    _DetailRow(
+                      'Memory reservation',
+                      detail.memoryReservationBytes == 0
+                          ? 'none'
+                          : formatBytes(detail.memoryReservationBytes),
+                    ),
+                    _DetailRow(
+                      'Process limit',
+                      detail.pidsLimit == 0
+                          ? 'unlimited'
+                          : '${detail.pidsLimit}',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _DetailSection(
+                  title: 'Health',
+                  rows: [
+                    _DetailRow(
+                      'Status',
+                      detail.healthStatus.isEmpty
+                          ? 'no healthcheck configured'
+                          : detail.healthStatus,
+                    ),
+                    if (detail.healthFailingStreak > 0)
+                      _DetailRow(
+                        'Failing streak',
+                        '${detail.healthFailingStreak}',
+                      ),
+                  ],
+                ),
+                if (detail.healthLog.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    'Health-check history',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  _DetailSection(
+                    title: '',
+                    rows: [
+                      for (final h in detail.healthLog.reversed)
+                        _DetailRow(
+                          h.start == null ? '—' : h.start!.toLocal().toString(),
+                          'exit ${h.exitCode}${h.output.isEmpty ? '' : ' — ${h.output.trim()}'}',
+                        ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Text(
+                  'Configuration',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                _DetailSection(
+                  title: '',
+                  rows: [
+                    _DetailRow(
+                      'Image',
+                      detail.image.isEmpty ? '—' : detail.image,
+                    ),
+                    _DetailRow(
+                      'Command',
+                      detail.command.isEmpty ? '—' : detail.command.join(' '),
+                    ),
+                    _DetailRow(
+                      'Entrypoint',
+                      detail.entrypoint.isEmpty
+                          ? '—'
+                          : detail.entrypoint.join(' '),
+                    ),
+                    _DetailRow(
+                      'Working dir',
+                      detail.workingDir.isEmpty ? '—' : detail.workingDir,
+                    ),
+                    if (detail.labels.isEmpty)
+                      _DetailRow('Labels', 'none')
+                    else
+                      for (final entry in detail.labels.entries)
+                        _DetailRow('Label: ${entry.key}', entry.value),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Environment variables',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_rollbackHistory.isNotEmpty)
+                          TextButton.icon(
+                            onPressed: _busy ? null : _rollback,
+                            icon: const Icon(Icons.history, size: 16),
+                            label: const Text('Rollback'),
+                          ),
+                        TextButton.icon(
+                          onPressed: _busy ? null : () => _recreate(detail),
+                          icon: const Icon(Icons.refresh, size: 16),
+                          label: const Text('Recreate'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                _DetailSection(
+                  title: '',
+                  rows: detail.env.isEmpty
+                      ? [_DetailRow('', 'No environment variables')]
+                      : detail.env.map((e) {
+                          final parts = e.split('=');
+                          final key = parts.first;
+                          final value = parts.length > 1
+                              ? parts.sublist(1).join('=')
+                              : '';
+                          return _DetailRow(key, value);
+                        }).toList(),
+                ),
+              ],
+            );
+          },
+        ),
+      ],
     );
   }
 }

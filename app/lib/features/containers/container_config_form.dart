@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../api/api_client.dart';
 import '../../models/container.dart';
 
 const _restartPolicyLabels = {
@@ -28,6 +29,16 @@ class ContainerConfigForm extends StatefulWidget {
   /// know their server).
   final Widget? header;
 
+  /// apiClient/serverId enable the port fields' inline conflict check
+  /// (GET /api/servers/{id}/ports/check on blur) — optional since the
+  /// create dialog may not have a server selected yet, in which case the
+  /// check is silently skipped. excludeContainerId suppresses a false
+  /// warning for recreate, where the container being replaced still
+  /// currently holds its own host ports until the recreate actually runs.
+  final ApiClient? apiClient;
+  final String? serverId;
+  final String? excludeContainerId;
+
   const ContainerConfigForm({
     super.key,
     required this.title,
@@ -37,6 +48,9 @@ class ContainerConfigForm extends StatefulWidget {
     this.error,
     required this.onSubmit,
     this.header,
+    this.apiClient,
+    this.serverId,
+    this.excludeContainerId,
   });
 
   @override
@@ -122,6 +136,26 @@ class _ContainerConfigFormState extends State<ContainerConfigForm> {
         ? ''
         : '${widget.initial!.restartPolicyMaxRetryCount}',
   );
+  late final _cpuController = TextEditingController(
+    text: widget.initial == null || widget.initial!.nanoCpus == 0
+        ? ''
+        : (widget.initial!.nanoCpus / 1000000000).toStringAsFixed(2),
+  );
+  late final _memLimitController = TextEditingController(
+    text: widget.initial == null || widget.initial!.memoryLimitBytes == 0
+        ? ''
+        : '${widget.initial!.memoryLimitBytes ~/ (1024 * 1024)}',
+  );
+  late final _memReservationController = TextEditingController(
+    text: widget.initial == null || widget.initial!.memoryReservationBytes == 0
+        ? ''
+        : '${widget.initial!.memoryReservationBytes ~/ (1024 * 1024)}',
+  );
+  late final _pidsController = TextEditingController(
+    text: widget.initial == null || widget.initial!.pidsLimit == 0
+        ? ''
+        : '${widget.initial!.pidsLimit}',
+  );
 
   @override
   void dispose() {
@@ -138,6 +172,10 @@ class _ContainerConfigFormState extends State<ContainerConfigForm> {
       v.dispose();
     }
     _maxRetryController.dispose();
+    _cpuController.dispose();
+    _memLimitController.dispose();
+    _memReservationController.dispose();
+    _pidsController.dispose();
     super.dispose();
   }
 
@@ -181,6 +219,19 @@ class _ContainerConfigFormState extends State<ContainerConfigForm> {
               _maxRetryController.text.trim().isNotEmpty
           ? int.parse(_maxRetryController.text.trim())
           : 0,
+      nanoCpus: _cpuController.text.trim().isEmpty
+          ? 0
+          : ((double.tryParse(_cpuController.text.trim()) ?? 0) * 1000000000)
+                .round(),
+      memoryLimitBytes: _memLimitController.text.trim().isEmpty
+          ? 0
+          : int.parse(_memLimitController.text.trim()) * 1024 * 1024,
+      memoryReservationBytes: _memReservationController.text.trim().isEmpty
+          ? 0
+          : int.parse(_memReservationController.text.trim()) * 1024 * 1024,
+      pidsLimit: _pidsController.text.trim().isEmpty
+          ? 0
+          : int.parse(_pidsController.text.trim()),
     );
     widget.onSubmit(config);
   }
@@ -252,7 +303,11 @@ class _ContainerConfigFormState extends State<ContainerConfigForm> {
               ),
               for (var i = 0; i < _ports.length; i++)
                 _PortField(
+                  key: ValueKey(_ports[i]),
                   row: _ports[i],
+                  apiClient: widget.apiClient,
+                  serverId: widget.serverId,
+                  excludeContainerId: widget.excludeContainerId,
                   onProtocolChanged: (v) =>
                       setState(() => _ports[i].protocol = v),
                   onRemove: () => setState(() {
@@ -300,6 +355,46 @@ class _ContainerConfigFormState extends State<ContainerConfigForm> {
                   ),
                 ),
               ],
+              const SizedBox(height: 16),
+              Text(
+                'Resource limits',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 4),
+              TextFormField(
+                controller: _cpuController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: const InputDecoration(
+                  labelText: 'CPU limit, in cores (blank = unlimited)',
+                  hintText: 'e.g. 1.5',
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _memLimitController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Memory limit, in MB (blank = unlimited)',
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _memReservationController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Memory reservation, in MB (blank = none)',
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _pidsController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Process limit (blank = unlimited)',
+                ),
+              ),
               if (widget.error != null) ...[
                 const SizedBox(height: 12),
                 Text(widget.error!, style: const TextStyle(color: Colors.red)),
@@ -389,58 +484,144 @@ class _KeyValueField extends StatelessWidget {
   }
 }
 
-class _PortField extends StatelessWidget {
+class _PortField extends StatefulWidget {
   final _PortRow row;
+  final ApiClient? apiClient;
+  final String? serverId;
+  final String? excludeContainerId;
   final ValueChanged<String> onProtocolChanged;
   final VoidCallback onRemove;
 
   const _PortField({
+    super.key,
     required this.row,
+    this.apiClient,
+    this.serverId,
+    this.excludeContainerId,
     required this.onProtocolChanged,
     required this.onRemove,
   });
 
   @override
+  State<_PortField> createState() => _PortFieldState();
+}
+
+class _PortFieldState extends State<_PortField> {
+  final _hostPortFocus = FocusNode();
+  String? _conflictWarning;
+
+  @override
+  void initState() {
+    super.initState();
+    _hostPortFocus.addListener(_onFocusChange);
+  }
+
+  @override
+  void dispose() {
+    _hostPortFocus.removeListener(_onFocusChange);
+    _hostPortFocus.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChange() {
+    if (!_hostPortFocus.hasFocus) _checkConflict();
+  }
+
+  Future<void> _checkConflict() async {
+    final apiClient = widget.apiClient;
+    final serverId = widget.serverId;
+    final hostPort = int.tryParse(widget.row.hostPort.text.trim());
+    if (apiClient == null || serverId == null || hostPort == null) {
+      if (mounted && _conflictWarning != null) {
+        setState(() => _conflictWarning = null);
+      }
+      return;
+    }
+    try {
+      final result = await apiClient.checkPortConflict(
+        serverId,
+        hostPort: hostPort,
+        protocol: widget.row.protocol,
+      );
+      if (!mounted) return;
+      final conflicted =
+          result.conflict && result.containerId != widget.excludeContainerId;
+      setState(() {
+        _conflictWarning = conflicted
+            ? 'Port $hostPort/${widget.row.protocol} is already in use'
+            : null;
+      });
+    } catch (_) {
+      // Best-effort UI hint — a failed check just means no warning shown;
+      // the server-side guard on create/recreate still catches it.
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: TextFormField(
-              controller: row.containerPort,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                hintText: 'Container port',
-                isDense: true,
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  controller: widget.row.containerPort,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    hintText: 'Container port',
+                    isDense: true,
+                  ),
+                ),
               ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: TextFormField(
-              controller: row.hostPort,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                hintText: 'Host port (optional)',
-                isDense: true,
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextFormField(
+                  controller: widget.row.hostPort,
+                  focusNode: _hostPortFocus,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    hintText: 'Host port (optional)',
+                    isDense: true,
+                  ),
+                ),
               ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          DropdownButton<String>(
-            value: row.protocol,
-            items: const [
-              DropdownMenuItem(value: 'tcp', child: Text('TCP')),
-              DropdownMenuItem(value: 'udp', child: Text('UDP')),
+              const SizedBox(width: 8),
+              DropdownButton<String>(
+                value: widget.row.protocol,
+                items: const [
+                  DropdownMenuItem(value: 'tcp', child: Text('TCP')),
+                  DropdownMenuItem(value: 'udp', child: Text('UDP')),
+                ],
+                onChanged: (v) => widget.onProtocolChanged(v ?? 'tcp'),
+              ),
+              IconButton(
+                icon: const Icon(Icons.remove_circle_outline, size: 20),
+                onPressed: widget.onRemove,
+                visualDensity: VisualDensity.compact,
+              ),
             ],
-            onChanged: (v) => onProtocolChanged(v ?? 'tcp'),
           ),
-          IconButton(
-            icon: const Icon(Icons.remove_circle_outline, size: 20),
-            onPressed: onRemove,
-            visualDensity: VisualDensity.compact,
-          ),
+          if (_conflictWarning != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.warning_amber,
+                    size: 14,
+                    color: Colors.orange,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _conflictWarning!,
+                    style: const TextStyle(color: Colors.orange, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );

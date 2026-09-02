@@ -3,13 +3,19 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/backup.dart';
+import '../models/compose_file.dart';
 import '../models/container.dart';
+import '../models/deployment_preview.dart';
+import '../models/env_var_group.dart';
 import '../models/image.dart';
+import '../models/log_line.dart';
+import '../models/network.dart';
 import '../models/schedule.dart';
 import '../models/server.dart';
 import '../models/server_metrics.dart';
 import '../models/stack.dart';
 import '../models/user.dart';
+import '../models/volume.dart';
 
 class ApiException implements Exception {
   final int statusCode;
@@ -265,6 +271,60 @@ class ApiClient {
     return decoded['deploymentId'] as String;
   }
 
+  /// Deploys a user-authored Compose file (as opposed to [createDeployment],
+  /// which deploys from the curated stacks catalog) — the "Stack
+  /// deployment" counterpart to Deployment Management > Docker Compose's
+  /// file management.
+  Future<String> createComposeDeployment({
+    required String composeFileId,
+    required String serverId,
+    Map<String, String> env = const {},
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/deployments'),
+      headers: _headers,
+      body: jsonEncode({
+        'composeFileId': composeFileId,
+        'serverId': serverId,
+        'env': env,
+      }),
+    );
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 202) {
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+    return decoded['deploymentId'] as String;
+  }
+
+  /// Applies a stack-level lifecycle action to every container in a
+  /// deployment — start/stop/restart fan out across the deployment's
+  /// current containers (response has a `results` list, one per
+  /// container, each `{serverId, containerId, success, error}`); remove
+  /// tears the whole deployment down including its network (response is
+  /// `{success, error}`). Callers branch on [action] to interpret which
+  /// shape came back — see DockerComposeScreen / DeploymentStatusScreen.
+  Future<Map<String, dynamic>> deploymentAction(
+    String deploymentId,
+    String action,
+  ) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/action'),
+      headers: _headers,
+      body: jsonEncode({'action': action}),
+    );
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+    return decoded;
+  }
+
   /// Re-applies an existing deployment (same deployment_id) to its server.
   /// Unlike [createDeployment], this exercises the agent's redeploy/recreate
   /// path: the agent finds containers already labeled with this
@@ -273,6 +333,47 @@ class ApiClient {
     final response = await _http.post(
       Uri.parse('$baseUrl/api/deployments/$deploymentId/redeploy'),
       headers: _headers,
+    );
+    if (response.statusCode != 202) {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+  }
+
+  /// Redeploys one named service within a deployment — pulls its image and
+  /// recreates just that service's container, leaving the rest of the
+  /// stack running untouched.
+  Future<Map<String, dynamic>> redeployService(
+    String deploymentId,
+    String serviceName,
+  ) async {
+    final response = await _http.post(
+      Uri.parse(
+        '$baseUrl/api/deployments/$deploymentId/services/$serviceName/redeploy',
+      ),
+      headers: _headers,
+    );
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+    return decoded;
+  }
+
+  /// Redeploys the whole stack using an earlier compose file version's
+  /// content instead of its current content — "Perform a controlled
+  /// rollback". Only valid for deployments sourced from a Compose file.
+  Future<void> rollbackDeployment(String deploymentId, String versionId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/rollback'),
+      headers: _headers,
+      body: jsonEncode({'versionId': versionId}),
     );
     if (response.statusCode != 202) {
       final decoded = jsonDecode(response.body) as Map<String, dynamic>;
@@ -388,6 +489,147 @@ class ApiClient {
     }
     return ContainerDetail.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// WebSocket URL for one container's live (or bounded, with
+  /// `follow: false`) log tail. `withContainers` merges other containers'
+  /// logs into the same interleaved feed — "combine logs from related
+  /// containers", typically every container in the same deployment. Same
+  /// `?token=` query-param auth as [serverStreamUri].
+  Uri containerLogsStreamUri(
+    String serverId,
+    String containerId, {
+    bool follow = true,
+    int? tail,
+    DateTime? since,
+    DateTime? until,
+    List<String> withContainers = const [],
+  }) {
+    final httpUri = Uri.parse(baseUrl);
+    final wsScheme = httpUri.scheme == 'https' ? 'wss' : 'ws';
+    return httpUri.replace(
+      scheme: wsScheme,
+      path: '/api/servers/$serverId/containers/$containerId/logs/stream',
+      queryParameters: {
+        'token': ?authToken,
+        if (!follow) 'follow': 'false',
+        if (tail != null) 'tail': '$tail',
+        if (since != null) 'since': since.toUtc().toIso8601String(),
+        if (until != null) 'until': until.toUtc().toIso8601String(),
+        if (withContainers.isNotEmpty) 'with': withContainers.join(','),
+      },
+    );
+  }
+
+  /// Downloads a bounded log dump as plain text — backs both "download
+  /// logs" and, via the OS share sheet on the downloaded file, "share".
+  Future<String> downloadContainerLogs(
+    String serverId,
+    String containerId, {
+    int? tail,
+    DateTime? since,
+    DateTime? until,
+  }) async {
+    final uri =
+        Uri.parse(
+          '$baseUrl/api/servers/$serverId/containers/$containerId/logs/download',
+        ).replace(
+          queryParameters: {
+            if (tail != null) 'tail': '$tail',
+            if (since != null) 'since': since.toUtc().toIso8601String(),
+            if (until != null) 'until': until.toUtc().toIso8601String(),
+          },
+        );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return response.body;
+  }
+
+  /// Bounded history of Docker events for one container (start/stop/die/
+  /// health_status/...) — the troubleshooting view's "what happened here".
+  Future<List<ContainerEvent>> listContainerEvents(
+    String serverId,
+    String containerId, {
+    DateTime? since,
+    DateTime? until,
+  }) async {
+    final uri =
+        Uri.parse(
+          '$baseUrl/api/servers/$serverId/containers/$containerId/events',
+        ).replace(
+          queryParameters: {
+            if (since != null) 'since': since.toUtc().toIso8601String(),
+            if (until != null) 'until': until.toUtc().toIso8601String(),
+          },
+        );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => ContainerEvent.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Whether AI-assisted log summary/root-cause is available — checked up
+  /// front so the Flutter app can hide the button instead of only failing
+  /// on click.
+  Future<bool> aiConfigured() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/ai/status'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) return false;
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return decoded['configured'] as bool? ?? false;
+  }
+
+  /// Asks the control plane's AI integration to summarize this container's
+  /// recent logs and suggest a root cause.
+  Future<LogAnalysis> analyzeContainerLogs(
+    String serverId,
+    String containerId,
+  ) async {
+    final response = await _http.post(
+      Uri.parse(
+        '$baseUrl/api/servers/$serverId/containers/$containerId/logs/analyze',
+      ),
+      headers: _headers,
+    );
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+    return LogAnalysis.fromJson(decoded);
+  }
+
+  /// WebSocket URL for an interactive `docker exec` terminal session.
+  /// Binary frames are pty I/O in both directions; a text frame of the
+  /// form "resize:`<cols>x<rows>`" sent by the client resizes the pty. Same
+  /// `?token=` query-param auth as [serverStreamUri].
+  Uri containerExecUri(
+    String serverId,
+    String containerId, {
+    int cols = 80,
+    int rows = 24,
+  }) {
+    final httpUri = Uri.parse(baseUrl);
+    final wsScheme = httpUri.scheme == 'https' ? 'wss' : 'ws';
+    return httpUri.replace(
+      scheme: wsScheme,
+      path: '/api/servers/$serverId/containers/$containerId/exec',
+      queryParameters: {'token': ?authToken, 'cols': '$cols', 'rows': '$rows'},
     );
   }
 
@@ -558,6 +800,53 @@ class ApiClient {
     return _decodeOpResult(response);
   }
 
+  /// Changes an existing container's CPU/memory/process limits live, via
+  /// Docker's ContainerUpdate — no recreate needed, same as
+  /// [updateRestartPolicy]. 0 on any field clears that limit.
+  Future<ContainerOpResult> updateResourceLimits(
+    String serverId,
+    String containerId, {
+    int nanoCpus = 0,
+    int memoryLimitBytes = 0,
+    int memoryReservationBytes = 0,
+    int pidsLimit = 0,
+  }) async {
+    final response = await _http.patch(
+      Uri.parse(
+        '$baseUrl/api/servers/$serverId/containers/$containerId/resources',
+      ),
+      headers: _headers,
+      body: jsonEncode({
+        'nanoCpus': nanoCpus,
+        'memoryLimitBytes': memoryLimitBytes,
+        'memoryReservationBytes': memoryReservationBytes,
+        'pidsLimit': pidsLimit,
+      }),
+    );
+    return _decodeOpResult(response);
+  }
+
+  /// [since] is a Go duration string (e.g. '1h', '30m'); defaults to the
+  /// server's own default window (1h) if omitted. Per-container counterpart
+  /// to [getServerMetrics].
+  Future<List<ContainerResourceUsage>> getContainerMetrics(
+    String serverId,
+    String containerId, {
+    String? since,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/servers/$serverId/containers/$containerId/metrics',
+    ).replace(queryParameters: since == null ? null : {'since': since});
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => ContainerResourceUsage.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   /// Decodes an image pull/remove/prune command's response, same
   /// "no success field means it never reached the agent" convention as
   /// [_decodeOpResult].
@@ -605,7 +894,9 @@ class ApiClient {
         decoded['error'] as String? ?? response.body,
       );
     }
-    return ImageDetail.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return ImageDetail.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
   }
 
   /// Pulls [imageRef] onto [serverId], optionally authenticating against a
@@ -682,6 +973,209 @@ class ApiClient {
     );
   }
 
+  /// Lists the network inventory for one server, or the whole fleet if
+  /// [serverId] is omitted (fanned out server-side, live — same shape as
+  /// [listImages]).
+  Future<List<NetworkSummary>> listNetworks({String? serverId}) async {
+    final uri = Uri.parse('$baseUrl/api/networks').replace(
+      queryParameters: {
+        if (serverId != null && serverId.isNotEmpty) 'serverId': serverId,
+      },
+    );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => NetworkSummary.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Creates a new user-defined network on [serverId]. [driver] empty lets
+  /// Docker pick its default (bridge).
+  Future<NetworkOpResult> createNetwork(
+    String serverId, {
+    required String name,
+    String? driver,
+    bool internal = false,
+    Map<String, String>? labels,
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/servers/$serverId/networks'),
+      headers: _headers,
+      body: jsonEncode({
+        'name': name,
+        if (driver != null && driver.isNotEmpty) 'driver': driver,
+        if (internal) 'internal': internal,
+        if (labels != null && labels.isNotEmpty) 'labels': labels,
+      }),
+    );
+    return _decodeNetworkOpResult(response);
+  }
+
+  /// Removes one network on [serverId].
+  Future<NetworkOpResult> removeNetwork(
+    String serverId,
+    String networkId,
+  ) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/servers/$serverId/networks/$networkId'),
+      headers: _headers,
+    );
+    return _decodeNetworkOpResult(response);
+  }
+
+  /// Attaches [containerId] to [networkId] on [serverId].
+  Future<NetworkOpResult> connectContainerToNetwork(
+    String serverId,
+    String networkId,
+    String containerId,
+  ) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/servers/$serverId/networks/$networkId/connect'),
+      headers: _headers,
+      body: jsonEncode({'containerId': containerId}),
+    );
+    return _decodeNetworkOpResult(response);
+  }
+
+  /// Detaches [containerId] from [networkId] on [serverId].
+  Future<NetworkOpResult> disconnectContainerFromNetwork(
+    String serverId,
+    String networkId,
+    String containerId, {
+    bool force = false,
+  }) async {
+    final response = await _http.post(
+      Uri.parse(
+        '$baseUrl/api/servers/$serverId/networks/$networkId/disconnect',
+      ),
+      headers: _headers,
+      body: jsonEncode({'containerId': containerId, if (force) 'force': true}),
+    );
+    return _decodeNetworkOpResult(response);
+  }
+
+  /// Decodes a network create/remove/connect/disconnect command's response,
+  /// same convention as [_decodeImageOpResult].
+  NetworkOpResult _decodeNetworkOpResult(http.Response response) {
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (decoded.containsKey('success')) {
+      return NetworkOpResult.fromJson(decoded);
+    }
+    throw ApiException(
+      response.statusCode,
+      decoded['error'] as String? ?? response.body,
+    );
+  }
+
+  /// Lists the volume inventory for one server, or the whole fleet if
+  /// [serverId] is omitted — same shape as [listImages]/[listNetworks].
+  Future<List<VolumeSummary>> listVolumes({String? serverId}) async {
+    final uri = Uri.parse('$baseUrl/api/volumes').replace(
+      queryParameters: {
+        if (serverId != null && serverId.isNotEmpty) 'serverId': serverId,
+      },
+    );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => VolumeSummary.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Fetches full metadata (driver, mountpoint, labels, size, in-use-by) for
+  /// one volume by name, for the metadata-browse detail view.
+  Future<VolumeSummary> inspectVolume(String serverId, String name) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/servers/$serverId/volumes/$name'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      throw ApiException(
+        response.statusCode,
+        decoded['error'] as String? ?? response.body,
+      );
+    }
+    return VolumeSummary.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Creates a new named volume on [serverId].
+  Future<VolumeOpResult> createVolume(
+    String serverId, {
+    required String name,
+    String? driver,
+    Map<String, String>? labels,
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/servers/$serverId/volumes'),
+      headers: _headers,
+      body: jsonEncode({
+        'name': name,
+        if (driver != null && driver.isNotEmpty) 'driver': driver,
+        if (labels != null && labels.isNotEmpty) 'labels': labels,
+      }),
+    );
+    return _decodeVolumeOpResult(response);
+  }
+
+  /// Removes one volume on [serverId]. Without [force], a volume still in
+  /// use by a container comes back as a `success:false` [VolumeOpResult]
+  /// (not an [ApiException]) describing which containers are using it — the
+  /// caller offers to retry with `force: true`.
+  Future<VolumeOpResult> removeVolume(
+    String serverId,
+    String name, {
+    bool force = false,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/servers/$serverId/volumes/$name',
+    ).replace(queryParameters: {if (force) 'force': 'true'});
+    final response = await _http.delete(uri, headers: _headers);
+    return _decodeVolumeOpResult(response);
+  }
+
+  /// Decodes a volume create/remove command's response, same convention as
+  /// [_decodeImageOpResult].
+  VolumeOpResult _decodeVolumeOpResult(http.Response response) {
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (decoded.containsKey('success')) {
+      return VolumeOpResult.fromJson(decoded);
+    }
+    throw ApiException(
+      response.statusCode,
+      decoded['error'] as String? ?? response.body,
+    );
+  }
+
+  /// Checks whether [hostPort]/[protocol] is already bound by another
+  /// container on [serverId] — used both by the port-mapping form's inline
+  /// warning and, redundantly but harmlessly, re-checked server-side on
+  /// create/recreate.
+  Future<PortConflictResult> checkPortConflict(
+    String serverId, {
+    required int hostPort,
+    String protocol = 'tcp',
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/servers/$serverId/ports/check').replace(
+      queryParameters: {'hostPort': hostPort.toString(), 'protocol': protocol},
+    );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return PortConflictResult.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   /// Runs a Trivy vulnerability scan against [imageRef] (pulled from its
   /// registry directly, not from any agent) and stores the result.
   Future<ScanResult> scanImage(String imageRef) async {
@@ -697,7 +1191,9 @@ class ApiClient {
         decoded['error'] as String? ?? response.body,
       );
     }
-    return ScanResult.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return ScanResult.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
   }
 
   /// Fetches the last stored scan result for [imageRef], or null if none
@@ -713,7 +1209,9 @@ class ApiClient {
     if (response.statusCode != 200) {
       throw ApiException(response.statusCode, response.body);
     }
-    return ScanResult.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return ScanResult.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
   }
 
   Future<List<Registry>> listRegistries() async {
@@ -969,6 +1467,286 @@ class ApiClient {
   Future<void> deleteSchedule(String id) async {
     final response = await _http.delete(
       Uri.parse('$baseUrl/api/schedules/$id'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(response.statusCode, response.body);
+    }
+  }
+
+  // --- Deployment Management > Docker Compose --------------------------
+
+  /// Resolves a stack or compose file's services (image, ports, volumes)
+  /// without deploying anything — backs the deploy dialog's "preview
+  /// resources before deployment" step.
+  Future<DeploymentPreview> previewDeployment({
+    String? stackId,
+    String? composeFileId,
+    Map<String, String> env = const {},
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/deployments/preview'),
+      headers: _headers,
+      body: jsonEncode({
+        if (stackId != null) 'stackId': stackId,
+        if (composeFileId != null) 'composeFileId': composeFileId,
+        'env': env,
+      }),
+    );
+    if (response.statusCode != 200) {
+      final decoded = jsonDecode(response.body);
+      throw ApiException(
+        response.statusCode,
+        decoded is Map ? (decoded['error'] as String? ?? response.body) : response.body,
+      );
+    }
+    return DeploymentPreview.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<List<ComposeFile>> listComposeFiles() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/compose-files'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => ComposeFile.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<ComposeFile> getComposeFile(String id) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/compose-files/$id'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return ComposeFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<ComposeFile> createComposeFile({
+    required String name,
+    required String content,
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/compose-files'),
+      headers: _headers,
+      body: jsonEncode({'name': name, 'content': content}),
+    );
+    if (response.statusCode != 201) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return ComposeFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<ComposeFile> updateComposeFile(
+    String id, {
+    required String name,
+    required String content,
+  }) async {
+    final response = await _http.patch(
+      Uri.parse('$baseUrl/api/compose-files/$id'),
+      headers: _headers,
+      body: jsonEncode({'name': name, 'content': content}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return ComposeFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> deleteComposeFile(String id) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/compose-files/$id'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(response.statusCode, response.body);
+    }
+  }
+
+  Future<List<ComposeFileVersionSummary>> listComposeFileVersions(
+    String composeFileId,
+  ) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/compose-files/$composeFileId/versions'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map(
+          (e) =>
+              ComposeFileVersionSummary.fromJson(e as Map<String, dynamic>),
+        )
+        .toList();
+  }
+
+  Future<ComposeFileVersion> getComposeFileVersion(
+    String composeFileId,
+    String versionId,
+  ) async {
+    final response = await _http.get(
+      Uri.parse(
+        '$baseUrl/api/compose-files/$composeFileId/versions/$versionId',
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return ComposeFileVersion.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Makes a past version the current content again — itself undoable,
+  /// since UpdateComposeFile snapshots whatever was current before
+  /// overwriting it.
+  Future<ComposeFile> restoreComposeFileVersion(
+    String composeFileId,
+    String versionId,
+  ) async {
+    final response = await _http.post(
+      Uri.parse(
+        '$baseUrl/api/compose-files/$composeFileId/versions/$versionId/restore',
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return ComposeFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Validates raw Compose YAML and, when possible, projects it into
+  /// [ComposeServiceDraft]s for the visual editor — shared by the YAML
+  /// editor's live validation and "switch to visual mode".
+  Future<ComposeParseResult> parseComposeYaml(String content) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/compose-files/parse'),
+      headers: _headers,
+      body: jsonEncode({'content': content}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return ComposeParseResult.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Renders the visual editor's in-progress services into Compose YAML —
+  /// backs "switch to YAML mode".
+  Future<String> renderComposeYaml(List<ComposeServiceDraft> services) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/compose-files/render'),
+      headers: _headers,
+      body: jsonEncode({'services': services.map((s) => s.toJson()).toList()}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return decoded['content'] as String;
+  }
+
+  // --- Deployment Management > Docker Compose > Configuration ----------
+
+  Future<List<EnvVarGroup>> listEnvVarGroups({String? environment}) async {
+    final uri = Uri.parse('$baseUrl/api/env-var-groups').replace(
+      queryParameters: {
+        if (environment != null && environment.isNotEmpty)
+          'environment': environment,
+      },
+    );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => EnvVarGroup.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<EnvVarGroup> getEnvVarGroup(String id) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/env-var-groups/$id'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return EnvVarGroup.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<EnvVarGroup> createEnvVarGroup({
+    required String name,
+    required String environment,
+    required List<EnvVariable> variables,
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/env-var-groups'),
+      headers: _headers,
+      body: jsonEncode({
+        'name': name,
+        'environment': environment,
+        'variables': variables.map((v) => v.toJson()).toList(),
+      }),
+    );
+    if (response.statusCode != 201) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return EnvVarGroup.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<EnvVarGroup> updateEnvVarGroup(
+    String id, {
+    required String name,
+    required String environment,
+    required List<EnvVariable> variables,
+  }) async {
+    final response = await _http.patch(
+      Uri.parse('$baseUrl/api/env-var-groups/$id'),
+      headers: _headers,
+      body: jsonEncode({
+        'name': name,
+        'environment': environment,
+        'variables': variables.map((v) => v.toJson()).toList(),
+      }),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return EnvVarGroup.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> deleteEnvVarGroup(String id) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/env-var-groups/$id'),
       headers: _headers,
     );
     if (response.statusCode != 204) {

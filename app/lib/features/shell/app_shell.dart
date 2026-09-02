@@ -3,10 +3,13 @@ import 'package:flutter/material.dart';
 import '../../api/api_client.dart';
 import '../../models/user.dart';
 import '../containers/container_list_screen.dart';
+import '../compose/docker_compose_screen.dart';
 import '../images/image_list_screen.dart';
+import '../networks/network_list_screen.dart';
 import '../servers/server_list_screen.dart';
 import '../users/change_password_dialog.dart';
 import '../users/user_list_screen.dart';
+import '../volumes/volume_list_screen.dart';
 
 /// Post-login shell: a persistent left [NavigationRail] listing the app's
 /// main modules (Servers, Containers, and — admin only — Users), with the
@@ -64,17 +67,33 @@ class _AppShellState extends State<AppShell> {
           _ModuleDestination(
             icon: Icons.view_in_ar_outlined,
             selectedIcon: Icons.view_in_ar,
-            label: 'Containers',
+            label: 'Container Management',
             builder: (_) => ContainerListScreen(apiClient: widget.apiClient),
           ),
           _ModuleDestination(
             icon: Icons.inventory_2_outlined,
             selectedIcon: Icons.inventory_2,
             label: 'Images',
-            builder: (_) => ImageListScreen(
-              apiClient: widget.apiClient,
-              isAdmin: isAdmin,
-            ),
+            builder: (_) =>
+                ImageListScreen(apiClient: widget.apiClient, isAdmin: isAdmin),
+          ),
+          _ModuleDestination(
+            icon: Icons.hub_outlined,
+            selectedIcon: Icons.hub,
+            label: 'Networks',
+            builder: (_) => NetworkListScreen(apiClient: widget.apiClient),
+          ),
+          _ModuleDestination(
+            icon: Icons.storage_outlined,
+            selectedIcon: Icons.storage,
+            label: 'Volumes',
+            builder: (_) => VolumeListScreen(apiClient: widget.apiClient),
+          ),
+          _ModuleDestination(
+            icon: Icons.rocket_launch_outlined,
+            selectedIcon: Icons.rocket_launch,
+            label: 'Deployment Management',
+            builder: (_) => DockerComposeScreen(apiClient: widget.apiClient),
           ),
           if (isAdmin)
             _ModuleDestination(
@@ -197,7 +216,8 @@ class _AccountMenu extends StatelessWidget {
                     child: Icon(Icons.person, size: 16),
                   ),
                   const SizedBox(width: 8),
-                  Expanded(
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 140),
                     child: Text(
                       email ?? '',
                       overflow: TextOverflow.ellipsis,

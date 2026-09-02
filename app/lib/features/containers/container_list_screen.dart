@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
@@ -239,7 +240,9 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          _selectionMode ? '${_selectedKeys.length} selected' : 'Containers',
+          _selectionMode
+              ? '${_selectedKeys.length} selected'
+              : 'Container Management',
         ),
         actions: [
           IconButton(
@@ -329,137 +332,69 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
                         vertical: 8,
                       ),
                       child: Wrap(
-                        spacing: 8,
+                        spacing: 16,
                         runSpacing: 8,
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          ChoiceChip(
-                            label: const Text('All servers'),
-                            selected: _selectedServerId == null,
-                            onSelected: (_) {
-                              setState(() => _selectedServerId = null);
+                          _filterDropdown(
+                            label: 'Server',
+                            value: _selectedServerId,
+                            options: servers,
+                            onChanged: (v) {
+                              setState(() => _selectedServerId = v);
                               _refresh();
                             },
                           ),
-                          for (final entry in servers.entries)
-                            ChoiceChip(
-                              label: Text(entry.value),
-                              selected: _selectedServerId == entry.key,
-                              onSelected: (_) {
-                                setState(() => _selectedServerId = entry.key);
+                          if (statuses.isNotEmpty)
+                            _filterDropdown(
+                              label: 'Status',
+                              value: _selectedStatus,
+                              options: {for (final s in statuses) s: s},
+                              onChanged: (v) {
+                                setState(() => _selectedStatus = v);
                                 _refresh();
                               },
                             ),
-                          if (statuses.isNotEmpty) ...[
-                            const SizedBox(width: 4),
-                            const VerticalDivider(width: 1),
-                            const SizedBox(width: 4),
-                            ChoiceChip(
-                              label: const Text('All statuses'),
-                              selected: _selectedStatus == null,
-                              onSelected: (_) {
-                                setState(() => _selectedStatus = null);
+                          if (images.isNotEmpty)
+                            _filterDropdown(
+                              label: 'Image',
+                              value: _selectedImage,
+                              options: {for (final i in images) i: i},
+                              onChanged: (v) {
+                                setState(() => _selectedImage = v);
                                 _refresh();
                               },
                             ),
-                            for (final status in statuses)
-                              ChoiceChip(
-                                label: Text(status),
-                                selected: _selectedStatus == status,
-                                onSelected: (_) {
-                                  setState(() => _selectedStatus = status);
-                                  _refresh();
-                                },
-                              ),
-                          ],
-                          if (images.isNotEmpty) ...[
-                            const SizedBox(width: 4),
-                            const VerticalDivider(width: 1),
-                            const SizedBox(width: 4),
-                            ChoiceChip(
-                              label: const Text('All images'),
-                              selected: _selectedImage == null,
-                              onSelected: (_) {
-                                setState(() => _selectedImage = null);
+                          if (owners.isNotEmpty)
+                            _filterDropdown(
+                              label: 'Owner',
+                              value: _selectedOwnerId,
+                              options: owners,
+                              onChanged: (v) {
+                                setState(() => _selectedOwnerId = v);
                                 _refresh();
                               },
                             ),
-                            for (final image in images)
-                              ChoiceChip(
-                                label: Text(image),
-                                selected: _selectedImage == image,
-                                onSelected: (_) {
-                                  setState(() => _selectedImage = image);
-                                  _refresh();
-                                },
-                              ),
-                          ],
-                          if (owners.isNotEmpty) ...[
-                            const SizedBox(width: 4),
-                            const VerticalDivider(width: 1),
-                            const SizedBox(width: 4),
-                            ChoiceChip(
-                              label: const Text('All owners'),
-                              selected: _selectedOwnerId == null,
-                              onSelected: (_) {
-                                setState(() => _selectedOwnerId = null);
+                          if (environments.isNotEmpty)
+                            _filterDropdown(
+                              label: 'Environment',
+                              value: _selectedEnvironment,
+                              options: {for (final e in environments) e: e},
+                              onChanged: (v) {
+                                setState(() => _selectedEnvironment = v);
                                 _refresh();
                               },
                             ),
-                            for (final entry in owners.entries)
-                              ChoiceChip(
-                                label: Text(entry.value),
-                                selected: _selectedOwnerId == entry.key,
-                                onSelected: (_) {
-                                  setState(() => _selectedOwnerId = entry.key);
-                                  _refresh();
-                                },
-                              ),
-                          ],
-                          if (environments.isNotEmpty) ...[
-                            const SizedBox(width: 4),
-                            const VerticalDivider(width: 1),
-                            const SizedBox(width: 4),
-                            ChoiceChip(
-                              label: const Text('All environments'),
-                              selected: _selectedEnvironment == null,
-                              onSelected: (_) {
-                                setState(() => _selectedEnvironment = null);
+                          if (tags.isNotEmpty)
+                            _filterDropdown(
+                              label: 'Tag',
+                              value: _selectedTag,
+                              options: {for (final t in tags) t: t},
+                              onChanged: (v) {
+                                setState(() => _selectedTag = v);
                                 _refresh();
                               },
                             ),
-                            for (final env in environments)
-                              ChoiceChip(
-                                label: Text(env),
-                                selected: _selectedEnvironment == env,
-                                onSelected: (_) {
-                                  setState(() => _selectedEnvironment = env);
-                                  _refresh();
-                                },
-                              ),
-                          ],
-                          if (tags.isNotEmpty) ...[
-                            const SizedBox(width: 4),
-                            const VerticalDivider(width: 1),
-                            const SizedBox(width: 4),
-                            ChoiceChip(
-                              label: const Text('All tags'),
-                              selected: _selectedTag == null,
-                              onSelected: (_) {
-                                setState(() => _selectedTag = null);
-                                _refresh();
-                              },
-                            ),
-                            for (final tag in tags)
-                              ChoiceChip(
-                                label: Text(tag),
-                                selected: _selectedTag == tag,
-                                onSelected: (_) {
-                                  setState(() => _selectedTag = tag);
-                                  _refresh();
-                                },
-                              ),
-                          ],
                         ],
                       ),
                     ),
@@ -489,23 +424,26 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
                     Expanded(
                       child: containers.isEmpty
                           ? const Center(child: Text('No containers found.'))
+                          : _groupBy == 'none'
+                          ? SingleChildScrollView(
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 4,
+                              ),
+                              child: _buildTable(containers),
+                            )
                           : ListView(
                               padding: const EdgeInsets.symmetric(vertical: 4),
-                              children: _groupBy == 'none'
-                                  ? containers.map(_buildTile).toList()
-                                  : [
-                                      for (final key in groupKeys)
-                                        ExpansionTile(
-                                          title: Text(key),
-                                          subtitle: Text(
-                                            '${grouped[key]!.length} container(s)',
-                                          ),
-                                          initiallyExpanded: true,
-                                          children: grouped[key]!
-                                              .map(_buildTile)
-                                              .toList(),
-                                        ),
-                                    ],
+                              children: [
+                                for (final key in groupKeys)
+                                  ExpansionTile(
+                                    title: Text(key),
+                                    subtitle: Text(
+                                      '${grouped[key]!.length} container(s)',
+                                    ),
+                                    initiallyExpanded: true,
+                                    children: [_buildTable(grouped[key]!)],
+                                  ),
+                              ],
                             ),
                     ),
                   ],
@@ -518,31 +456,267 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
     );
   }
 
-  Widget _buildTile(FleetContainer c) {
-    final selected = _selectedKeys.contains(_selectionKey(c));
-    return ListTile(
-      dense: true,
-      leading: _selectionMode
-          ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(c))
-          : Icon(
-              Icons.circle,
-              size: 10,
-              color: containerStateColor(c.container.state),
+  /// A compact "Label: value" dropdown filter — replaces what used to be a
+  /// row of one chip per distinct value, which got unreadable once there
+  /// were more than a handful of servers/images/etc.
+  Widget _filterDropdown({
+    required String label,
+    required String? value,
+    required Map<String, String> options,
+    required ValueChanged<String?> onChanged,
+  }) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$label:'),
+        const SizedBox(width: 6),
+        DropdownButtonHideUnderline(
+          child: DropdownButton<String?>(
+            value: value,
+            isDense: true,
+            items: [
+              const DropdownMenuItem<String?>(value: null, child: Text('All')),
+              for (final entry in options.entries)
+                DropdownMenuItem<String?>(
+                  value: entry.key,
+                  child: Text(entry.value),
+                ),
+            ],
+            onChanged: onChanged,
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _formatPorts(FleetContainer c) {
+    if (c.container.ports.isEmpty) return '—';
+    return c.container.ports
+        .map((p) {
+          final proto = p.type.isEmpty ? 'tcp' : p.type;
+          return p.publicPort != 0
+              ? '${p.publicPort}:${p.privatePort}/$proto'
+              : '${p.privatePort}/$proto';
+        })
+        .join(', ');
+  }
+
+  Future<void> _runRowAction(FleetContainer c, String action) async {
+    if (action == 'remove') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Remove container?'),
+          content: const Text(
+            'This permanently deletes the container, stopping it first if '
+            'running. Any data outside a named volume is lost.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
             ),
-      title: Text(c.container.name),
-      subtitle: Text(
-        [
-          c.serverName,
-          if (c.container.image != null && c.container.image!.isNotEmpty)
-            c.container.image!,
-          c.container.state,
-        ].join(' • '),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Remove'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
+    try {
+      final result = await widget.apiClient.containerAction(
+        c.serverId,
+        c.container.containerId,
+        action,
+        force: action == 'remove',
+      );
+      if (!mounted) return;
+      if (!result.success) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(result.error ?? '$action failed')));
+        return;
+      }
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to $action container: $e')));
+      }
+    }
+  }
+
+  Widget _buildTable(List<FleetContainer> list) {
+    return _ContainerTable(
+      containers: list,
+      selectionMode: _selectionMode,
+      selectedKeys: _selectedKeys,
+      onToggleSelected: _toggleSelected,
+      onOpenDetail: _openDetail,
+      onRunAction: _runRowAction,
+      formatPorts: _formatPorts,
+    );
+  }
+}
+
+/// One fleet-container table: an [Axis.horizontal]-scrolling [DataTable]
+/// with a dedicated [ScrollController]. This has to be its own
+/// StatefulWidget (rather than a method on [_ContainerListScreenState])
+/// because [Scrollbar.thumbVisibility] requires a real ScrollController —
+/// without one it silently fails to attach, so the thumb paints but
+/// dragging it does nothing — and grouped mode renders multiple tables at
+/// once, which a single shared controller can't drive independently. It
+/// also opts the table's ScrollConfiguration into mouse drag-to-scroll,
+/// since the platform default only allows touch/stylus/trackpad (mouse
+/// drag is reserved for text selection), leaving mouse users only the
+/// wheel to scroll otherwise.
+class _ContainerTable extends StatefulWidget {
+  final List<FleetContainer> containers;
+  final bool selectionMode;
+  final Set<String> selectedKeys;
+  final void Function(FleetContainer) onToggleSelected;
+  final void Function(FleetContainer) onOpenDetail;
+  final Future<void> Function(FleetContainer, String) onRunAction;
+  final String Function(FleetContainer) formatPorts;
+
+  const _ContainerTable({
+    required this.containers,
+    required this.selectionMode,
+    required this.selectedKeys,
+    required this.onToggleSelected,
+    required this.onOpenDetail,
+    required this.onRunAction,
+    required this.formatPorts,
+  });
+
+  @override
+  State<_ContainerTable> createState() => _ContainerTableState();
+}
+
+class _ContainerTableState extends State<_ContainerTable> {
+  final _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(
+        dragDevices: {
+          PointerDeviceKind.touch,
+          PointerDeviceKind.mouse,
+          PointerDeviceKind.trackpad,
+          PointerDeviceKind.stylus,
+        },
       ),
-      onTap: _selectionMode ? () => _toggleSelected(c) : () => _openDetail(c),
-      onLongPress: () {
-        if (!_selectionMode) setState(() => _selectionMode = true);
-        _toggleSelected(c);
+      child: Scrollbar(
+        controller: _scrollController,
+        thumbVisibility: true,
+        trackVisibility: true,
+        child: SingleChildScrollView(
+          controller: _scrollController,
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.only(bottom: 12),
+          child: DataTable(
+            showCheckboxColumn: widget.selectionMode,
+            columns: const [
+              DataColumn(label: Text('Status')),
+              DataColumn(label: Text('Name')),
+              DataColumn(label: Text('Container ID')),
+              DataColumn(label: Text('Image')),
+              DataColumn(label: Text('Ports')),
+              DataColumn(label: Text('Server')),
+              DataColumn(label: Text('State')),
+              DataColumn(label: Text('Actions')),
+            ],
+            rows: widget.containers.map(_buildRow).toList(),
+          ),
+        ),
+      ),
+    );
+  }
+
+  DataRow _buildRow(FleetContainer c) {
+    final selected = widget.selectedKeys.contains(_selectionKey(c));
+    final id = c.container.containerId;
+    final shortId = id.length > 12 ? id.substring(0, 12) : id;
+
+    return DataRow(
+      selected: selected,
+      onSelectChanged: (_) {
+        if (widget.selectionMode) {
+          widget.onToggleSelected(c);
+        } else {
+          widget.onOpenDetail(c);
+        }
       },
+      cells: [
+        DataCell(
+          Icon(
+            Icons.circle,
+            size: 10,
+            color: containerStateColor(c.container.state),
+          ),
+        ),
+        DataCell(Text(c.container.name)),
+        DataCell(
+          Text(shortId, style: const TextStyle(fontFamily: 'monospace')),
+        ),
+        DataCell(Text(c.container.image ?? '—')),
+        DataCell(Text(widget.formatPorts(c))),
+        DataCell(Text(c.serverName)),
+        DataCell(Text(c.container.state)),
+        DataCell(_buildRowActions(c)),
+      ],
+    );
+  }
+
+  Widget _buildRowActions(FleetContainer c) {
+    final running = c.container.state == 'running';
+    final paused = c.container.state == 'paused';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          icon: const Icon(Icons.play_arrow, size: 18),
+          tooltip: 'Start',
+          visualDensity: VisualDensity.compact,
+          onPressed: running ? null : () => widget.onRunAction(c, 'start'),
+        ),
+        IconButton(
+          icon: const Icon(Icons.stop, size: 18),
+          tooltip: 'Stop',
+          visualDensity: VisualDensity.compact,
+          onPressed: running ? () => widget.onRunAction(c, 'stop') : null,
+        ),
+        IconButton(
+          icon: Icon(
+            paused ? Icons.play_circle_outline : Icons.pause_circle_outline,
+            size: 18,
+          ),
+          tooltip: paused ? 'Resume' : 'Pause',
+          visualDensity: VisualDensity.compact,
+          onPressed: running || paused
+              ? () => widget.onRunAction(c, paused ? 'resume' : 'pause')
+              : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.delete_outline, size: 18),
+          tooltip: 'Remove',
+          visualDensity: VisualDensity.compact,
+          color: Colors.red,
+          onPressed: () => widget.onRunAction(c, 'remove'),
+        ),
+      ],
     );
   }
 }
@@ -584,6 +758,16 @@ class _BulkActionBar extends StatelessWidget {
                     onPressed: () => onAction('restart'),
                     icon: const Icon(Icons.refresh, size: 18),
                     label: const Text('Restart'),
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: () => onAction('pause'),
+                    icon: const Icon(Icons.pause_circle_outline, size: 18),
+                    label: const Text('Pause'),
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: () => onAction('resume'),
+                    icon: const Icon(Icons.play_circle_outline, size: 18),
+                    label: const Text('Resume'),
                   ),
                   FilledButton.icon(
                     style: FilledButton.styleFrom(backgroundColor: Colors.red),

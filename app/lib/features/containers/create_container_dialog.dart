@@ -15,6 +15,7 @@ Future<String?> showCreateContainerDialog(
   required ApiClient apiClient,
   String? serverId,
   String? serverName,
+  String? initialImage,
 }) {
   return showModalBottomSheet<String>(
     context: context,
@@ -23,6 +24,7 @@ Future<String?> showCreateContainerDialog(
       apiClient: apiClient,
       presetServerId: serverId,
       presetServerName: serverName,
+      initialImage: initialImage,
     ),
   );
 }
@@ -31,11 +33,13 @@ class _CreateContainerSheet extends StatefulWidget {
   final ApiClient apiClient;
   final String? presetServerId;
   final String? presetServerName;
+  final String? initialImage;
 
   const _CreateContainerSheet({
     required this.apiClient,
     this.presetServerId,
     this.presetServerName,
+    this.initialImage,
   });
 
   @override
@@ -108,10 +112,15 @@ class _CreateContainerSheetState extends State<_CreateContainerSheet> {
     return ContainerConfigForm(
       title: 'Create container',
       submitLabel: 'Create',
+      initial: widget.initialImage == null
+          ? null
+          : ContainerConfig(image: widget.initialImage!, name: ''),
       loading: _loading,
       error: _error,
       header: header,
       onSubmit: _submit,
+      apiClient: widget.apiClient,
+      serverId: _selectedServerId,
     );
   }
 }
