@@ -127,6 +127,7 @@ func main() {
 	}()
 	go pruneMetricsLoop(ctx, log, st)
 	go scheduler.Run(ctx)
+	go api.RunGovernanceWorker(ctx, log, st, dispatcher, events, opWaiter)
 
 	select {
 	case <-ctx.Done():

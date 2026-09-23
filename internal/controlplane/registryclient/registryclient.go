@@ -54,6 +54,66 @@ func ResolveDigest(ctx context.Context, ref string, creds Credentials) (string, 
 	return desc.Digest.String(), nil
 }
 
+// Platforms resolves ref (same forms as ResolveDigest) and returns every
+// CPU architecture it supports — the architectures listed in a multi-arch
+// manifest list, or the single architecture of a plain image manifest.
+// Used for "Check image availability" (a returned error means the image
+// doesn't exist or isn't reachable with creds) and "Check host
+// architecture compatibility" together, since both need this same lookup.
+func Platforms(ctx context.Context, ref string, creds Credentials) ([]string, error) {
+	tag, err := name.ParseReference(ref)
+	if err != nil {
+		return nil, fmt.Errorf("invalid image reference %q: %w", ref, err)
+	}
+	desc, err := remote.Get(tag, creds.option(), remote.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+
+	if desc.MediaType.IsIndex() {
+		idx, err := desc.ImageIndex()
+		if err != nil {
+			return nil, err
+		}
+		manifest, err := idx.IndexManifest()
+		if err != nil {
+			return nil, err
+		}
+		seen := map[string]bool{}
+		platforms := make([]string, 0, len(manifest.Manifests))
+		for _, m := range manifest.Manifests {
+			if m.Platform == nil {
+				continue
+			}
+			arch := m.Platform.Architecture
+			// "unknown" is buildx's convention for attestation/SBOM
+			// manifest entries riding alongside the real per-platform
+			// ones in the same index (every real entry above is paired
+			// with one) — not a deployable platform, so it'd otherwise
+			// pollute the list and never match a real server arch.
+			if arch == "" || arch == "unknown" || seen[arch] {
+				continue
+			}
+			seen[arch] = true
+			platforms = append(platforms, arch)
+		}
+		return platforms, nil
+	}
+
+	img, err := desc.Image()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Architecture == "" {
+		return nil, nil
+	}
+	return []string{cfg.Architecture}, nil
+}
+
 // ListTags returns every tag published for repo (e.g. "nginx" or
 // "myregistry.com/team/app"), most relevant for the "select image version
 // or tag" picker.

@@ -3,23 +3,35 @@ import 'package:flutter/services.dart';
 
 import '../../api/api_client.dart';
 import '../../models/compose_file.dart';
+import '../../models/deployment.dart';
 import '../../models/deployment_preview.dart';
 import '../../models/env_var_group.dart';
+import '../../models/image.dart' show formatBytes;
 import '../../models/server.dart';
+import '../deployments/deployment_history_screen.dart';
 import '../deployments/deployment_status_screen.dart';
+import '../deployments/deployment_widgets.dart';
+import '../git/git_repositories_screen.dart';
+import '../governance/governance_screen.dart';
 import 'compose_editor_screen.dart';
 import 'compose_version_history_screen.dart';
 import 'env_var_groups_screen.dart';
 import 'env_variable_editor.dart';
 
 /// Deployment Management > Docker Compose. Tabs mirror the feature areas
-/// from the Compose deployment spec; "Compose files" (upload/create,
-/// visual + YAML editing, validation, deploy-to-server) is implemented —
-/// the rest are placeholders describing what's planned.
+/// from the Compose deployment spec: Compose files (authoring, validation,
+/// deploy), stack deployments (history and per-deployment management),
+/// configuration, Git-based deployment, pre-deployment validation, and
+/// governance (approvals, environment policies, audit trail).
 class DockerComposeScreen extends StatefulWidget {
   final ApiClient apiClient;
+  final bool isAdmin;
 
-  const DockerComposeScreen({super.key, required this.apiClient});
+  const DockerComposeScreen({
+    super.key,
+    required this.apiClient,
+    this.isAdmin = false,
+  });
 
   @override
   State<DockerComposeScreen> createState() => _DockerComposeScreenState();
@@ -37,6 +49,9 @@ class _DockerComposeScreenState extends State<DockerComposeScreen>
   ];
 
   late final TabController _tabController;
+  // Bumped when another tab (Git import/sync) changes the Compose files,
+  // so the Compose files tab reloads.
+  int _filesGeneration = 0;
 
   @override
   void initState() {
@@ -73,65 +88,41 @@ class _DockerComposeScreenState extends State<DockerComposeScreen>
           child: TabBarView(
             controller: _tabController,
             children: [
-              _ComposeFilesTab(apiClient: widget.apiClient),
-              const _PlaceholderTab(
-                summary:
-                    'Deploy with a resource preview (rocket icon on a '
-                    'Compose file), live phase progress, failure reasons, '
-                    'full or per-service redeploy, rollback to a past '
-                    'Compose file version, start/stop/restart/remove (gear '
-                    'icon on the deployment status screen), and automatic '
-                    'cleanup of a failed deploy\'s partial containers are '
-                    'all done. The rest of stack-level lifecycle '
-                    'management is planned.',
-                items: [
-                  'Show progress broken out per individual service',
-                  'Scale supported services',
-                ],
+              _ComposeFilesTab(
+                key: ValueKey(_filesGeneration),
+                apiClient: widget.apiClient,
+                isAdmin: widget.isAdmin,
+              ),
+              DeploymentHistoryScreen(
+                apiClient: widget.apiClient,
+                isAdmin: widget.isAdmin,
               ),
               _ConfigurationTab(apiClient: widget.apiClient),
-              const _PlaceholderTab(
-                summary: 'Deploy Compose files straight from a Git repository.',
-                items: [
-                  'Import Compose files from Git',
-                  'Connect to GitHub, GitLab, Azure DevOps, or Bitbucket',
-                  'Deploy from a selected repository branch or tag',
-                  'Use webhooks for automatic redeployment',
-                  'Display commit ID associated with each deployment',
-                  'Roll back to a previous commit',
-                  'Require approval before production deployment',
-                  'Detect configuration drift',
-                ],
+              GitRepositoriesScreen(
+                apiClient: widget.apiClient,
+                isAdmin: widget.isAdmin,
+                onComposeFilesChanged: () =>
+                    setState(() => _filesGeneration++),
               ),
-              const _PlaceholderTab(
-                summary: 'Catch problems before a deployment starts.',
-                items: [
-                  'Confirm sufficient CPU, RAM, and storage',
-                  'Check required ports',
-                  'Check image availability',
-                  'Validate volume paths',
-                  'Detect missing secrets',
-                  'Validate network configuration',
-                  'Check host architecture compatibility',
-                  'Show estimated resource consumption',
-                  'Generate deployment risk score',
-                ],
-              ),
-              const _PlaceholderTab(
+              const _DoneInfoTab(
                 summary:
-                    'Approval, audit, and rollback controls for promoting '
-                    'deployments across environments.',
-                items: [
-                  'Development, test, and production environments',
-                  'Approval workflow',
-                  'Change request reference',
-                  'Maintenance window',
-                  'Deployment notes',
-                  'Deployment history',
-                  'Complete audit trail',
-                  'Rollback plan',
-                  'Post-deployment health verification',
-                ],
+                    'Every pre-deployment check runs automatically in the '
+                    'deploy preview dialog (rocket icon on a Compose file): '
+                    'sufficient CPU/RAM/storage, estimated resource '
+                    'consumption, a deployment risk score, required-port '
+                    'conflicts, image availability, host architecture '
+                    'compatibility, volume path validation, missing '
+                    'secrets, and network configuration. Service '
+                    'dependencies (undefined services, cycles) and '
+                    'conflicting or unsupported settings are checked '
+                    'whenever a Compose file is saved. The resource and '
+                    'image checks need a target server selected (and, for '
+                    'resources, an agent that has reported host capacity) '
+                    'to run.',
+              ),
+              GovernanceScreen(
+                apiClient: widget.apiClient,
+                isAdmin: widget.isAdmin,
               ),
             ],
           ),
@@ -143,8 +134,13 @@ class _DockerComposeScreenState extends State<DockerComposeScreen>
 
 class _ComposeFilesTab extends StatefulWidget {
   final ApiClient apiClient;
+  final bool isAdmin;
 
-  const _ComposeFilesTab({required this.apiClient});
+  const _ComposeFilesTab({
+    super.key,
+    required this.apiClient,
+    this.isAdmin = false,
+  });
 
   @override
   State<_ComposeFilesTab> createState() => _ComposeFilesTabState();
@@ -226,17 +222,18 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
     );
     if (server == null || !mounted) return;
 
-    final env = await showDialog<Map<String, String>>(
+    final setup = await showDialog<_DeploySetup>(
       context: context,
-      builder: (_) => _EnvVarSetupDialog(apiClient: widget.apiClient),
+      builder: (_) => _EnvVarSetupDialog(apiClient: widget.apiClient, file: file),
     );
-    if (env == null || !mounted) return;
+    if (setup == null || !mounted) return;
 
     DeploymentPreview preview;
     try {
       preview = await widget.apiClient.previewDeployment(
         composeFileId: file.id,
-        env: env,
+        serverId: server.id,
+        env: setup.env,
       );
     } catch (e) {
       if (mounted) {
@@ -257,28 +254,58 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
     );
     if (confirmed != true || !mounted) return;
 
-    try {
-      final deploymentId = await widget.apiClient.createComposeDeployment(
+    final outcome = await runGatedAction(
+      context,
+      (gate) => widget.apiClient.createComposeDeployment(
         composeFileId: file.id,
         serverId: server.id,
-        env: env,
-      );
-      if (mounted) {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => DeploymentStatusScreen(
-              apiClient: widget.apiClient,
-              deploymentId: deploymentId,
-              serviceNames: [for (final svc in preview.services) svc.name],
-              composeFileId: file.id,
-            ),
+        env: setup.env,
+        metadata: setup.metadata,
+        gate: gate,
+      ),
+      failurePrefix: 'Failed to start deployment',
+      showOutcome: false,
+    );
+    if (outcome == null || !mounted) return;
+    if (outcome.isQueued) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(outcome.describe())));
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => DeploymentStatusScreen(
+          apiClient: widget.apiClient,
+          deploymentId: outcome.deploymentId,
+          serviceNames: [for (final svc in preview.services) svc.name],
+          composeFileId: file.id,
+          isAdmin: widget.isAdmin,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _syncFromGit(ComposeFile file) async {
+    try {
+      final r = await widget.apiClient.syncComposeFile(file.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            r.changed
+                ? '${file.name} updated to ${shortCommit(r.commit)} (v${r.file.version}).'
+                : '${file.name} is already at the latest commit.',
           ),
-        );
-      }
+        ),
+      );
+      _refresh();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to start deployment: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Sync failed: ${e is ApiException ? e.message : e}'),
+          ),
+        );
       }
     }
   }
@@ -439,12 +466,18 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
               for (final f in files)
                 ListTile(
                   dense: true,
-                  leading: const Icon(Icons.layers_outlined),
+                  leading: Icon(
+                    f.isGitLinked ? Icons.source_outlined : Icons.layers_outlined,
+                  ),
                   title: Text(f.name),
                   subtitle: Text(
-                    f.serviceNames.isEmpty
-                        ? 'No services'
-                        : 'Services: ${f.serviceNames.join(', ')}',
+                    [
+                      f.serviceNames.isEmpty
+                          ? 'No services'
+                          : 'Services: ${f.serviceNames.join(', ')}',
+                      if (f.isGitLinked)
+                        'Git: ${f.gitPath} @ ${f.gitRef} (${shortCommit(f.gitCommit)})',
+                    ].join('\n'),
                   ),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -460,6 +493,8 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
                           switch (value) {
                             case 'history':
                               _openHistory(f);
+                            case 'sync':
+                              _syncFromGit(f);
                             case 'clone':
                               _clone(f);
                             case 'export':
@@ -468,18 +503,23 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
                               _delete(f);
                           }
                         },
-                        itemBuilder: (context) => const [
-                          PopupMenuItem(
+                        itemBuilder: (context) => [
+                          if (f.isGitLinked)
+                            const PopupMenuItem(
+                              value: 'sync',
+                              child: Text('Sync from Git'),
+                            ),
+                          const PopupMenuItem(
                             value: 'history',
                             child: Text('Version history'),
                           ),
-                          PopupMenuItem(value: 'clone', child: Text('Clone')),
-                          PopupMenuItem(
+                          const PopupMenuItem(value: 'clone', child: Text('Clone')),
+                          const PopupMenuItem(
                             value: 'export',
                             child: Text('Export / copy YAML'),
                           ),
-                          PopupMenuDivider(),
-                          PopupMenuItem(
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
                             value: 'delete',
                             child: Text('Delete'),
                           ),
@@ -499,10 +539,9 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
 
 /// Configuration management: environment variable groups/profiles are
 /// implemented below (also covering "secret references" and "reusable
-/// configuration templates"); volume/port/restart-policy mapping already
-/// live on the Compose visual editor (Compose files tab). Resource-limit
-/// and health-check configuration, and network configuration beyond the
-/// automatic per-deployment network, remain planned.
+/// configuration templates"); volume/port/restart-policy/resource-limit/
+/// health-check mapping live on the Compose visual editor (Compose files
+/// tab), and custom networks are declared in the Compose YAML.
 class _ConfigurationTab extends StatelessWidget {
   final ApiClient apiClient;
 
@@ -529,8 +568,9 @@ class _ConfigurationTab extends StatelessWidget {
                   'Volume mapping, port mapping, restart policy, CPU/memory '
                   'resource limits, and health checks are edited '
                   'per-service on a Compose file\'s visual editor. Groups '
-                  'here are selectable when deploying. Custom network '
-                  'config is still planned.',
+                  'here are selectable when deploying. Custom networks '
+                  '(top-level networks + per-service networks) are declared '
+                  'in the Compose YAML and created per deployment.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(context).colorScheme.outline,
                   ),
@@ -546,11 +586,12 @@ class _ConfigurationTab extends StatelessWidget {
   }
 }
 
-class _PlaceholderTab extends StatelessWidget {
+/// Used once every item on a tab is done — no bullet list of "planned"
+/// items left to show, unlike [_PlaceholderTab].
+class _DoneInfoTab extends StatelessWidget {
   final String summary;
-  final List<String> items;
 
-  const _PlaceholderTab({required this.summary, required this.items});
+  const _DoneInfoTab({required this.summary});
 
   @override
   Widget build(BuildContext context) {
@@ -559,48 +600,48 @@ class _PlaceholderTab extends StatelessWidget {
       children: [
         Row(
           children: [
-            Icon(
-              Icons.construction_outlined,
-              size: 18,
-              color: Theme.of(context).colorScheme.outline,
-            ),
+            const Icon(Icons.check_circle_outline, size: 18, color: Colors.green),
             const SizedBox(width: 8),
             Text(
-              'Planned — not yet available',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: Theme.of(context).colorScheme.outline,
-              ),
+              'All implemented',
+              style: Theme.of(
+                context,
+              ).textTheme.titleSmall?.copyWith(color: Colors.green),
             ),
           ],
         ),
         const SizedBox(height: 8),
         Text(summary, style: Theme.of(context).textTheme.bodyMedium),
-        const SizedBox(height: 12),
-        for (final item in items)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 3),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('•  '),
-                Expanded(child: Text(item)),
-              ],
-            ),
-          ),
       ],
     );
   }
 }
 
-/// "Environment variable editor": lets the user optionally load a saved
-/// [EnvVarGroup] as a starting point, then edit ad-hoc before deploying.
-/// Pops with the resulting {key: value} map — Skip pops with an empty map
-/// rather than null, so the caller can tell "no variables" apart from
-/// "dialog dismissed" (null).
+/// What [_EnvVarSetupDialog] pops with: the ad-hoc env vars plus
+/// "Development, test, and production environments" + "Change request
+/// reference" + "Deployment notes" — governance metadata gathered at the
+/// same pre-deploy step, since it's all "fill this in before you deploy".
+class _DeploySetup {
+  final Map<String, String> env;
+  final DeploymentMetadata metadata;
+
+  const _DeploySetup({
+    required this.env,
+    this.metadata = const DeploymentMetadata(),
+  });
+}
+
+/// "Environment variable editor" + deployment governance metadata: lets
+/// the user optionally load a saved [EnvVarGroup] as a starting point for
+/// env vars, then edit ad-hoc, and set an environment/change request/
+/// notes before deploying. Skip pops a [_DeploySetup] with empty env
+/// rather than null, so the caller can tell "nothing filled in" apart
+/// from "dialog dismissed" (null).
 class _EnvVarSetupDialog extends StatefulWidget {
   final ApiClient apiClient;
+  final ComposeFile file;
 
-  const _EnvVarSetupDialog({required this.apiClient});
+  const _EnvVarSetupDialog({required this.apiClient, required this.file});
 
   @override
   State<_EnvVarSetupDialog> createState() => _EnvVarSetupDialogState();
@@ -609,13 +650,30 @@ class _EnvVarSetupDialog extends StatefulWidget {
 class _EnvVarSetupDialogState extends State<_EnvVarSetupDialog> {
   late final Future<List<EnvVarGroup>> _groupsFuture;
   final _editorKey = GlobalKey<EnvVariableEditorState>();
+  final _changeRequestController = TextEditingController();
+  final _notesController = TextEditingController();
+  final _rollbackPlanController = TextEditingController();
+  final _gitRefController = TextEditingController();
   List<EnvVariable> _initialVariables = const [];
   int _editorGeneration = 0;
+  String? _environment;
+  String _strategy = 'recreate';
+  bool _autoRollback = false;
+  bool _autoDeploy = false;
 
   @override
   void initState() {
     super.initState();
     _groupsFuture = widget.apiClient.listEnvVarGroups();
+  }
+
+  @override
+  void dispose() {
+    _changeRequestController.dispose();
+    _notesController.dispose();
+    _rollbackPlanController.dispose();
+    _gitRefController.dispose();
+    super.dispose();
   }
 
   void _loadGroup(EnvVarGroup group) {
@@ -625,10 +683,27 @@ class _EnvVarSetupDialogState extends State<_EnvVarSetupDialog> {
     });
   }
 
+  _DeploySetup _currentSetup() {
+    final variables = _editorKey.currentState?.currentVariables() ?? const [];
+    return _DeploySetup(
+      env: {for (final v in variables) v.key: v.value},
+      metadata: DeploymentMetadata(
+        environment: _environment,
+        changeRequest: _changeRequestController.text.trim(),
+        notes: _notesController.text.trim(),
+        rollbackPlan: _rollbackPlanController.text.trim(),
+        autoRollback: _autoRollback,
+        updateStrategy: _strategy,
+        gitRef: _gitRefController.text.trim(),
+        autoDeploy: _autoDeploy,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Environment variables'),
+      title: const Text('Deployment setup'),
       content: SizedBox(
         width: 460,
         child: SingleChildScrollView(
@@ -636,6 +711,91 @@ class _EnvVarSetupDialogState extends State<_EnvVarSetupDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              DropdownButtonFormField<String>(
+                initialValue: _environment,
+                decoration: const InputDecoration(
+                  labelText: 'Environment (optional)',
+                  isDense: true,
+                ),
+                items: [
+                  for (final env in kEnvironments)
+                    DropdownMenuItem(
+                      value: env,
+                      child: Text(env[0].toUpperCase() + env.substring(1)),
+                    ),
+                ],
+                onChanged: (v) => setState(() => _environment = v),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _changeRequestController,
+                decoration: const InputDecoration(
+                  labelText: 'Change request reference (optional)',
+                  hintText: 'e.g. JIRA-1234',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _notesController,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Deployment notes (optional)',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _rollbackPlanController,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Rollback plan (optional)',
+                  hintText: 'Required by some environments',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: _strategy,
+                decoration: const InputDecoration(
+                  labelText: 'Update strategy for redeploys',
+                  isDense: true,
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'recreate',
+                    child: Text('Recreate — replace everything at once'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'rolling',
+                    child: Text('Rolling — one container at a time, auto-rollback'),
+                  ),
+                ],
+                onChanged: (v) => setState(() => _strategy = v ?? 'recreate'),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _autoRollback,
+                onChanged: (v) => setState(() => _autoRollback = v ?? false),
+                title: const Text('Roll back automatically if unhealthy'),
+              ),
+              if (widget.file.isGitLinked) ...[
+                TextField(
+                  controller: _gitRefController,
+                  decoration: InputDecoration(
+                    labelText: 'Git branch or tag to deploy (optional)',
+                    hintText: 'Empty = ${widget.file.gitRef}',
+                    isDense: true,
+                  ),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _autoDeploy,
+                  onChanged: (v) => setState(() => _autoDeploy = v ?? false),
+                  title: const Text('Redeploy automatically on Git push'),
+                ),
+              ],
+              const SizedBox(height: 16),
               FutureBuilder<List<EnvVarGroup>>(
                 future: _groupsFuture,
                 builder: (context, snapshot) {
@@ -645,7 +805,7 @@ class _EnvVarSetupDialogState extends State<_EnvVarSetupDialog> {
                     padding: const EdgeInsets.only(bottom: 12),
                     child: DropdownButtonFormField<EnvVarGroup>(
                       decoration: const InputDecoration(
-                        labelText: 'Load from a saved group (optional)',
+                        labelText: 'Load env vars from a saved group (optional)',
                         isDense: true,
                       ),
                       items: [
@@ -672,16 +832,13 @@ class _EnvVarSetupDialogState extends State<_EnvVarSetupDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(<String, String>{}),
+          onPressed: () => Navigator.of(
+            context,
+          ).pop(const _DeploySetup(env: {})),
           child: const Text('Skip'),
         ),
         FilledButton(
-          onPressed: () {
-            final variables = _editorKey.currentState?.currentVariables() ?? const [];
-            Navigator.of(
-              context,
-            ).pop({for (final v in variables) v.key: v.value});
-          },
+          onPressed: () => Navigator.of(context).pop(_currentSetup()),
           child: const Text('Continue'),
         ),
       ],
@@ -700,6 +857,7 @@ class _DeployPreviewDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final check = preview.resourceCheck;
     return AlertDialog(
       title: Text('Deploy ${preview.name} to $serverName'),
       content: SizedBox(
@@ -711,6 +869,24 @@ class _DeployPreviewDialog extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if (check != null) ...[
+                      _ResourceCheckSummary(check: check),
+                      const SizedBox(height: 12),
+                    ],
+                    if (preview.portConflicts.isNotEmpty) ...[
+                      _PortConflictSummary(conflicts: preview.portConflicts),
+                      const SizedBox(height: 12),
+                    ],
+                    if (_hasValidationIssues(preview)) ...[
+                      _ValidationIssuesSummary(preview: preview),
+                      const SizedBox(height: 12),
+                    ],
+                    if (check != null ||
+                        preview.portConflicts.isNotEmpty ||
+                        _hasValidationIssues(preview)) ...[
+                      const Divider(),
+                      const SizedBox(height: 4),
+                    ],
                     for (final svc in preview.services) ...[
                       Text(
                         svc.name,
@@ -726,6 +902,15 @@ class _DeployPreviewDialog extends StatelessWidget {
                         Text('Volumes: ${svc.volumes.join(', ')}'),
                       if (svc.environmentCount > 0)
                         Text('${svc.environmentCount} environment variable(s)'),
+                      if (svc.nanoCpus > 0 || svc.memoryLimitBytes > 0)
+                        Text(
+                          [
+                            if (svc.nanoCpus > 0)
+                              '${(svc.nanoCpus / 1e9).toStringAsFixed(2)} CPU',
+                            if (svc.memoryLimitBytes > 0)
+                              formatBytes(svc.memoryLimitBytes),
+                          ].join(' • '),
+                        ),
                       const SizedBox(height: 12),
                     ],
                   ],
@@ -739,7 +924,194 @@ class _DeployPreviewDialog extends StatelessWidget {
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Deploy'),
+          child: Text(
+            (check != null && check.riskScore == 'high') ||
+                    preview.portConflicts.isNotEmpty ||
+                    _hasValidationIssues(preview)
+                ? 'Deploy anyway'
+                : 'Deploy',
+          ),
+        ),
+      ],
+    );
+  }
+
+  static bool _hasValidationIssues(DeploymentPreview preview) {
+    return preview.imageChecks.any((c) => !c.available || !c.archCompatible) ||
+        preview.volumeWarnings.isNotEmpty ||
+        preview.missingSecrets.isNotEmpty ||
+        preview.networkWarnings.isNotEmpty;
+  }
+}
+
+/// "Confirm sufficient CPU, RAM, and storage" + "Show estimated resource
+/// consumption" + "Generate deployment risk score", rendered as a compact
+/// summary at the top of the deploy preview.
+/// "Check required ports": lists any published host port that's already
+/// bound by another container on the target server.
+/// "Check image availability" + "Check host architecture compatibility" +
+/// "Validate volume paths" + "Detect missing secrets" + "Validate network
+/// configuration" — grouped into one list since each is a single-line
+/// finding rather than something needing its own rich layout.
+class _ValidationIssuesSummary extends StatelessWidget {
+  final DeploymentPreview preview;
+
+  const _ValidationIssuesSummary({required this.preview});
+
+  @override
+  Widget build(BuildContext context) {
+    final errorColor = Theme.of(context).colorScheme.error;
+    const warnColor = Colors.orange;
+
+    final lines = <(String, Color)>[
+      for (final c in preview.imageChecks)
+        if (!c.available)
+          ('${c.service}: image "${c.image}" unavailable — ${c.error}', errorColor)
+        else if (!c.archCompatible)
+          (
+            '${c.service}: image "${c.image}" doesn\'t publish a build for '
+                'this server\'s architecture (has: ${c.platforms.join(', ')})',
+            warnColor,
+          ),
+      for (final w in preview.volumeWarnings)
+        ('${w.service}: ${w.message} (${w.target})', warnColor),
+      for (final s in preview.missingSecrets)
+        ('Environment variable "$s" is referenced but not set', errorColor),
+      for (final n in preview.networkWarnings) (n, warnColor),
+    ];
+    if (lines.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.fact_check_outlined, size: 16, color: errorColor),
+            const SizedBox(width: 6),
+            Text(
+              'Validation findings',
+              style: Theme.of(
+                context,
+              ).textTheme.titleSmall?.copyWith(color: errorColor),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        for (final (text, color) in lines)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Text('• $text', style: TextStyle(color: color)),
+          ),
+      ],
+    );
+  }
+}
+
+class _PortConflictSummary extends StatelessWidget {
+  final List<DeploymentPortConflict> conflicts;
+
+  const _PortConflictSummary({required this.conflicts});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.error;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.warning_amber_outlined, size: 16, color: color),
+            const SizedBox(width: 6),
+            Text(
+              'Port conflicts',
+              style: Theme.of(
+                context,
+              ).textTheme.titleSmall?.copyWith(color: color),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        for (final c in conflicts)
+          Text(
+            '${c.service}: host port ${c.hostPort}/${c.protocol} is already '
+            'used by container ${c.containerId.substring(0, c.containerId.length < 12 ? c.containerId.length : 12)}',
+            style: TextStyle(color: color),
+          ),
+      ],
+    );
+  }
+}
+
+class _ResourceCheckSummary extends StatelessWidget {
+  final DeploymentResourceCheck check;
+
+  const _ResourceCheckSummary({required this.check});
+
+  @override
+  Widget build(BuildContext context) {
+    final Color color;
+    final String label;
+    switch (check.riskScore) {
+      case 'high':
+        color = Theme.of(context).colorScheme.error;
+        label = 'High risk';
+      case 'medium':
+        color = Colors.orange;
+        label = 'Medium risk';
+      default:
+        color = Colors.green;
+        label = 'Low risk';
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: Theme.of(
+                context,
+              ).textTheme.titleSmall?.copyWith(color: color),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        if (check.requestedMemoryBytes > 0)
+          Text(
+            'Requests ${formatBytes(check.requestedMemoryBytes)} of '
+            '${formatBytes(check.serverAvailableMemoryBytes)} available'
+            '${check.sufficientMemory ? '' : ' — not enough memory'}',
+            style: check.sufficientMemory
+                ? null
+                : TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
+        if (check.requestedNanoCpus > 0)
+          Text(
+            'Requests ${(check.requestedNanoCpus / 1e9).toStringAsFixed(2)} '
+            'of ${check.serverAvailableCpuCores.toStringAsFixed(2)} CPU '
+            'cores available'
+            '${check.sufficientCpu ? '' : ' — not enough CPU'}',
+            style: check.sufficientCpu
+                ? null
+                : TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
+        if (check.requestedMemoryBytes == 0 && check.requestedNanoCpus == 0)
+          Text(
+            'No CPU/memory limits declared — showing server capacity only.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        Text(
+          'Server: ${check.serverTotalCpus} CPU(s), '
+          '${formatBytes(check.serverTotalMemoryBytes)} RAM, '
+          '${check.serverDiskPercentUsed.toStringAsFixed(0)}% disk used',
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
     );

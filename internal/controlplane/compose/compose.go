@@ -98,6 +98,10 @@ type ParseResult struct {
 	// even when VisualEditable is false, but only meaningful for
 	// individual services that were themselves fully representable.
 	Services []ServiceDraft `json:"services,omitempty"`
+	// Warnings lists conflicting or unsupported settings that don't stop
+	// the file from being saved but will misbehave or be ignored when
+	// deployed — see Validate.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Parse validates content as a Compose file and, best-effort, projects it
@@ -167,11 +171,17 @@ func Parse(content string) ParseResult {
 		return ParseResult{Valid: false, Errors: errs, ServiceNames: names}
 	}
 
+	depErrs, warnings := Validate(doc)
+	if len(depErrs) > 0 {
+		return ParseResult{Valid: false, Errors: depErrs, ServiceNames: names, Services: drafts, Warnings: warnings}
+	}
+
 	return ParseResult{
 		Valid:          true,
 		ServiceNames:   names,
 		VisualEditable: visualEditable,
 		Services:       drafts,
+		Warnings:       warnings,
 	}
 }
 

@@ -133,6 +133,14 @@ message ResourceSnapshot {
   double cpu_percent = 1;
   double mem_percent = 2;
   double disk_percent = 3;
+  // Total host capacity, not usage — lets the control plane estimate
+  // whether a deployment's declared resource requests actually fit
+  // ("Confirm sufficient CPU, RAM, and storage" pre-deployment check).
+  // 0 means an older agent that predates these fields, or a collection
+  // failure — callers should treat 0 as "unknown", not "no capacity".
+  uint64 total_memory_bytes = 4;
+  uint32 num_cpus = 5;
+  uint64 total_disk_bytes = 6;
 }
 
 message ContainerSummary {
@@ -174,6 +182,21 @@ message DeployStackCommand {
   string stack_name = 2;
   string compose_yaml = 3;
   map<string, string> env = 4;
+  // Per-service replica overrides; a service not listed here runs its
+  // Compose-declared deploy.replicas/scale, or 1.
+  map<string, int32> replicas = 5;
+  // "recreate" (default: remove every old container, then create the new
+  // ones) or "rolling" (replace one container at a time, waiting for each
+  // to become ready, and restore the previous containers if any fail).
+  string strategy = 6;
+  // How long post-deployment health verification waits for every
+  // container to be running (and healthy, when it has a healthcheck).
+  // 0 uses the agent's default; negative skips verification.
+  int32 verify_timeout_seconds = 7;
+  // The control plane's revision number for this rollout, echoed back on
+  // every DeployStatus so statuses are attributed to the right revision
+  // even if rollouts of the same deployment queue up behind each other.
+  int32 revision = 8;
 }
 
 // UndeployCommand tears down a deployment: stops and removes every
@@ -204,6 +227,13 @@ message DeployServiceCommand {
   string compose_yaml = 5;
   map<string, string> env = 6;
   string service_name = 7;
+  // Replica count to run for service_name; 0 keeps the Compose-declared
+  // count (or 1).
+  int32 replicas = 8;
+  // When true, only add or remove replicas to reach `replicas` — existing
+  // containers are left running untouched (scaling) instead of recreated
+  // (redeploying).
+  bool scale_only = 9;
 }
 
 enum DeployPhase {
@@ -213,6 +243,13 @@ enum DeployPhase {
   DEPLOY_PHASE_CREATING = 3;
   DEPLOY_PHASE_RUNNING = 4;
   DEPLOY_PHASE_FAILED = 5;
+  // Post-deployment health verification, reported after RUNNING.
+  DEPLOY_PHASE_VERIFYING = 6;
+  DEPLOY_PHASE_HEALTHY = 7;
+  DEPLOY_PHASE_UNHEALTHY = 8;
+  // A rolling update failed and the previous containers were restored:
+  // the stack is still running its previous revision.
+  DEPLOY_PHASE_ROLLED_BACK = 9;
 }
 
 message DeployStatus {
@@ -220,6 +257,13 @@ message DeployStatus {
   DeployPhase phase = 2;
   string message = 3;
   google.protobuf.Timestamp updated_at = 4;
+  // Set when this status is about one service's progress (e.g. its image
+  // pulled, its container started) rather than the stack as a whole. A
+  // per-service status never changes the deployment's overall phase.
+  string service = 5;
+  // DeployStackCommand.revision this status belongs to (0 from agents
+  // that predate it, or for restores).
+  int32 revision = 6;
 }
 
 message Ack {

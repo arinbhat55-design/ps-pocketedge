@@ -149,6 +149,10 @@ class ComposeParseResult {
   final List<String> serviceNames;
   final bool visualEditable;
   final List<ComposeServiceDraft> services;
+  // Conflicting or unsupported settings that don't block saving but will
+  // misbehave or be ignored when deployed ("Detect unsupported or
+  // conflicting settings").
+  final List<String> warnings;
 
   const ComposeParseResult({
     required this.valid,
@@ -156,6 +160,7 @@ class ComposeParseResult {
     this.serviceNames = const [],
     this.visualEditable = false,
     this.services = const [],
+    this.warnings = const [],
   });
 
   factory ComposeParseResult.fromJson(Map<String, dynamic> json) {
@@ -170,6 +175,9 @@ class ComposeParseResult {
       visualEditable: json['visualEditable'] as bool? ?? false,
       services: (json['services'] as List<dynamic>? ?? [])
           .map((e) => ComposeServiceDraft.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      warnings: (json['warnings'] as List<dynamic>? ?? [])
+          .map((e) => e as String)
           .toList(),
     );
   }
@@ -186,6 +194,14 @@ class ComposeFile {
   final List<String> serviceNames;
   final DateTime createdAt;
   final DateTime updatedAt;
+  // Git link: set when the file was imported from (and is kept in sync
+  // with) [gitPath] at [gitRef] in a Git repository; [gitCommit] is the
+  // commit the current content came from.
+  final String? gitRepositoryId;
+  final String gitRef;
+  final String gitPath;
+  final String gitCommit;
+  final DateTime? gitSyncedAt;
 
   const ComposeFile({
     required this.id,
@@ -195,7 +211,14 @@ class ComposeFile {
     this.serviceNames = const [],
     required this.createdAt,
     required this.updatedAt,
+    this.gitRepositoryId,
+    this.gitRef = '',
+    this.gitPath = '',
+    this.gitCommit = '',
+    this.gitSyncedAt,
   });
+
+  bool get isGitLinked => gitRepositoryId != null;
 
   factory ComposeFile.fromJson(Map<String, dynamic> json) {
     return ComposeFile(
@@ -208,6 +231,13 @@ class ComposeFile {
           .toList(),
       createdAt: DateTime.parse(json['createdAt'] as String),
       updatedAt: DateTime.parse(json['updatedAt'] as String),
+      gitRepositoryId: json['gitRepositoryId'] as String?,
+      gitRef: json['gitRef'] as String? ?? '',
+      gitPath: json['gitPath'] as String? ?? '',
+      gitCommit: json['gitCommit'] as String? ?? '',
+      gitSyncedAt: json['gitSyncedAt'] == null
+          ? null
+          : DateTime.parse(json['gitSyncedAt'] as String),
     );
   }
 }
@@ -219,12 +249,14 @@ class ComposeFileVersionSummary {
   final String id;
   final int versionNumber;
   final String name;
+  final String gitCommit;
   final DateTime createdAt;
 
   const ComposeFileVersionSummary({
     required this.id,
     required this.versionNumber,
     required this.name,
+    this.gitCommit = '',
     required this.createdAt,
   });
 
@@ -233,6 +265,7 @@ class ComposeFileVersionSummary {
       id: json['id'] as String,
       versionNumber: (json['versionNumber'] as num?)?.toInt() ?? 0,
       name: json['name'] as String? ?? '',
+      gitCommit: json['gitCommit'] as String? ?? '',
       createdAt: DateTime.parse(json['createdAt'] as String),
     );
   }

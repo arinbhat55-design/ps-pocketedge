@@ -1,6 +1,9 @@
 package registryclient
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestStripScheme(t *testing.T) {
 	cases := []struct {
@@ -20,6 +23,14 @@ func TestStripScheme(t *testing.T) {
 				t.Errorf("stripScheme(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPlatformsRejectsInvalidReferenceWithoutNetworkAccess(t *testing.T) {
+	// An invalid ref must fail at name.ParseReference, before any network
+	// call — this doesn't require network access to test.
+	if _, err := Platforms(context.Background(), "not a valid ref!!", Credentials{}); err == nil {
+		t.Error("expected an error for an invalid image reference")
 	}
 }
 

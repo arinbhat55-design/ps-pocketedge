@@ -235,7 +235,9 @@ class ServerUpdate {
           .map((e) => ContainerInfo.fromJson(e as Map<String, dynamic>))
           .toList(),
       containerStats: (json['containerStats'] as List<dynamic>? ?? [])
-          .map((e) => ContainerResourceUsage.fromJson(e as Map<String, dynamic>))
+          .map(
+            (e) => ContainerResourceUsage.fromJson(e as Map<String, dynamic>),
+          )
           .toList(),
       updatedAt: DateTime.parse(json['updatedAt'] as String),
     );

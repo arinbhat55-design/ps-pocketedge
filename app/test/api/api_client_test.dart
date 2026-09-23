@@ -5,6 +5,73 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
+  group('governed deployment actions', () {
+    test(
+      'a maintenance-window refusal surfaces as MaintenanceWindowException',
+      () async {
+        final client = ApiClient(
+          baseUrl: 'http://localhost:8080',
+          authToken: 'token',
+          httpClient: _JsonClient(409, {
+            'error':
+                'the production environment only allows changes during its maintenance window',
+            'outsideMaintenanceWindow': true,
+            'canOverride': true,
+            'nextWindow': '2026-09-27T02:00:00Z',
+          }),
+        );
+        await expectLater(
+          client.redeployDeployment('d1'),
+          throwsA(
+            isA<MaintenanceWindowException>()
+                .having((e) => e.canOverride, 'canOverride', isTrue)
+                .having(
+                  (e) => e.nextWindow,
+                  'nextWindow',
+                  DateTime.utc(2026, 9, 27, 2),
+                ),
+          ),
+        );
+      },
+    );
+
+    test('a queued outcome is returned, not thrown', () async {
+      final client = ApiClient(
+        baseUrl: 'http://localhost:8080',
+        authToken: 'token',
+        httpClient: _JsonClient(202, {
+          'deploymentId': 'd1',
+          'status': 'pending_approval',
+          'requestId': 'r1',
+        }),
+      );
+      final outcome = await client.redeployDeployment('d1');
+      expect(outcome.isQueued, isTrue);
+      expect(outcome.requestId, 'r1');
+    });
+
+    test('other errors use the JSON error message', () async {
+      final client = ApiClient(
+        baseUrl: 'http://localhost:8080',
+        authToken: 'token',
+        httpClient: _JsonClient(400, {
+          'error':
+              'the production environment requires a change request reference',
+        }),
+      );
+      await expectLater(
+        client.scaleService('d1', 'web', 2),
+        throwsA(
+          isA<ApiException>().having(
+            (e) => e.message,
+            'message',
+            contains('change request'),
+          ),
+        ),
+      );
+    });
+  });
+
   group('aiConfigured', () {
     test(
       'returns true when the control plane reports AI is configured',

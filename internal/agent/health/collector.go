@@ -19,12 +19,20 @@ type Snapshot struct {
 	CPUPercent  float64
 	MemPercent  float64
 	DiskPercent float64
+	// TotalMemoryBytes/NumCPUs/TotalDiskBytes are host capacity, not
+	// usage — 0 means that particular collection failed (see Collect's
+	// doc comment), not "zero capacity".
+	TotalMemoryBytes uint64
+	NumCPUs          uint32
+	TotalDiskBytes   uint64
 }
 
-// Collect samples current host CPU, memory, and disk usage. Each metric is
-// sampled independently: a failure on one (e.g. an unusual disk layout on a
-// Pi image) doesn't prevent the others from being reported, since a
-// heartbeat must still go out on schedule.
+// Collect samples current host CPU, memory, and disk usage, plus each
+// one's total capacity (for the control plane's "does this deployment fit"
+// pre-deployment check). Each metric is sampled independently: a failure
+// on one (e.g. an unusual disk layout on a Pi image) doesn't prevent the
+// others from being reported, since a heartbeat must still go out on
+// schedule — that metric's fields are just left at their zero value.
 func Collect(ctx context.Context) (Snapshot, error) {
 	var snap Snapshot
 	var errs []error
@@ -34,17 +42,24 @@ func Collect(ctx context.Context) (Snapshot, error) {
 	} else if len(pct) > 0 {
 		snap.CPUPercent = pct[0]
 	}
+	if n, err := cpu.CountsWithContext(ctx, true); err != nil {
+		errs = append(errs, fmt.Errorf("cpu count: %w", err))
+	} else {
+		snap.NumCPUs = uint32(n)
+	}
 
 	if vm, err := mem.VirtualMemoryWithContext(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("mem: %w", err))
 	} else {
 		snap.MemPercent = vm.UsedPercent
+		snap.TotalMemoryBytes = vm.Total
 	}
 
 	if du, err := disk.UsageWithContext(ctx, diskPath); err != nil {
 		errs = append(errs, fmt.Errorf("disk: %w", err))
 	} else {
 		snap.DiskPercent = du.UsedPercent
+		snap.TotalDiskBytes = du.Total
 	}
 
 	if len(errs) > 0 {

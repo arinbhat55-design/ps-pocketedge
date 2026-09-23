@@ -22,8 +22,11 @@ var upgrader = websocket.Upgrader{
 
 // handleDeploymentStream pushes a deployment's status history over a
 // WebSocket, live: the full history on connect, then every new
-// deployment_event as it's recorded, until the deployment reaches a
-// terminal phase (running/failed) or the client disconnects.
+// deployment_event as it's recorded, until the client disconnects. The
+// stream deliberately doesn't end at a "terminal" phase: a rollout's
+// per-service events, post-deployment health verification (which follows
+// "running"), and later redeploys/rollbacks/scaling all keep appending to
+// the same deployment's timeline.
 //
 // Browsers can't set custom headers on a WebSocket handshake, so unlike
 // the rest of the API this endpoint takes the JWT as a `?token=` query
@@ -70,10 +73,6 @@ func handleDeploymentStream(log *slog.Logger, st *store.Store, authMgr *auth.Man
 				return
 			}
 			lastSeenID = e.ID
-			if isTerminalPhase(e.Phase) {
-				closeGracefully(conn)
-				return
-			}
 		}
 
 		// The client never sends anything meaningful on this connection,
@@ -106,22 +105,7 @@ func handleDeploymentStream(log *slog.Logger, st *store.Store, authMgr *auth.Man
 					return
 				}
 				lastSeenID = e.ID
-				if isTerminalPhase(e.Phase) {
-					closeGracefully(conn)
-					return
-				}
 			}
 		}
 	}
-}
-
-func isTerminalPhase(phase string) bool {
-	return phase == "running" || phase == "failed"
-}
-
-// closeGracefully sends a WebSocket close frame so well-behaved clients
-// (browsers especially) see a clean close (1000) instead of the deferred
-// conn.Close() alone, which reads as an abnormal closure (1006).
-func closeGracefully(conn *websocket.Conn) {
-	_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }

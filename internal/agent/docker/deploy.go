@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,63 +54,125 @@ const (
 )
 
 // StatusFunc reports a phase transition back to the control plane over the
-// agent's Session stream.
-type StatusFunc func(phase agentv1.DeployPhase, message string)
+// agent's Session stream. service is empty for a whole-stack transition and
+// set for one service's progress (image pulled, container started, ...).
+type StatusFunc func(phase agentv1.DeployPhase, service, message string)
 
 // Deploy parses cmd's compose YAML with compose-go and applies it via the
-// Docker Engine SDK: pull images, ensure a per-deployment network, create
-// and start containers. Redeploy is "recreate" — any containers already
-// labeled with this deployment_id are stopped and removed first, so this
-// same function handles both first-deploy and redeploy.
+// Docker Engine SDK: pull images, ensure the deployment's networks and
+// volumes, then create and start every service's containers in dependency
+// order (depends_on), honoring service_healthy/service_completed_successfully
+// conditions and per-service replica counts. Progress is reported per
+// service as well as for the stack as a whole.
 //
-// Partial-failure cleanup: once removeExisting below has run, the
-// deployment's previous containers (if any) are already gone — we've
-// committed to replacing them — so a later failure (network, volumes, or
-// any service's create/start) would otherwise leave a half-built stack
-// with only some services running. The deferred cleanup below removes
-// whatever got created in this attempt and the per-deployment network,
-// leaving a clean "nothing running" state instead. Named volumes are
-// deliberately left alone (see docker.Undeploy's doc comment) so a failed
-// redeploy can never destroy an existing database's data, and a failure
-// before removeExisting runs (compose parse, image pull) never triggers
-// this — the previous deployment, if any, is still untouched and correctly
-// left running.
+// cmd.Strategy picks how an existing deployment is replaced:
+//
+//   - "recreate" (default): every old container is removed first, then the
+//     new ones are created. Partial-failure cleanup: once removeExisting has
+//     run we've committed to replacing the stack, so a later failure removes
+//     whatever this attempt created (and the deployment's networks),
+//     leaving a clean "nothing running" state instead of a half-built stack.
+//     Named volumes are deliberately left alone (see docker.Undeploy's doc
+//     comment) so a failed redeploy can never destroy data, and a failure
+//     before removeExisting (compose parse, image pull) leaves the previous
+//     deployment untouched and running.
+//   - "rolling": see rollingUpdate — containers are replaced one at a time
+//     and the previous containers are restored if any replacement fails to
+//     become ready.
+//
+// After the stack is running, VerifyDeployment runs as post-deployment
+// health verification unless cmd.VerifyTimeoutSeconds is negative, and its
+// outcome is reported as HEALTHY/UNHEALTHY. An unhealthy result doesn't
+// make Deploy return an error — the containers are up, just not healthy —
+// so the control plane decides what to do about it (e.g. auto-rollback).
 func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, report StatusFunc) (err error) {
+	deploymentID := cmd.GetDeploymentId()
+
+	project, err := parseCompose(ctx, cmd.GetComposeYaml(), cmd.GetEnv(), cmd.GetStackName())
+	if err != nil {
+		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "", "failed to parse compose file: "+err.Error())
+		return err
+	}
+	order, err := ServiceOrder(project)
+	if err != nil {
+		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "", err.Error())
+		return err
+	}
+	replicas := make(map[string]int, len(order))
+	for _, name := range order {
+		svc := project.Services[name]
+		replicas[name] = DesiredReplicas(svc, cmd.GetReplicas()[name])
+		if err = checkScalable(name, svc, replicas[name]); err != nil {
+			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, name, err.Error())
+			return err
+		}
+	}
+
+	report(agentv1.DeployPhase_DEPLOY_PHASE_PULLING, "", "")
+	for _, name := range order {
+		svc := project.Services[name]
+		report(agentv1.DeployPhase_DEPLOY_PHASE_PULLING, name, "pulling "+svc.Image)
+		if err = pullImage(ctx, cli, svc.Image); err != nil {
+			msg := fmt.Sprintf("failed to pull image for service %q: %v", name, err)
+			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, name, msg)
+			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "", msg)
+			return err
+		}
+		report(agentv1.DeployPhase_DEPLOY_PHASE_PULLING, name, "image ready")
+	}
+
+	report(agentv1.DeployPhase_DEPLOY_PHASE_CREATING, "", "")
+	if cmd.GetStrategy() == "rolling" {
+		err = rollingUpdate(ctx, cli, cmd, project, order, replicas, report)
+	} else {
+		err = recreateStack(ctx, cli, cmd, project, order, replicas, report)
+	}
+	if err != nil {
+		var rb *rolledBackError
+		if errors.As(err, &rb) {
+			report(agentv1.DeployPhase_DEPLOY_PHASE_ROLLED_BACK, "", err.Error())
+		} else {
+			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "", err.Error())
+		}
+		return err
+	}
+
+	report(agentv1.DeployPhase_DEPLOY_PHASE_RUNNING, "", "")
+
+	if cmd.GetVerifyTimeoutSeconds() >= 0 {
+		timeout := DefaultVerifyTimeout
+		if cmd.GetVerifyTimeoutSeconds() > 0 {
+			timeout = time.Duration(cmd.GetVerifyTimeoutSeconds()) * time.Second
+		}
+		report(agentv1.DeployPhase_DEPLOY_PHASE_VERIFYING, "", fmt.Sprintf("waiting up to %s for every container to be running and healthy", timeout))
+		if verr := VerifyDeployment(ctx, cli, deploymentID, project, timeout); verr != nil {
+			report(agentv1.DeployPhase_DEPLOY_PHASE_UNHEALTHY, "", verr.Error())
+		} else {
+			report(agentv1.DeployPhase_DEPLOY_PHASE_HEALTHY, "", "all containers running and healthy")
+		}
+	}
+	return nil
+}
+
+// recreateStack is Deploy's "recreate" strategy — see Deploy's doc comment.
+func recreateStack(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, project *types.Project, order []string, replicas map[string]int, report StatusFunc) (err error) {
 	deploymentID := cmd.GetDeploymentId()
 	var committed bool
 	defer func() {
 		if err != nil && committed {
 			_ = removeExisting(ctx, cli, deploymentID)
-			_ = cli.NetworkRemove(ctx, "pe-"+deploymentID)
+			_ = removeDeploymentNetworks(ctx, cli, deploymentID)
 		}
 	}()
 
-	project, err := parseCompose(ctx, cmd.GetComposeYaml(), cmd.GetEnv(), cmd.GetStackName())
-	if err != nil {
-		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to parse compose file: "+err.Error())
-		return err
-	}
-
-	report(agentv1.DeployPhase_DEPLOY_PHASE_PULLING, "")
-	for name, svc := range project.Services {
-		if err = pullImage(ctx, cli, svc.Image); err != nil {
-			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, fmt.Sprintf("failed to pull image for service %q: %v", name, err))
-			return err
-		}
-	}
-
-	report(agentv1.DeployPhase_DEPLOY_PHASE_CREATING, "")
-
 	if err = removeExisting(ctx, cli, deploymentID); err != nil {
-		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to remove previous containers: "+err.Error())
-		return err
+		return fmt.Errorf("failed to remove previous containers: %w", err)
 	}
 	committed = true
 
-	networkName, err := ensureNetwork(ctx, cli, deploymentID, cmd.GetStackName())
+	networks, err := ensureNetworks(ctx, cli, deploymentID, cmd.GetStackName(), project)
 	if err != nil {
-		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to create network: "+err.Error())
-		return err
+		return fmt.Errorf("failed to create networks: %w", err)
 	}
 
 	// Named volumes are created once and never removed by removeExisting
@@ -119,24 +182,154 @@ func Deploy(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCom
 	// catalog entries like Postgres/Ollama/Qdrant.
 	volumeNames, err := ensureVolumes(ctx, cli, deploymentID, cmd.GetStackName(), project)
 	if err != nil {
-		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "failed to create volumes: "+err.Error())
+		return fmt.Errorf("failed to create volumes: %w", err)
+	}
+
+	for _, name := range order {
+		svc := project.Services[name]
+		if err = waitForDependencies(ctx, cli, deploymentID, svc); err != nil {
+			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, name, err.Error())
+			return fmt.Errorf("service %q: %w", name, err)
+		}
+		report(agentv1.DeployPhase_DEPLOY_PHASE_CREATING, name, "creating")
+		n := replicas[name]
+		for i := 1; i <= n; i++ {
+			var containerID string
+			containerID, err = createServiceContainer(ctx, cli, deploymentID, cmd.GetStackName(), name, i, svc, networks, volumeNames)
+			if err != nil {
+				report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, name, err.Error())
+				return fmt.Errorf("failed to create container for service %q: %w", name, err)
+			}
+			if err = cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+				report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, name, err.Error())
+				return fmt.Errorf("failed to start container for service %q: %w", name, err)
+			}
+		}
+		report(agentv1.DeployPhase_DEPLOY_PHASE_RUNNING, name, fmt.Sprintf("started %d container(s)", n))
+	}
+	return nil
+}
+
+// rolledBackError is a rolling update failure after which the previous
+// containers were restored — the stack is still running its previous
+// definition, which Deploy reports as ROLLED_BACK rather than FAILED.
+type rolledBackError struct{ msg string }
+
+func (e *rolledBackError) Error() string { return e.msg }
+
+// replacedContainer records one container a rolling update swapped out, so
+// the swap can be undone if a later replacement fails.
+type replacedContainer struct {
+	name     string
+	newID    string
+	prevID   string
+	prevName string
+}
+
+// rollingUpdate is Deploy's "rolling" strategy — the controlled update.
+// Services are updated in dependency order, one replica at a time: the old
+// container is renamed aside and stopped (freeing any host port it
+// publishes), the replacement is created and started, and the update waits
+// for it to become ready (healthy, or running stably when it has no
+// healthcheck). If any replacement fails, every replacement made so far is
+// removed and the previous containers are renamed back and restarted — the
+// stack ends up exactly as it was. Only once every service is updated are
+// the previous containers, and containers of services or replicas the new
+// Compose file no longer has, removed.
+func rollingUpdate(ctx context.Context, cli *client.Client, cmd *agentv1.DeployStackCommand, project *types.Project, order []string, replicas map[string]int, report StatusFunc) error {
+	deploymentID := cmd.GetDeploymentId()
+	networks, err := ensureNetworks(ctx, cli, deploymentID, cmd.GetStackName(), project)
+	if err != nil {
+		return fmt.Errorf("failed to create networks: %w", err)
+	}
+	volumeNames, err := ensureVolumes(ctx, cli, deploymentID, cmd.GetStackName(), project)
+	if err != nil {
+		return fmt.Errorf("failed to create volumes: %w", err)
+	}
+
+	existing, err := deploymentContainers(ctx, cli, deploymentID)
+	if err != nil {
 		return err
 	}
+	byName := make(map[string]serviceContainer, len(existing))
+	for _, c := range existing {
+		byName[c.Name] = c
+	}
 
-	for name, svc := range project.Services {
-		var containerID string
-		containerID, err = createContainer(ctx, cli, deploymentID, cmd.GetStackName(), name, svc, networkName, volumeNames)
-		if err != nil {
-			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, fmt.Sprintf("failed to create container for service %q: %v", name, err))
-			return err
-		}
-		if err = cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
-			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, fmt.Sprintf("failed to start container for service %q: %v", name, err))
-			return err
+	var swapped []replacedContainer
+	rollback := func() {
+		for i := len(swapped) - 1; i >= 0; i-- {
+			s := swapped[i]
+			if s.newID != "" {
+				_ = cli.ContainerRemove(ctx, s.newID, container.RemoveOptions{Force: true})
+			}
+			if s.prevID != "" {
+				_ = cli.ContainerRename(ctx, s.prevID, s.name)
+				_ = cli.ContainerStart(ctx, s.prevID, container.StartOptions{})
+			}
 		}
 	}
 
-	report(agentv1.DeployPhase_DEPLOY_PHASE_RUNNING, "")
+	for _, name := range order {
+		svc := project.Services[name]
+		if err := waitForDependencies(ctx, cli, deploymentID, svc); err != nil {
+			rollback()
+			report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, name, err.Error())
+			return &rolledBackError{msg: fmt.Sprintf("rolling update stopped at service %q (%v); previous containers restored", name, err)}
+		}
+		n := replicas[name]
+		for i := 1; i <= n; i++ {
+			cname := containerName(deploymentID, name, i)
+			entry := replacedContainer{name: cname}
+			if old, ok := byName[cname]; ok {
+				entry.prevName = cname + setAsideSuffix
+				// A leftover from an interrupted earlier rollout.
+				if stale, ok := byName[entry.prevName]; ok {
+					_ = stopAndRemoveContainer(ctx, cli, stale.ID)
+					delete(byName, entry.prevName)
+				}
+				if err := cli.ContainerRename(ctx, old.ID, entry.prevName); err != nil {
+					rollback()
+					return fmt.Errorf("service %q: failed to set aside previous container: %w", name, err)
+				}
+				entry.prevID = old.ID
+				delete(byName, cname)
+				timeout := 10
+				_ = cli.ContainerStop(ctx, old.ID, container.StopOptions{Timeout: &timeout})
+			}
+			report(agentv1.DeployPhase_DEPLOY_PHASE_CREATING, name, fmt.Sprintf("updating replica %d/%d", i, n))
+			newID, err := createServiceContainer(ctx, cli, deploymentID, cmd.GetStackName(), name, i, svc, networks, volumeNames)
+			if err == nil {
+				entry.newID = newID
+				err = cli.ContainerStart(ctx, newID, container.StartOptions{})
+			}
+			swapped = append(swapped, entry)
+			if err == nil {
+				err = waitReady(ctx, cli, entry.newID, rollingReadyTimeout, false)
+				if err != nil && strings.HasPrefix(err.Error(), "container exited with code 0") && isOneShot(svc) {
+					err = nil
+				}
+			}
+			if err != nil {
+				rollback()
+				msg := fmt.Sprintf("replica %d failed to become ready (%v); rolled back to the previous containers", i, err)
+				report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, name, msg)
+				return &rolledBackError{msg: fmt.Sprintf("rolling update of service %q failed (%v); previous containers restored", name, err)}
+			}
+		}
+		report(agentv1.DeployPhase_DEPLOY_PHASE_RUNNING, name, fmt.Sprintf("updated %d container(s)", n))
+	}
+
+	for _, s := range swapped {
+		if s.prevID != "" {
+			_ = stopAndRemoveContainer(ctx, cli, s.prevID)
+		}
+	}
+	// Whatever's left belonged to services removed from the Compose file
+	// or replicas beyond the new count.
+	for _, c := range byName {
+		_ = stopAndRemoveContainer(ctx, cli, c.ID)
+	}
 	return nil
 }
 
@@ -263,8 +456,8 @@ func removeExisting(ctx context.Context, cli *client.Client, deploymentID string
 
 // Undeploy tears down a deployment entirely: stops and removes every
 // container labeled with deploymentID (removeExisting, the same helper
-// redeploy uses before recreating), then removes the per-deployment
-// network ensureNetwork created for it. Named volumes are deliberately
+// redeploy uses before recreating), then removes the networks created for
+// it (the default per-deployment one and any declared custom networks). Named volumes are deliberately
 // left in place — matching `docker compose down`'s default (no -v) — so a
 // stack removal can't silently destroy data the backup/restore feature is
 // meant to protect.
@@ -272,21 +465,22 @@ func Undeploy(ctx context.Context, cli *client.Client, deploymentID string) erro
 	if err := removeExisting(ctx, cli, deploymentID); err != nil {
 		return err
 	}
-	name := "pe-" + deploymentID
-	if err := cli.NetworkRemove(ctx, name); err != nil && !errdefs.IsNotFound(err) {
-		return err
-	}
-	return nil
+	return removeDeploymentNetworks(ctx, cli, deploymentID)
 }
 
-// DeployService redeploys a single service within an already-deployed
-// stack: pulls its image, then stops/removes and recreates just that
-// service's container (found by the same deterministic
-// "pe-<deployment_id>-<service_name>" name createContainer gives it),
-// leaving every other service's container untouched. The network and
-// named volumes are ensured first (idempotently, same as Deploy) since a
-// redeployed service still needs to reach them.
-func DeployService(ctx context.Context, cli *client.Client, deploymentID, stackName, composeYAML string, env map[string]string, serviceName string) error {
+// DeployService redeploys or scales a single service within an
+// already-deployed stack, leaving every other service's containers
+// untouched. replicas is the number of containers to run (0 = the
+// Compose-declared count, or 1).
+//
+// scaleOnly=false (redeploy): pulls the image, then removes and recreates
+// every container of the service. scaleOnly=true (scale): keeps existing
+// replicas running as-is, creating only the missing ones and removing any
+// beyond the new count — highest replica numbers first.
+//
+// The networks and named volumes are ensured first (idempotently, same as
+// Deploy) since a new container still needs to reach them.
+func DeployService(ctx context.Context, cli *client.Client, deploymentID, stackName, composeYAML string, env map[string]string, serviceName string, replicas int, scaleOnly bool) error {
 	project, err := parseCompose(ctx, composeYAML, env, stackName)
 	if err != nil {
 		return err
@@ -295,35 +489,71 @@ func DeployService(ctx context.Context, cli *client.Client, deploymentID, stackN
 	if !ok {
 		return fmt.Errorf("service %q not found in compose file", serviceName)
 	}
-
-	if err := pullImage(ctx, cli, svc.Image); err != nil {
+	n := DesiredReplicas(svc, int32(replicas))
+	if err := checkScalable(serviceName, svc, n); err != nil {
 		return err
 	}
 
-	networkName, err := ensureNetwork(ctx, cli, deploymentID, stackName)
+	if !scaleOnly {
+		if err := pullImage(ctx, cli, svc.Image); err != nil {
+			return err
+		}
+	}
+
+	networks, err := ensureNetworks(ctx, cli, deploymentID, stackName, project)
 	if err != nil {
 		return err
 	}
-
 	volumeNames, err := ensureVolumes(ctx, cli, deploymentID, stackName, project)
 	if err != nil {
 		return err
 	}
 
-	containerName := "pe-" + deploymentID + "-" + serviceName
-	if existing, err := cli.ContainerInspect(ctx, containerName); err == nil {
-		if err := stopAndRemoveContainer(ctx, cli, existing.ID); err != nil {
-			return err
-		}
-	} else if !errdefs.IsNotFound(err) {
-		return err
-	}
-
-	containerID, err := createContainer(ctx, cli, deploymentID, stackName, serviceName, svc, networkName, volumeNames)
+	all, err := deploymentContainers(ctx, cli, deploymentID)
 	if err != nil {
 		return err
 	}
-	return cli.ContainerStart(ctx, containerID, container.StartOptions{})
+	existing := map[int]serviceContainer{}
+	for _, c := range all {
+		if c.SetAside {
+			// Left over from an interrupted rolling update.
+			if c.Service == serviceName {
+				_ = stopAndRemoveContainer(ctx, cli, c.ID)
+			}
+			continue
+		}
+		if c.Service == serviceName {
+			existing[c.Replica] = c
+		}
+	}
+
+	for replica, c := range existing {
+		if !scaleOnly || replica > n {
+			if err := stopAndRemoveContainer(ctx, cli, c.ID); err != nil {
+				return err
+			}
+			delete(existing, replica)
+		}
+	}
+
+	for i := 1; i <= n; i++ {
+		if c, ok := existing[i]; ok {
+			if !c.Running {
+				if err := cli.ContainerStart(ctx, c.ID, container.StartOptions{}); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		containerID, err := createServiceContainer(ctx, cli, deploymentID, stackName, serviceName, i, svc, networks, volumeNames)
+		if err != nil {
+			return err
+		}
+		if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // stopAndRemoveContainer gracefully stops (with a short timeout) then
@@ -398,7 +628,7 @@ func ensureVolumes(ctx context.Context, cli *client.Client, deploymentID, stackN
 	return resolved, nil
 }
 
-func createContainer(ctx context.Context, cli *client.Client, deploymentID, stackName, serviceName string, svc types.ServiceConfig, networkName string, volumeNames map[string]string) (string, error) {
+func createContainer(ctx context.Context, cli *client.Client, deploymentID, stackName, serviceName string, replica int, svc types.ServiceConfig, networkName string, endpoint *network.EndpointSettings, volumeNames map[string]string) (string, error) {
 	env := make([]string, 0, len(svc.Environment))
 	for k, v := range svc.Environment {
 		if v != nil {
@@ -413,15 +643,14 @@ func createContainer(ctx context.Context, cli *client.Client, deploymentID, stac
 		return "", err
 	}
 
-	labels := map[string]string{
-		labelDeploymentID: deploymentID,
-		labelStack:        stackName,
-	}
+	labels := map[string]string{}
 	for k, v := range svc.Labels {
 		labels[k] = v
 	}
-
-	containerName := "pe-" + deploymentID + "-" + serviceName
+	labels[labelDeploymentID] = deploymentID
+	labels[labelStack] = stackName
+	labels[labelService] = serviceName
+	labels[labelReplica] = strconv.Itoa(replica)
 
 	mounts, err := buildMounts(svc.Volumes, volumeNames)
 	if err != nil {
@@ -444,11 +673,11 @@ func createContainer(ctx context.Context, cli *client.Client, deploymentID, stac
 	}
 	networkingConfig := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
-			networkName: {Aliases: []string{serviceName}},
+			networkName: endpoint,
 		},
 	}
 
-	resp, err := cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName)
+	resp, err := cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName(deploymentID, serviceName, replica))
 	if err != nil {
 		return "", err
 	}

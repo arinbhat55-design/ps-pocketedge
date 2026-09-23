@@ -27,13 +27,41 @@ type ComposeFile struct {
 	CreatedBy *string   `json:"createdBy,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// Git link: set when the file was imported from (and is kept in sync
+	// with) GitPath at GitRef in a Git repository. GitCommit is the commit
+	// the current content came from.
+	GitRepositoryID *string    `json:"gitRepositoryId,omitempty"`
+	GitRef          string     `json:"gitRef,omitempty"`
+	GitPath         string     `json:"gitPath,omitempty"`
+	GitCommit       string     `json:"gitCommit,omitempty"`
+	GitSyncedAt     *time.Time `json:"gitSyncedAt,omitempty"`
+}
+
+const composeFileColumns = `id, name, content, version, created_by, created_at, updated_at,
+	git_repository_id, git_ref, git_path, git_commit, git_synced_at`
+
+func scanComposeFile(row pgx.Row) (*ComposeFile, error) {
+	var f ComposeFile
+	err := row.Scan(&f.ID, &f.Name, &f.Content, &f.Version, &f.CreatedBy, &f.CreatedAt, &f.UpdatedAt,
+		&f.GitRepositoryID, &f.GitRef, &f.GitPath, &f.GitCommit, &f.GitSyncedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &f, nil
 }
 
 func (s *Store) ListComposeFiles(ctx context.Context) ([]ComposeFile, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, content, version, created_by, created_at, updated_at
-		FROM compose_files ORDER BY name ASC
-	`)
+	return s.queryComposeFiles(ctx, `SELECT `+composeFileColumns+` FROM compose_files ORDER BY name ASC`)
+}
+
+// ListComposeFilesByGitRepository returns the files linked to repoID —
+// what a push webhook for that repository re-syncs.
+func (s *Store) ListComposeFilesByGitRepository(ctx context.Context, repoID string) ([]ComposeFile, error) {
+	return s.queryComposeFiles(ctx, `SELECT `+composeFileColumns+` FROM compose_files WHERE git_repository_id = $1 ORDER BY name`, repoID)
+}
+
+func (s *Store) queryComposeFiles(ctx context.Context, sql string, args ...any) ([]ComposeFile, error) {
+	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -41,11 +69,11 @@ func (s *Store) ListComposeFiles(ctx context.Context) ([]ComposeFile, error) {
 
 	files := []ComposeFile{}
 	for rows.Next() {
-		var f ComposeFile
-		if err := rows.Scan(&f.ID, &f.Name, &f.Content, &f.Version, &f.CreatedBy, &f.CreatedAt, &f.UpdatedAt); err != nil {
+		f, err := scanComposeFile(rows)
+		if err != nil {
 			return nil, err
 		}
-		files = append(files, f)
+		files = append(files, *f)
 	}
 	return files, rows.Err()
 }
@@ -53,18 +81,11 @@ func (s *Store) ListComposeFiles(ctx context.Context) ([]ComposeFile, error) {
 // GetComposeFile looks up a single compose file by ID. Returns ErrNotFound
 // if it doesn't exist.
 func (s *Store) GetComposeFile(ctx context.Context, id string) (*ComposeFile, error) {
-	var f ComposeFile
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, content, version, created_by, created_at, updated_at
-		FROM compose_files WHERE id = $1
-	`, id).Scan(&f.ID, &f.Name, &f.Content, &f.Version, &f.CreatedBy, &f.CreatedAt, &f.UpdatedAt)
+	f, err := scanComposeFile(s.pool.QueryRow(ctx, `SELECT `+composeFileColumns+` FROM compose_files WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &f, nil
+	return f, err
 }
 
 // CreateComposeFile inserts a new compose file. createdBy may be empty (no
@@ -94,18 +115,50 @@ func (s *Store) CreateComposeFile(ctx context.Context, name, content, createdBy 
 // doesn't exist, or ErrDuplicateComposeFileName if name collides with
 // another file.
 func (s *Store) UpdateComposeFile(ctx context.Context, id, name, content string) error {
+	return s.updateComposeFile(ctx, id, name, content, nil)
+}
+
+// UpdateComposeFileFromGit is UpdateComposeFile for a Git sync: content
+// comes from commit, which is recorded as the file's git_commit (and
+// git_synced_at is bumped) even when the content itself didn't change.
+func (s *Store) UpdateComposeFileFromGit(ctx context.Context, id, content, commit string) error {
+	f, err := s.GetComposeFile(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.updateComposeFile(ctx, id, f.Name, content, &commit)
+}
+
+// SetComposeFileGitLink links (or, with repoID nil, unlinks) a Compose file
+// to a path at a ref in a Git repository.
+func (s *Store) SetComposeFileGitLink(ctx context.Context, id string, repoID *string, ref, path string) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE compose_files SET git_repository_id = $2, git_ref = $3, git_path = $4,
+			git_commit = CASE WHEN $2::uuid IS NULL THEN '' ELSE git_commit END, updated_at = now()
+		WHERE id = $1
+	`, id, repoID, ref, path)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) updateComposeFile(ctx context.Context, id, name, content string, gitCommit *string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	var currentName, currentContent string
+	var currentName, currentContent, currentCommit string
 	var currentVersion int
 	var createdBy *string
 	err = tx.QueryRow(ctx, `
-		SELECT name, content, version, created_by FROM compose_files WHERE id = $1 FOR UPDATE
-	`, id).Scan(&currentName, &currentContent, &currentVersion, &createdBy)
+		SELECT name, content, version, created_by, git_commit FROM compose_files WHERE id = $1 FOR UPDATE
+	`, id).Scan(&currentName, &currentContent, &currentVersion, &createdBy, &currentCommit)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -114,19 +167,31 @@ func (s *Store) UpdateComposeFile(ctx context.Context, id, name, content string)
 	}
 
 	if currentName == name && currentContent == content {
+		if gitCommit != nil {
+			if _, err := tx.Exec(ctx, `UPDATE compose_files SET git_commit = $2, git_synced_at = now() WHERE id = $1`, id, *gitCommit); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}
 		return nil
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO compose_file_versions (compose_file_id, version_number, name, content, created_by)
-		VALUES ($1, $2, $3, $4, $5)
-	`, id, currentVersion, currentName, currentContent, createdBy); err != nil {
+		INSERT INTO compose_file_versions (compose_file_id, version_number, name, content, created_by, git_commit)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, id, currentVersion, currentName, currentContent, createdBy, currentCommit); err != nil {
 		return err
 	}
 
-	_, err = tx.Exec(ctx, `
-		UPDATE compose_files SET name = $2, content = $3, version = version + 1, updated_at = now() WHERE id = $1
-	`, id, name, content)
+	if gitCommit != nil {
+		_, err = tx.Exec(ctx, `
+			UPDATE compose_files SET name = $2, content = $3, version = version + 1, git_commit = $4, git_synced_at = now(), updated_at = now() WHERE id = $1
+		`, id, name, content, *gitCommit)
+	} else {
+		_, err = tx.Exec(ctx, `
+			UPDATE compose_files SET name = $2, content = $3, version = version + 1, updated_at = now() WHERE id = $1
+		`, id, name, content)
+	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return ErrDuplicateComposeFileName
@@ -158,6 +223,7 @@ type ComposeFileVersionSummary struct {
 	ID            string    `json:"id"`
 	VersionNumber int       `json:"versionNumber"`
 	Name          string    `json:"name"`
+	GitCommit     string    `json:"gitCommit,omitempty"`
 	CreatedBy     *string   `json:"createdBy,omitempty"`
 	CreatedAt     time.Time `json:"createdAt"`
 }
@@ -171,6 +237,7 @@ type ComposeFileVersion struct {
 	VersionNumber int       `json:"versionNumber"`
 	Name          string    `json:"name"`
 	Content       string    `json:"content"`
+	GitCommit     string    `json:"gitCommit,omitempty"`
 	CreatedBy     *string   `json:"createdBy,omitempty"`
 	CreatedAt     time.Time `json:"createdAt"`
 }
@@ -179,7 +246,7 @@ type ComposeFileVersion struct {
 // recent first.
 func (s *Store) ListComposeFileVersions(ctx context.Context, composeFileID string) ([]ComposeFileVersionSummary, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, version_number, name, created_by, created_at
+		SELECT id, version_number, name, git_commit, created_by, created_at
 		FROM compose_file_versions WHERE compose_file_id = $1 ORDER BY version_number DESC
 	`, composeFileID)
 	if err != nil {
@@ -190,7 +257,7 @@ func (s *Store) ListComposeFileVersions(ctx context.Context, composeFileID strin
 	versions := []ComposeFileVersionSummary{}
 	for rows.Next() {
 		var v ComposeFileVersionSummary
-		if err := rows.Scan(&v.ID, &v.VersionNumber, &v.Name, &v.CreatedBy, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.VersionNumber, &v.Name, &v.GitCommit, &v.CreatedBy, &v.CreatedAt); err != nil {
 			return nil, err
 		}
 		versions = append(versions, v)
@@ -203,9 +270,9 @@ func (s *Store) ListComposeFileVersions(ctx context.Context, composeFileID strin
 func (s *Store) GetComposeFileVersion(ctx context.Context, composeFileID, versionID string) (*ComposeFileVersion, error) {
 	var v ComposeFileVersion
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, compose_file_id, version_number, name, content, created_by, created_at
+		SELECT id, compose_file_id, version_number, name, content, git_commit, created_by, created_at
 		FROM compose_file_versions WHERE id = $1 AND compose_file_id = $2
-	`, versionID, composeFileID).Scan(&v.ID, &v.ComposeFileID, &v.VersionNumber, &v.Name, &v.Content, &v.CreatedBy, &v.CreatedAt)
+	`, versionID, composeFileID).Scan(&v.ID, &v.ComposeFileID, &v.VersionNumber, &v.Name, &v.Content, &v.GitCommit, &v.CreatedBy, &v.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

@@ -93,7 +93,10 @@ class _AppShellState extends State<AppShell> {
             icon: Icons.rocket_launch_outlined,
             selectedIcon: Icons.rocket_launch,
             label: 'Deployment Management',
-            builder: (_) => DockerComposeScreen(apiClient: widget.apiClient),
+            builder: (_) => DockerComposeScreen(
+              apiClient: widget.apiClient,
+              isAdmin: isAdmin,
+            ),
           ),
           if (isAdmin)
             _ModuleDestination(

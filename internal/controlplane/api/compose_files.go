@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -105,6 +106,7 @@ func handleCreateComposeFile(log *slog.Logger, st *store.Store) http.HandlerFunc
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		recordAudit(r, log, st, "compose_file.create", "compose_file", f.ID, "Compose file "+f.Name+" created", nil)
 		writeJSON(w, http.StatusCreated, toComposeFileResponse(*f))
 	}
 }
@@ -166,6 +168,9 @@ func handleUpdateComposeFile(log *slog.Logger, st *store.Store) http.HandlerFunc
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		if f.Version != existing.Version || f.Name != existing.Name {
+			recordAudit(r, log, st, "compose_file.update", "compose_file", f.ID, fmt.Sprintf("Compose file %s updated to version %d", f.Name, f.Version), nil)
+		}
 		writeJSON(w, http.StatusOK, toComposeFileResponse(*f))
 	}
 }
@@ -182,6 +187,7 @@ func handleDeleteComposeFile(log *slog.Logger, st *store.Store) http.HandlerFunc
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		recordAudit(r, log, st, "compose_file.delete", "compose_file", r.PathValue("id"), "Compose file deleted", nil)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -270,6 +276,7 @@ func handleRestoreComposeFileVersion(log *slog.Logger, st *store.Store) http.Han
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		recordAudit(r, log, st, "compose_file.restore_version", "compose_file", f.ID, fmt.Sprintf("Compose file %s restored to version %d (now version %d)", f.Name, version.VersionNumber, f.Version), nil)
 		writeJSON(w, http.StatusOK, toComposeFileResponse(*f))
 	}
 }

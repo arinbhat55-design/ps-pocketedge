@@ -107,6 +107,8 @@ class _EnvVarGroupsScreenState extends State<EnvVarGroupsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
+        // Shares Deployment Management's TabBarView with other tabs' buttons.
+        heroTag: 'env-var-groups-add',
         onPressed: _openCreate,
         icon: const Icon(Icons.add),
         label: const Text('New variable group'),

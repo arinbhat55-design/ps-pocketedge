@@ -35,6 +35,9 @@ class _ComposeEditorScreenState extends State<ComposeEditorScreen> {
   bool _saving = false;
   bool _busy = false;
   List<String> _yamlErrors = [];
+  // Conflicting/unsupported settings from the last validation — shown but
+  // don't block saving.
+  List<String> _yamlWarnings = [];
   String? _error;
 
   bool get _isNew => widget.existing == null;
@@ -73,10 +76,19 @@ class _ComposeEditorScreenState extends State<ComposeEditorScreen> {
     setState(() => _busy = true);
     try {
       final result = await widget.apiClient.parseComposeYaml(_yamlController.text);
-      setState(() => _yamlErrors = result.valid ? [] : result.errors);
+      setState(() {
+        _yamlErrors = result.valid ? [] : result.errors;
+        _yamlWarnings = result.warnings;
+      });
       if (result.valid && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('YAML is valid.')),
+          SnackBar(
+            content: Text(
+              result.warnings.isEmpty
+                  ? 'YAML is valid.'
+                  : 'YAML is valid, with ${result.warnings.length} warning(s).',
+            ),
+          ),
         );
       }
     } catch (e) {
@@ -299,6 +311,26 @@ class _ComposeEditorScreenState extends State<ComposeEditorScreen> {
                         color: Theme.of(context).colorScheme.onErrorContainer,
                       ),
                     ),
+                ],
+              ),
+            ),
+          if (_mode == _Mode.yaml && _yamlWarnings.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Unsupported or conflicting settings',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  for (final w in _yamlWarnings) Text('• $w'),
                 ],
               ),
             ),

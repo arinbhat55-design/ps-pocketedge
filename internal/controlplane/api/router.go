@@ -80,16 +80,47 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("PATCH /api/env-var-groups/{id}", authMgr.RequireAuth(handleUpdateEnvVarGroup(log, st)))
 	mux.Handle("DELETE /api/env-var-groups/{id}", authMgr.RequireAuth(handleDeleteEnvVarGroup(log, st)))
 
+	d := newDeployer(log, st, dispatcher, events, opWaiter)
 	mux.Handle("POST /api/deployments/preview", authMgr.RequireAuth(handlePreviewDeployment(log, st)))
-	mux.Handle("POST /api/deployments", authMgr.RequireAuth(handleCreateDeployment(log, st, dispatcher, events)))
-	mux.Handle("GET /api/deployments/{id}", authMgr.RequireAuth(handleGetDeployment(log, st)))
-	mux.Handle("PATCH /api/deployments/{id}/metadata", authMgr.RequireAuth(handleUpdateDeploymentMetadata(log, st)))
-	mux.Handle("POST /api/deployments/{id}/redeploy", authMgr.RequireAuth(handleRedeployDeployment(log, st, dispatcher, events)))
-	mux.Handle("POST /api/deployments/{id}/services/{service}/redeploy", authMgr.RequireAuth(handleRedeployService(log, st, dispatcher, opWaiter, events)))
-	mux.Handle("POST /api/deployments/{id}/rollback", authMgr.RequireAuth(handleRollbackDeployment(log, st, dispatcher, events)))
-	mux.Handle("POST /api/deployments/{id}/action", authMgr.RequireAuth(handleDeploymentAction(log, st, dispatcher, opWaiter, events)))
-	// Auth via ?token= query param, not the Authorization header — see
-	// handleDeploymentStream's doc comment for why.
+	mux.Handle("GET /api/deployments", authMgr.RequireAuth(handleListDeployments(d)))
+	mux.Handle("POST /api/deployments", authMgr.RequireAuth(handleCreateDeployment(d)))
+	mux.Handle("GET /api/deployments/{id}", authMgr.RequireAuth(handleGetDeployment(d)))
+	mux.Handle("PATCH /api/deployments/{id}/metadata", authMgr.RequireAuth(handleUpdateDeploymentMetadata(d)))
+	mux.Handle("POST /api/deployments/{id}/redeploy", authMgr.RequireAuth(handleRedeployDeployment(d)))
+	mux.Handle("POST /api/deployments/{id}/services/{service}/redeploy", authMgr.RequireAuth(handleRedeployService(d)))
+	mux.Handle("POST /api/deployments/{id}/services/{service}/scale", authMgr.RequireAuth(handleScaleService(d)))
+	mux.Handle("POST /api/deployments/{id}/rollback", authMgr.RequireAuth(handleRollbackDeployment(d)))
+	mux.Handle("POST /api/deployments/{id}/promote", authMgr.RequireAuth(handlePromoteDeployment(d)))
+	mux.Handle("POST /api/deployments/{id}/action", authMgr.RequireAuth(handleDeploymentAction(d)))
+	mux.Handle("GET /api/deployments/{id}/revisions", authMgr.RequireAuth(handleListDeploymentRevisions(d)))
+	mux.Handle("GET /api/deployments/{id}/revisions/{revision}", authMgr.RequireAuth(handleGetDeploymentRevision(d)))
+	mux.Handle("GET /api/deployments/{id}/drift", authMgr.RequireAuth(handleDeploymentDrift(d)))
+
+	// Governance: approval workflow, environment policies (approval,
+	// maintenance windows, required metadata), and the audit trail.
+	mux.Handle("GET /api/deployment-requests", authMgr.RequireAuth(handleListDeploymentRequests(d)))
+	mux.Handle("POST /api/deployment-requests/{id}/approve", authMgr.RequireAdmin(handleApproveDeploymentRequest(d)))
+	mux.Handle("POST /api/deployment-requests/{id}/reject", authMgr.RequireAdmin(handleRejectDeploymentRequest(d)))
+	mux.Handle("POST /api/deployment-requests/{id}/cancel", authMgr.RequireAuth(handleCancelDeploymentRequest(d)))
+	mux.Handle("GET /api/environment-policies", authMgr.RequireAuth(handleListEnvironmentPolicies(d)))
+	mux.Handle("PUT /api/environment-policies/{environment}", authMgr.RequireAdmin(handleUpdateEnvironmentPolicy(d)))
+	mux.Handle("GET /api/audit-events", authMgr.RequireAdmin(handleListAuditEvents(d)))
+
+	// Git-based deployment.
+	mux.Handle("GET /api/git-repositories", authMgr.RequireAuth(handleListGitRepositories(log, st)))
+	mux.Handle("POST /api/git-repositories", authMgr.RequireAdmin(handleCreateGitRepository(log, st, publicURL)))
+	mux.Handle("PATCH /api/git-repositories/{id}", authMgr.RequireAdmin(handleUpdateGitRepository(log, st)))
+	mux.Handle("DELETE /api/git-repositories/{id}", authMgr.RequireAdmin(handleDeleteGitRepository(log, st)))
+	mux.Handle("GET /api/git-repositories/{id}/webhook", authMgr.RequireAdmin(handleGetGitWebhook(log, st, publicURL)))
+	mux.Handle("POST /api/git-repositories/{id}/webhook/rotate", authMgr.RequireAdmin(handleRotateGitWebhookSecret(log, st, publicURL)))
+	mux.Handle("GET /api/git-repositories/{id}/refs", authMgr.RequireAuth(handleListGitRefs(log, st)))
+	mux.Handle("GET /api/git-repositories/{id}/file", authMgr.RequireAuth(handlePreviewGitFile(log, st)))
+	mux.Handle("POST /api/git-repositories/{id}/import", authMgr.RequireAuth(handleImportGitComposeFile(log, st)))
+	mux.Handle("POST /api/compose-files/{id}/git/sync", authMgr.RequireAuth(handleSyncComposeFile(log, st)))
+	mux.Handle("PUT /api/compose-files/{id}/git", authMgr.RequireAuth(handleSetComposeFileGitLink(log, st)))
+	mux.Handle("GET /api/compose-files/{id}/git/commits", authMgr.RequireAuth(handleListComposeFileCommits(log, st)))
+	// Unauthenticated: verified by the repository's webhook secret.
+	mux.HandleFunc("POST /api/webhooks/git/{repoId}", handleGitWebhook(d))
 	mux.HandleFunc("GET /api/deployments/{id}/stream", handleDeploymentStream(log, st, authMgr, events))
 
 	mux.Handle("GET /api/containers", authMgr.RequireAuth(handleListContainers(log, st)))

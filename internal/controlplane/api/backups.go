@@ -98,6 +98,11 @@ func handleGetBackup(log *slog.Logger, st *store.Store) http.HandlerFunc {
 // is no "restore into a new/different deployment" yet.
 func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, publicURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var triggeredBy string
+		if claims, ok := auth.ClaimsFromContext(r.Context()); ok {
+			triggeredBy = claims.UserID
+		}
+
 		backupID := r.PathValue("id")
 		b, err := st.GetBackup(r.Context(), backupID)
 		if errors.Is(err, store.ErrNotFound) {
@@ -127,7 +132,7 @@ func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.D
 			return
 		}
 
-		if event, err := st.AddDeploymentEvent(r.Context(), deployment.ID, "pending", "restore requested from backup "+backupID); err == nil {
+		if event, err := st.AddDeploymentEvent(r.Context(), deployment.ID, "pending", "restore requested from backup "+backupID, triggeredBy); err == nil {
 			events.Publish(deployment.ID, event)
 		}
 
@@ -145,7 +150,7 @@ func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.D
 		}
 		if err := dispatcher.Send(deployment.ServerID, cmd); err != nil {
 			log.Warn("failed to dispatch restore command", "backup_id", backupID, "error", err)
-			if event, addErr := st.AddDeploymentEvent(r.Context(), deployment.ID, "failed", "server not connected: "+err.Error()); addErr == nil {
+			if event, addErr := st.AddDeploymentEvent(r.Context(), deployment.ID, "failed", "server not connected: "+err.Error(), ""); addErr == nil {
 				events.Publish(deployment.ID, event)
 			}
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "server not connected"})

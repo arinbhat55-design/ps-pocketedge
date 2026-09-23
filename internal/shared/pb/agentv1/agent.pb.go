@@ -31,6 +31,13 @@ const (
 	DeployPhase_DEPLOY_PHASE_CREATING    DeployPhase = 3
 	DeployPhase_DEPLOY_PHASE_RUNNING     DeployPhase = 4
 	DeployPhase_DEPLOY_PHASE_FAILED      DeployPhase = 5
+	// Post-deployment health verification, reported after RUNNING.
+	DeployPhase_DEPLOY_PHASE_VERIFYING DeployPhase = 6
+	DeployPhase_DEPLOY_PHASE_HEALTHY   DeployPhase = 7
+	DeployPhase_DEPLOY_PHASE_UNHEALTHY DeployPhase = 8
+	// A rolling update failed and the previous containers were restored:
+	// the stack is still running its previous revision.
+	DeployPhase_DEPLOY_PHASE_ROLLED_BACK DeployPhase = 9
 )
 
 // Enum value maps for DeployPhase.
@@ -42,6 +49,10 @@ var (
 		3: "DEPLOY_PHASE_CREATING",
 		4: "DEPLOY_PHASE_RUNNING",
 		5: "DEPLOY_PHASE_FAILED",
+		6: "DEPLOY_PHASE_VERIFYING",
+		7: "DEPLOY_PHASE_HEALTHY",
+		8: "DEPLOY_PHASE_UNHEALTHY",
+		9: "DEPLOY_PHASE_ROLLED_BACK",
 	}
 	DeployPhase_value = map[string]int32{
 		"DEPLOY_PHASE_UNSPECIFIED": 0,
@@ -50,6 +61,10 @@ var (
 		"DEPLOY_PHASE_CREATING":    3,
 		"DEPLOY_PHASE_RUNNING":     4,
 		"DEPLOY_PHASE_FAILED":      5,
+		"DEPLOY_PHASE_VERIFYING":   6,
+		"DEPLOY_PHASE_HEALTHY":     7,
+		"DEPLOY_PHASE_UNHEALTHY":   8,
+		"DEPLOY_PHASE_ROLLED_BACK": 9,
 	}
 )
 
@@ -1448,12 +1463,20 @@ func (x *ContainerResourceUsage) GetPids() int64 {
 }
 
 type ResourceSnapshot struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CpuPercent    float64                `protobuf:"fixed64,1,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
-	MemPercent    float64                `protobuf:"fixed64,2,opt,name=mem_percent,json=memPercent,proto3" json:"mem_percent,omitempty"`
-	DiskPercent   float64                `protobuf:"fixed64,3,opt,name=disk_percent,json=diskPercent,proto3" json:"disk_percent,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	CpuPercent  float64                `protobuf:"fixed64,1,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
+	MemPercent  float64                `protobuf:"fixed64,2,opt,name=mem_percent,json=memPercent,proto3" json:"mem_percent,omitempty"`
+	DiskPercent float64                `protobuf:"fixed64,3,opt,name=disk_percent,json=diskPercent,proto3" json:"disk_percent,omitempty"`
+	// Total host capacity, not usage — lets the control plane estimate
+	// whether a deployment's declared resource requests actually fit
+	// ("Confirm sufficient CPU, RAM, and storage" pre-deployment check).
+	// 0 means an older agent that predates these fields, or a collection
+	// failure — callers should treat 0 as "unknown", not "no capacity".
+	TotalMemoryBytes uint64 `protobuf:"varint,4,opt,name=total_memory_bytes,json=totalMemoryBytes,proto3" json:"total_memory_bytes,omitempty"`
+	NumCpus          uint32 `protobuf:"varint,5,opt,name=num_cpus,json=numCpus,proto3" json:"num_cpus,omitempty"`
+	TotalDiskBytes   uint64 `protobuf:"varint,6,opt,name=total_disk_bytes,json=totalDiskBytes,proto3" json:"total_disk_bytes,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ResourceSnapshot) Reset() {
@@ -1503,6 +1526,27 @@ func (x *ResourceSnapshot) GetMemPercent() float64 {
 func (x *ResourceSnapshot) GetDiskPercent() float64 {
 	if x != nil {
 		return x.DiskPercent
+	}
+	return 0
+}
+
+func (x *ResourceSnapshot) GetTotalMemoryBytes() uint64 {
+	if x != nil {
+		return x.TotalMemoryBytes
+	}
+	return 0
+}
+
+func (x *ResourceSnapshot) GetNumCpus() uint32 {
+	if x != nil {
+		return x.NumCpus
+	}
+	return 0
+}
+
+func (x *ResourceSnapshot) GetTotalDiskBytes() uint64 {
+	if x != nil {
+		return x.TotalDiskBytes
 	}
 	return 0
 }
@@ -1828,11 +1872,26 @@ func (x *ContainerMount) GetReadWrite() bool {
 }
 
 type DeployStackCommand struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DeploymentId  string                 `protobuf:"bytes,1,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
-	StackName     string                 `protobuf:"bytes,2,opt,name=stack_name,json=stackName,proto3" json:"stack_name,omitempty"`
-	ComposeYaml   string                 `protobuf:"bytes,3,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
-	Env           map[string]string      `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	DeploymentId string                 `protobuf:"bytes,1,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	StackName    string                 `protobuf:"bytes,2,opt,name=stack_name,json=stackName,proto3" json:"stack_name,omitempty"`
+	ComposeYaml  string                 `protobuf:"bytes,3,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
+	Env          map[string]string      `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Per-service replica overrides; a service not listed here runs its
+	// Compose-declared deploy.replicas/scale, or 1.
+	Replicas map[string]int32 `protobuf:"bytes,5,rep,name=replicas,proto3" json:"replicas,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// "recreate" (default: remove every old container, then create the new
+	// ones) or "rolling" (replace one container at a time, waiting for each
+	// to become ready, and restore the previous containers if any fail).
+	Strategy string `protobuf:"bytes,6,opt,name=strategy,proto3" json:"strategy,omitempty"`
+	// How long post-deployment health verification waits for every
+	// container to be running (and healthy, when it has a healthcheck).
+	// 0 uses the agent's default; negative skips verification.
+	VerifyTimeoutSeconds int32 `protobuf:"varint,7,opt,name=verify_timeout_seconds,json=verifyTimeoutSeconds,proto3" json:"verify_timeout_seconds,omitempty"`
+	// The control plane's revision number for this rollout, echoed back on
+	// every DeployStatus so statuses are attributed to the right revision
+	// even if rollouts of the same deployment queue up behind each other.
+	Revision      int32 `protobuf:"varint,8,opt,name=revision,proto3" json:"revision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1893,6 +1952,34 @@ func (x *DeployStackCommand) GetEnv() map[string]string {
 		return x.Env
 	}
 	return nil
+}
+
+func (x *DeployStackCommand) GetReplicas() map[string]int32 {
+	if x != nil {
+		return x.Replicas
+	}
+	return nil
+}
+
+func (x *DeployStackCommand) GetStrategy() string {
+	if x != nil {
+		return x.Strategy
+	}
+	return ""
+}
+
+func (x *DeployStackCommand) GetVerifyTimeoutSeconds() int32 {
+	if x != nil {
+		return x.VerifyTimeoutSeconds
+	}
+	return 0
+}
+
+func (x *DeployStackCommand) GetRevision() int32 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
 }
 
 // UndeployCommand tears down a deployment: stops and removes every
@@ -1970,14 +2057,21 @@ func (x *UndeployCommand) GetDeploymentId() string {
 // only source of truth for the service's desired config. Answered with a
 // ContainerOpResult, like UndeployCommand.
 type DeployServiceCommand struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	ServerId      string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
-	DeploymentId  string                 `protobuf:"bytes,3,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
-	StackName     string                 `protobuf:"bytes,4,opt,name=stack_name,json=stackName,proto3" json:"stack_name,omitempty"`
-	ComposeYaml   string                 `protobuf:"bytes,5,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
-	Env           map[string]string      `protobuf:"bytes,6,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	ServiceName   string                 `protobuf:"bytes,7,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	RequestId    string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ServerId     string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
+	DeploymentId string                 `protobuf:"bytes,3,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	StackName    string                 `protobuf:"bytes,4,opt,name=stack_name,json=stackName,proto3" json:"stack_name,omitempty"`
+	ComposeYaml  string                 `protobuf:"bytes,5,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
+	Env          map[string]string      `protobuf:"bytes,6,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ServiceName  string                 `protobuf:"bytes,7,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
+	// Replica count to run for service_name; 0 keeps the Compose-declared
+	// count (or 1).
+	Replicas int32 `protobuf:"varint,8,opt,name=replicas,proto3" json:"replicas,omitempty"`
+	// When true, only add or remove replicas to reach `replicas` — existing
+	// containers are left running untouched (scaling) instead of recreated
+	// (redeploying).
+	ScaleOnly     bool `protobuf:"varint,9,opt,name=scale_only,json=scaleOnly,proto3" json:"scale_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2061,12 +2155,33 @@ func (x *DeployServiceCommand) GetServiceName() string {
 	return ""
 }
 
+func (x *DeployServiceCommand) GetReplicas() int32 {
+	if x != nil {
+		return x.Replicas
+	}
+	return 0
+}
+
+func (x *DeployServiceCommand) GetScaleOnly() bool {
+	if x != nil {
+		return x.ScaleOnly
+	}
+	return false
+}
+
 type DeployStatus struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DeploymentId  string                 `protobuf:"bytes,1,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
-	Phase         DeployPhase            `protobuf:"varint,2,opt,name=phase,proto3,enum=agent.v1.DeployPhase" json:"phase,omitempty"`
-	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	DeploymentId string                 `protobuf:"bytes,1,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	Phase        DeployPhase            `protobuf:"varint,2,opt,name=phase,proto3,enum=agent.v1.DeployPhase" json:"phase,omitempty"`
+	Message      string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	UpdatedAt    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// Set when this status is about one service's progress (e.g. its image
+	// pulled, its container started) rather than the stack as a whole. A
+	// per-service status never changes the deployment's overall phase.
+	Service string `protobuf:"bytes,5,opt,name=service,proto3" json:"service,omitempty"`
+	// DeployStackCommand.revision this status belongs to (0 from agents
+	// that predate it, or for restores).
+	Revision      int32 `protobuf:"varint,6,opt,name=revision,proto3" json:"revision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2127,6 +2242,20 @@ func (x *DeployStatus) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *DeployStatus) GetService() string {
+	if x != nil {
+		return x.Service
+	}
+	return ""
+}
+
+func (x *DeployStatus) GetRevision() int32 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
 }
 
 type Ack struct {
@@ -6425,13 +6554,16 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x10block_read_bytes\x18\b \x01(\x03R\x0eblockReadBytes\x12*\n" +
 	"\x11block_write_bytes\x18\t \x01(\x03R\x0fblockWriteBytes\x12\x12\n" +
 	"\x04pids\x18\n" +
-	" \x01(\x03R\x04pids\"w\n" +
+	" \x01(\x03R\x04pids\"\xea\x01\n" +
 	"\x10ResourceSnapshot\x12\x1f\n" +
 	"\vcpu_percent\x18\x01 \x01(\x01R\n" +
 	"cpuPercent\x12\x1f\n" +
 	"\vmem_percent\x18\x02 \x01(\x01R\n" +
 	"memPercent\x12!\n" +
-	"\fdisk_percent\x18\x03 \x01(\x01R\vdiskPercent\"\xf6\x02\n" +
+	"\fdisk_percent\x18\x03 \x01(\x01R\vdiskPercent\x12,\n" +
+	"\x12total_memory_bytes\x18\x04 \x01(\x04R\x10totalMemoryBytes\x12\x19\n" +
+	"\bnum_cpus\x18\x05 \x01(\rR\anumCpus\x12(\n" +
+	"\x10total_disk_bytes\x18\x06 \x01(\x04R\x0etotalDiskBytes\"\xf6\x02\n" +
 	"\x10ContainerSummary\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -6461,21 +6593,28 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x06source\x18\x03 \x01(\tR\x06source\x12 \n" +
 	"\vdestination\x18\x04 \x01(\tR\vdestination\x12\x1d\n" +
 	"\n" +
-	"read_write\x18\x05 \x01(\bR\treadWrite\"\xec\x01\n" +
+	"read_write\x18\x05 \x01(\bR\treadWrite\"\xdf\x03\n" +
 	"\x12DeployStackCommand\x12#\n" +
 	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12\x1d\n" +
 	"\n" +
 	"stack_name\x18\x02 \x01(\tR\tstackName\x12!\n" +
 	"\fcompose_yaml\x18\x03 \x01(\tR\vcomposeYaml\x127\n" +
-	"\x03env\x18\x04 \x03(\v2%.agent.v1.DeployStackCommand.EnvEntryR\x03env\x1a6\n" +
+	"\x03env\x18\x04 \x03(\v2%.agent.v1.DeployStackCommand.EnvEntryR\x03env\x12F\n" +
+	"\breplicas\x18\x05 \x03(\v2*.agent.v1.DeployStackCommand.ReplicasEntryR\breplicas\x12\x1a\n" +
+	"\bstrategy\x18\x06 \x01(\tR\bstrategy\x124\n" +
+	"\x16verify_timeout_seconds\x18\a \x01(\x05R\x14verifyTimeoutSeconds\x12\x1a\n" +
+	"\brevision\x18\b \x01(\x05R\brevision\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"r\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a;\n" +
+	"\rReplicasEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"r\n" +
 	"\x0fUndeployCommand\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12#\n" +
-	"\rdeployment_id\x18\x03 \x01(\tR\fdeploymentId\"\xcf\x02\n" +
+	"\rdeployment_id\x18\x03 \x01(\tR\fdeploymentId\"\x8a\x03\n" +
 	"\x14DeployServiceCommand\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1b\n" +
@@ -6485,16 +6624,21 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"stack_name\x18\x04 \x01(\tR\tstackName\x12!\n" +
 	"\fcompose_yaml\x18\x05 \x01(\tR\vcomposeYaml\x129\n" +
 	"\x03env\x18\x06 \x03(\v2'.agent.v1.DeployServiceCommand.EnvEntryR\x03env\x12!\n" +
-	"\fservice_name\x18\a \x01(\tR\vserviceName\x1a6\n" +
+	"\fservice_name\x18\a \x01(\tR\vserviceName\x12\x1a\n" +
+	"\breplicas\x18\b \x01(\x05R\breplicas\x12\x1d\n" +
+	"\n" +
+	"scale_only\x18\t \x01(\bR\tscaleOnly\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb5\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xeb\x01\n" +
 	"\fDeployStatus\x12#\n" +
 	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12+\n" +
 	"\x05phase\x18\x02 \x01(\x0e2\x15.agent.v1.DeployPhaseR\x05phase\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x129\n" +
 	"\n" +
-	"updated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"$\n" +
+	"updated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x18\n" +
+	"\aservice\x18\x05 \x01(\tR\aservice\x12\x1a\n" +
+	"\brevision\x18\x06 \x01(\x05R\brevision\"$\n" +
 	"\x03Ack\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\"p\n" +
@@ -6904,14 +7048,18 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12\x12\n" +
 	"\x04done\x18\x03 \x01(\bR\x04done\x12\x1b\n" +
 	"\texit_code\x18\x04 \x01(\x03R\bexitCode\x12#\n" +
-	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage*\xad\x01\n" +
+	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage*\x9d\x02\n" +
 	"\vDeployPhase\x12\x1c\n" +
 	"\x18DEPLOY_PHASE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14DEPLOY_PHASE_PENDING\x10\x01\x12\x18\n" +
 	"\x14DEPLOY_PHASE_PULLING\x10\x02\x12\x19\n" +
 	"\x15DEPLOY_PHASE_CREATING\x10\x03\x12\x18\n" +
 	"\x14DEPLOY_PHASE_RUNNING\x10\x04\x12\x17\n" +
-	"\x13DEPLOY_PHASE_FAILED\x10\x05*p\n" +
+	"\x13DEPLOY_PHASE_FAILED\x10\x05\x12\x1a\n" +
+	"\x16DEPLOY_PHASE_VERIFYING\x10\x06\x12\x18\n" +
+	"\x14DEPLOY_PHASE_HEALTHY\x10\a\x12\x1a\n" +
+	"\x16DEPLOY_PHASE_UNHEALTHY\x10\b\x12\x1c\n" +
+	"\x18DEPLOY_PHASE_ROLLED_BACK\x10\t*p\n" +
 	"\tTaskPhase\x12\x1a\n" +
 	"\x16TASK_PHASE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12TASK_PHASE_RUNNING\x10\x01\x12\x18\n" +
@@ -6943,7 +7091,7 @@ func file_agent_v1_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 81)
+var file_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 82)
 var file_agent_v1_agent_proto_goTypes = []any{
 	(DeployPhase)(0),                              // 0: agent.v1.DeployPhase
 	(TaskPhase)(0),                                // 1: agent.v1.TaskPhase
@@ -7020,16 +7168,17 @@ var file_agent_v1_agent_proto_goTypes = []any{
 	(*ExecInputCommand)(nil),                      // 72: agent.v1.ExecInputCommand
 	(*ExecOutputChunk)(nil),                       // 73: agent.v1.ExecOutputChunk
 	nil,                                           // 74: agent.v1.DeployStackCommand.EnvEntry
-	nil,                                           // 75: agent.v1.DeployServiceCommand.EnvEntry
-	nil,                                           // 76: agent.v1.RestoreCommand.EnvEntry
-	nil,                                           // 77: agent.v1.ContainerDetail.LabelsEntry
-	nil,                                           // 78: agent.v1.ContainerConfig.LabelsEntry
-	nil,                                           // 79: agent.v1.ImageDetail.LabelsEntry
-	nil,                                           // 80: agent.v1.NetworkSummary.LabelsEntry
-	nil,                                           // 81: agent.v1.CreateNetworkCommand.LabelsEntry
-	nil,                                           // 82: agent.v1.VolumeSummary.LabelsEntry
-	nil,                                           // 83: agent.v1.CreateVolumeCommand.LabelsEntry
-	(*timestamppb.Timestamp)(nil),                 // 84: google.protobuf.Timestamp
+	nil,                                           // 75: agent.v1.DeployStackCommand.ReplicasEntry
+	nil,                                           // 76: agent.v1.DeployServiceCommand.EnvEntry
+	nil,                                           // 77: agent.v1.RestoreCommand.EnvEntry
+	nil,                                           // 78: agent.v1.ContainerDetail.LabelsEntry
+	nil,                                           // 79: agent.v1.ContainerConfig.LabelsEntry
+	nil,                                           // 80: agent.v1.ImageDetail.LabelsEntry
+	nil,                                           // 81: agent.v1.NetworkSummary.LabelsEntry
+	nil,                                           // 82: agent.v1.CreateNetworkCommand.LabelsEntry
+	nil,                                           // 83: agent.v1.VolumeSummary.LabelsEntry
+	nil,                                           // 84: agent.v1.CreateVolumeCommand.LabelsEntry
+	(*timestamppb.Timestamp)(nil),                 // 85: google.protobuf.Timestamp
 }
 var file_agent_v1_agent_proto_depIdxs = []int32{
 	7,  // 0: agent.v1.AgentMessage.heartbeat:type_name -> agent.v1.Heartbeat
@@ -7082,7 +7231,7 @@ var file_agent_v1_agent_proto_depIdxs = []int32{
 	61, // 47: agent.v1.ControlMessage.inspect_volume:type_name -> agent.v1.InspectVolumeCommand
 	15, // 48: agent.v1.ControlMessage.undeploy:type_name -> agent.v1.UndeployCommand
 	16, // 49: agent.v1.ControlMessage.deploy_service:type_name -> agent.v1.DeployServiceCommand
-	84, // 50: agent.v1.Heartbeat.sent_at:type_name -> google.protobuf.Timestamp
+	85, // 50: agent.v1.Heartbeat.sent_at:type_name -> google.protobuf.Timestamp
 	9,  // 51: agent.v1.Heartbeat.resources:type_name -> agent.v1.ResourceSnapshot
 	10, // 52: agent.v1.Heartbeat.containers:type_name -> agent.v1.ContainerSummary
 	8,  // 53: agent.v1.Heartbeat.container_stats:type_name -> agent.v1.ContainerResourceUsage
@@ -7090,42 +7239,43 @@ var file_agent_v1_agent_proto_depIdxs = []int32{
 	12, // 55: agent.v1.ContainerSummary.networks:type_name -> agent.v1.ContainerNetwork
 	13, // 56: agent.v1.ContainerSummary.mounts:type_name -> agent.v1.ContainerMount
 	74, // 57: agent.v1.DeployStackCommand.env:type_name -> agent.v1.DeployStackCommand.EnvEntry
-	75, // 58: agent.v1.DeployServiceCommand.env:type_name -> agent.v1.DeployServiceCommand.EnvEntry
-	0,  // 59: agent.v1.DeployStatus.phase:type_name -> agent.v1.DeployPhase
-	84, // 60: agent.v1.DeployStatus.updated_at:type_name -> google.protobuf.Timestamp
-	1,  // 61: agent.v1.BackupStatus.phase:type_name -> agent.v1.TaskPhase
-	76, // 62: agent.v1.RestoreCommand.env:type_name -> agent.v1.RestoreCommand.EnvEntry
-	1,  // 63: agent.v1.RestoreStatus.phase:type_name -> agent.v1.TaskPhase
-	25, // 64: agent.v1.ContainerDetail.health_log:type_name -> agent.v1.HealthCheckEntry
-	77, // 65: agent.v1.ContainerDetail.labels:type_name -> agent.v1.ContainerDetail.LabelsEntry
-	26, // 66: agent.v1.ContainerConfig.ports:type_name -> agent.v1.ContainerPortSpec
-	27, // 67: agent.v1.ContainerConfig.volumes:type_name -> agent.v1.ContainerVolumeSpec
-	78, // 68: agent.v1.ContainerConfig.labels:type_name -> agent.v1.ContainerConfig.LabelsEntry
-	2,  // 69: agent.v1.ContainerActionCommand.action:type_name -> agent.v1.ContainerAction
-	28, // 70: agent.v1.CreateContainerCommand.config:type_name -> agent.v1.ContainerConfig
-	28, // 71: agent.v1.RecreateContainerCommand.config:type_name -> agent.v1.ContainerConfig
-	37, // 72: agent.v1.ImageListResult.images:type_name -> agent.v1.ImageSummary
-	41, // 73: agent.v1.ImageDetail.layers:type_name -> agent.v1.ImageLayer
-	79, // 74: agent.v1.ImageDetail.labels:type_name -> agent.v1.ImageDetail.LabelsEntry
-	43, // 75: agent.v1.PullImageCommand.auth:type_name -> agent.v1.RegistryAuth
-	80, // 76: agent.v1.NetworkSummary.labels:type_name -> agent.v1.NetworkSummary.LabelsEntry
-	48, // 77: agent.v1.NetworkListResult.networks:type_name -> agent.v1.NetworkSummary
-	81, // 78: agent.v1.CreateNetworkCommand.labels:type_name -> agent.v1.CreateNetworkCommand.LabelsEntry
-	82, // 79: agent.v1.VolumeSummary.labels:type_name -> agent.v1.VolumeSummary.LabelsEntry
-	56, // 80: agent.v1.VolumeListResult.volumes:type_name -> agent.v1.VolumeSummary
-	83, // 81: agent.v1.CreateVolumeCommand.labels:type_name -> agent.v1.CreateVolumeCommand.LabelsEntry
-	56, // 82: agent.v1.VolumeDetail.volume:type_name -> agent.v1.VolumeSummary
-	66, // 83: agent.v1.LogChunk.lines:type_name -> agent.v1.LogLine
-	69, // 84: agent.v1.EventListResult.events:type_name -> agent.v1.ContainerEvent
-	3,  // 85: agent.v1.AgentSession.Enroll:input_type -> agent.v1.EnrollRequest
-	5,  // 86: agent.v1.AgentSession.Session:input_type -> agent.v1.AgentMessage
-	4,  // 87: agent.v1.AgentSession.Enroll:output_type -> agent.v1.EnrollResponse
-	6,  // 88: agent.v1.AgentSession.Session:output_type -> agent.v1.ControlMessage
-	87, // [87:89] is the sub-list for method output_type
-	85, // [85:87] is the sub-list for method input_type
-	85, // [85:85] is the sub-list for extension type_name
-	85, // [85:85] is the sub-list for extension extendee
-	0,  // [0:85] is the sub-list for field type_name
+	75, // 58: agent.v1.DeployStackCommand.replicas:type_name -> agent.v1.DeployStackCommand.ReplicasEntry
+	76, // 59: agent.v1.DeployServiceCommand.env:type_name -> agent.v1.DeployServiceCommand.EnvEntry
+	0,  // 60: agent.v1.DeployStatus.phase:type_name -> agent.v1.DeployPhase
+	85, // 61: agent.v1.DeployStatus.updated_at:type_name -> google.protobuf.Timestamp
+	1,  // 62: agent.v1.BackupStatus.phase:type_name -> agent.v1.TaskPhase
+	77, // 63: agent.v1.RestoreCommand.env:type_name -> agent.v1.RestoreCommand.EnvEntry
+	1,  // 64: agent.v1.RestoreStatus.phase:type_name -> agent.v1.TaskPhase
+	25, // 65: agent.v1.ContainerDetail.health_log:type_name -> agent.v1.HealthCheckEntry
+	78, // 66: agent.v1.ContainerDetail.labels:type_name -> agent.v1.ContainerDetail.LabelsEntry
+	26, // 67: agent.v1.ContainerConfig.ports:type_name -> agent.v1.ContainerPortSpec
+	27, // 68: agent.v1.ContainerConfig.volumes:type_name -> agent.v1.ContainerVolumeSpec
+	79, // 69: agent.v1.ContainerConfig.labels:type_name -> agent.v1.ContainerConfig.LabelsEntry
+	2,  // 70: agent.v1.ContainerActionCommand.action:type_name -> agent.v1.ContainerAction
+	28, // 71: agent.v1.CreateContainerCommand.config:type_name -> agent.v1.ContainerConfig
+	28, // 72: agent.v1.RecreateContainerCommand.config:type_name -> agent.v1.ContainerConfig
+	37, // 73: agent.v1.ImageListResult.images:type_name -> agent.v1.ImageSummary
+	41, // 74: agent.v1.ImageDetail.layers:type_name -> agent.v1.ImageLayer
+	80, // 75: agent.v1.ImageDetail.labels:type_name -> agent.v1.ImageDetail.LabelsEntry
+	43, // 76: agent.v1.PullImageCommand.auth:type_name -> agent.v1.RegistryAuth
+	81, // 77: agent.v1.NetworkSummary.labels:type_name -> agent.v1.NetworkSummary.LabelsEntry
+	48, // 78: agent.v1.NetworkListResult.networks:type_name -> agent.v1.NetworkSummary
+	82, // 79: agent.v1.CreateNetworkCommand.labels:type_name -> agent.v1.CreateNetworkCommand.LabelsEntry
+	83, // 80: agent.v1.VolumeSummary.labels:type_name -> agent.v1.VolumeSummary.LabelsEntry
+	56, // 81: agent.v1.VolumeListResult.volumes:type_name -> agent.v1.VolumeSummary
+	84, // 82: agent.v1.CreateVolumeCommand.labels:type_name -> agent.v1.CreateVolumeCommand.LabelsEntry
+	56, // 83: agent.v1.VolumeDetail.volume:type_name -> agent.v1.VolumeSummary
+	66, // 84: agent.v1.LogChunk.lines:type_name -> agent.v1.LogLine
+	69, // 85: agent.v1.EventListResult.events:type_name -> agent.v1.ContainerEvent
+	3,  // 86: agent.v1.AgentSession.Enroll:input_type -> agent.v1.EnrollRequest
+	5,  // 87: agent.v1.AgentSession.Session:input_type -> agent.v1.AgentMessage
+	4,  // 88: agent.v1.AgentSession.Enroll:output_type -> agent.v1.EnrollResponse
+	6,  // 89: agent.v1.AgentSession.Session:output_type -> agent.v1.ControlMessage
+	88, // [88:90] is the sub-list for method output_type
+	86, // [86:88] is the sub-list for method input_type
+	86, // [86:86] is the sub-list for extension type_name
+	86, // [86:86] is the sub-list for extension extendee
+	0,  // [0:86] is the sub-list for field type_name
 }
 
 func init() { file_agent_v1_agent_proto_init() }
@@ -7193,7 +7343,7 @@ func file_agent_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_v1_agent_proto_rawDesc), len(file_agent_v1_agent_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   81,
+			NumMessages:   82,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

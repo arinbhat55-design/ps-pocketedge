@@ -5,6 +5,7 @@ package grpcserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -156,9 +157,12 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 				continue
 			}
 			resources := store.ResourceSnapshot{
-				CPUPercent:  hb.GetResources().GetCpuPercent(),
-				MemPercent:  hb.GetResources().GetMemPercent(),
-				DiskPercent: hb.GetResources().GetDiskPercent(),
+				CPUPercent:       hb.GetResources().GetCpuPercent(),
+				MemPercent:       hb.GetResources().GetMemPercent(),
+				DiskPercent:      hb.GetResources().GetDiskPercent(),
+				TotalMemoryBytes: hb.GetResources().GetTotalMemoryBytes(),
+				NumCPUs:          hb.GetResources().GetNumCpus(),
+				TotalDiskBytes:   hb.GetResources().GetTotalDiskBytes(),
 			}
 			if err := s.store.RecordHeartbeat(ctx, serverID, resources); err != nil {
 				s.log.Error("failed to record heartbeat", "server_id", serverID, "error", err)
@@ -270,18 +274,11 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 			s.log.Info("deploy status received",
 				"server_id", serverID,
 				"deployment_id", ds.GetDeploymentId(),
+				"service", ds.GetService(),
 				"phase", phase,
 				"message", ds.GetMessage(),
 			)
-			if err := s.store.UpdateDeploymentPhase(ctx, ds.GetDeploymentId(), phase); err != nil {
-				s.log.Error("failed to update deployment phase", "deployment_id", ds.GetDeploymentId(), "error", err)
-			}
-			event, err := s.store.AddDeploymentEvent(ctx, ds.GetDeploymentId(), phase, ds.GetMessage())
-			if err != nil {
-				s.log.Error("failed to record deployment event", "deployment_id", ds.GetDeploymentId(), "error", err)
-			} else {
-				s.events.Publish(ds.GetDeploymentId(), event)
-			}
+			s.recordDeployStatus(ctx, ds.GetDeploymentId(), int(ds.GetRevision()), ds.GetService(), phase, ds.GetMessage())
 		case *agentv1.AgentMessage_BackupStatus:
 			bs := payload.BackupStatus
 			phase := taskPhaseToString(bs.GetPhase())
@@ -313,12 +310,12 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 			)
 			switch phase {
 			case "running":
-				if event, err := s.store.AddDeploymentEvent(ctx, rs.GetDeploymentId(), "restoring", rs.GetMessage()); err == nil {
+				if event, err := s.store.AddDeploymentEvent(ctx, rs.GetDeploymentId(), "restoring", rs.GetMessage(), ""); err == nil {
 					s.events.Publish(rs.GetDeploymentId(), event)
 				}
 			case "failed":
 				_ = s.store.UpdateDeploymentPhase(ctx, rs.GetDeploymentId(), "failed")
-				if event, err := s.store.AddDeploymentEvent(ctx, rs.GetDeploymentId(), "failed", rs.GetMessage()); err == nil {
+				if event, err := s.store.AddDeploymentEvent(ctx, rs.GetDeploymentId(), "failed", rs.GetMessage(), ""); err == nil {
 					s.events.Publish(rs.GetDeploymentId(), event)
 				}
 			}
@@ -432,6 +429,79 @@ func mapContainerMounts(mounts []*agentv1.ContainerMount) []store.ContainerMount
 	return out
 }
 
+// recordDeployStatus applies one agent-reported deploy status:
+//   - a per-service status (service set) is only appended to the timeline —
+//     it never changes the deployment's overall phase;
+//   - running/failed/rolled_back/healthy/unhealthy update the status of the
+//     revision the status belongs to;
+//   - the deployment's own phase/health only follow statuses of its current
+//     revision — a rollout that was superseded by a newer one (queued
+//     behind it on the agent) still gets its revision's outcome recorded,
+//     but can't overwrite what the newer rollout reports;
+//   - verifying/healthy/unhealthy are post-deployment health verification
+//     results, recorded as the deployment's health (its phase stays
+//     "running" — the containers are up either way);
+//   - rolled_back (a rolling update restored the previous containers)
+//     points the deployment back at the revision that's actually running.
+func (s *Server) recordDeployStatus(ctx context.Context, deploymentID string, revision int, service, phase, message string) {
+	current, err := s.store.IsCurrentRevision(ctx, deploymentID, revision)
+	if err != nil {
+		s.log.Error("failed to check deployment revision", "deployment_id", deploymentID, "error", err)
+		current = true
+	}
+	if revision > 0 && message != "" && service == "" && !current {
+		message = fmt.Sprintf("[revision %d] %s", revision, message)
+	}
+
+	var event store.DeploymentEvent
+	switch {
+	case service != "":
+		event, err = s.store.AddServiceDeploymentEvent(ctx, deploymentID, service, phase, message)
+	case phase == "rolled_back":
+		if rerr := s.store.UpdateRevisionStatus(ctx, deploymentID, revision, "rolled_back", message); rerr != nil {
+			s.log.Error("failed to update revision status", "deployment_id", deploymentID, "error", rerr)
+		}
+		if current {
+			if rerr := s.store.RevertToPreviousRevision(ctx, deploymentID); rerr != nil {
+				s.log.Error("failed to revert to previous revision", "deployment_id", deploymentID, "error", rerr)
+			}
+		}
+		event, err = s.store.AddDeploymentEvent(ctx, deploymentID, phase, message, "")
+	case phase == "verifying" || phase == "healthy" || phase == "unhealthy":
+		if phase != "verifying" {
+			if rerr := s.store.UpdateRevisionStatus(ctx, deploymentID, revision, phase, message); rerr != nil {
+				s.log.Error("failed to update revision status", "deployment_id", deploymentID, "error", rerr)
+			}
+		}
+		if current {
+			if herr := s.store.UpdateDeploymentHealth(ctx, deploymentID, phase, message); herr != nil {
+				s.log.Error("failed to update deployment health", "deployment_id", deploymentID, "error", herr)
+			}
+		}
+		if message == "" {
+			message = "health verification: " + phase
+		}
+		event, err = s.store.AddDeploymentEvent(ctx, deploymentID, phase, message, "")
+	default:
+		if phase == "running" || phase == "failed" {
+			if rerr := s.store.UpdateRevisionStatus(ctx, deploymentID, revision, phase, message); rerr != nil {
+				s.log.Error("failed to update revision status", "deployment_id", deploymentID, "error", rerr)
+			}
+		}
+		if current {
+			if perr := s.store.UpdateDeploymentPhase(ctx, deploymentID, phase); perr != nil {
+				s.log.Error("failed to update deployment phase", "deployment_id", deploymentID, "error", perr)
+			}
+		}
+		event, err = s.store.AddDeploymentEvent(ctx, deploymentID, phase, message, "")
+	}
+	if err != nil {
+		s.log.Error("failed to record deployment event", "deployment_id", deploymentID, "error", err)
+		return
+	}
+	s.events.Publish(deploymentID, event)
+}
+
 func deployPhaseToString(phase agentv1.DeployPhase) string {
 	switch phase {
 	case agentv1.DeployPhase_DEPLOY_PHASE_PENDING:
@@ -444,6 +514,14 @@ func deployPhaseToString(phase agentv1.DeployPhase) string {
 		return "running"
 	case agentv1.DeployPhase_DEPLOY_PHASE_FAILED:
 		return "failed"
+	case agentv1.DeployPhase_DEPLOY_PHASE_VERIFYING:
+		return "verifying"
+	case agentv1.DeployPhase_DEPLOY_PHASE_HEALTHY:
+		return "healthy"
+	case agentv1.DeployPhase_DEPLOY_PHASE_UNHEALTHY:
+		return "unhealthy"
+	case agentv1.DeployPhase_DEPLOY_PHASE_ROLLED_BACK:
+		return "rolled_back"
 	default:
 		return "unknown"
 	}

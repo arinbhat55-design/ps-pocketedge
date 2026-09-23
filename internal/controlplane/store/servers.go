@@ -24,10 +24,16 @@ type Server struct {
 }
 
 // ResourceSnapshot is the shape stored in servers.last_resources.
+// TotalMemoryBytes/NumCPUs/TotalDiskBytes are host capacity, not usage —
+// 0 means an older agent that predates these fields, or a collection
+// failure on the agent side; treat 0 as "unknown", not "no capacity".
 type ResourceSnapshot struct {
-	CPUPercent  float64 `json:"cpuPercent"`
-	MemPercent  float64 `json:"memPercent"`
-	DiskPercent float64 `json:"diskPercent"`
+	CPUPercent       float64 `json:"cpuPercent"`
+	MemPercent       float64 `json:"memPercent"`
+	DiskPercent      float64 `json:"diskPercent"`
+	TotalMemoryBytes uint64  `json:"totalMemoryBytes,omitempty"`
+	NumCPUs          uint32  `json:"numCpus,omitempty"`
+	TotalDiskBytes   uint64  `json:"totalDiskBytes,omitempty"`
 }
 
 // CreateServer inserts a new server row and returns its generated ID.

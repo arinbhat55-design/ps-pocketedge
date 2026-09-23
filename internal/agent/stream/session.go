@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
 
 	dockerclient "github.com/docker/docker/client"
@@ -73,6 +74,22 @@ type Runner struct {
 	// bufferPath is where the offline heartbeat buffer lives, derived from
 	// StatePath; empty (buffering disabled) if StatePath is unset.
 	bufferPath string
+
+	// deploymentLocks holds one *sync.Mutex per deployment ID, so every
+	// operation that changes a deployment's containers (deploy/redeploy,
+	// restore, service redeploy/scale, removal) runs one at a time for that
+	// deployment — two overlapping rollouts would otherwise fight over the
+	// same deterministic container names.
+	deploymentLocks sync.Map
+}
+
+// lockDeployment serializes work on one deployment; call the returned
+// function to release it.
+func (r *Runner) lockDeployment(deploymentID string) func() {
+	m, _ := r.deploymentLocks.LoadOrStore(deploymentID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 func New(log *slog.Logger, addr, token, hostname, osName, arch, agentVersion, statePath string) *Runner {
@@ -430,16 +447,23 @@ func (r *Runner) flushBufferedHeartbeats(ctx context.Context, stream agentv1.Age
 // goroutine so a slow image pull doesn't block heartbeats or receiving
 // further commands.
 func (r *Runner) handleDeploy(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.DeployStackCommand, outbound chan<- *agentv1.AgentMessage) {
-	report := func(phase agentv1.DeployPhase, message string) {
+	defer r.lockDeployment(cmd.GetDeploymentId())()
+	r.deployLocked(ctx, dockerCli, cmd, outbound)
+}
+
+// deployLocked is handleDeploy's body, for callers already holding the
+// deployment's lock (handleRestore).
+func (r *Runner) deployLocked(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.DeployStackCommand, outbound chan<- *agentv1.AgentMessage) {
+	report := func(phase agentv1.DeployPhase, service, message string) {
 		select {
-		case outbound <- deployStatusMessage(cmd.GetDeploymentId(), phase, message):
+		case outbound <- deployStatusMessage(cmd.GetDeploymentId(), cmd.GetRevision(), phase, service, message):
 		case <-ctx.Done():
 		}
 	}
 
 	if dockerCli == nil {
 		r.log.Error("cannot deploy, no docker client available", "deployment_id", cmd.GetDeploymentId())
-		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "docker client unavailable on this agent")
+		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "", "docker client unavailable on this agent")
 		return
 	}
 
@@ -498,6 +522,7 @@ func (r *Runner) handleBackup(ctx context.Context, dockerCli *dockerclient.Clien
 // comment for why redeploy (not handleRestore itself) owns bringing the
 // containers back up.
 func (r *Runner) handleRestore(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.RestoreCommand, credential string, outbound chan<- *agentv1.AgentMessage) {
+	defer r.lockDeployment(cmd.GetDeploymentId())()
 	report := func(phase agentv1.TaskPhase, message string) {
 		select {
 		case outbound <- restoreStatusMessage(cmd.GetBackupId(), cmd.GetDeploymentId(), phase, message):
@@ -528,7 +553,7 @@ func (r *Runner) handleRestore(ctx context.Context, dockerCli *dockerclient.Clie
 	report(agentv1.TaskPhase_TASK_PHASE_COMPLETED, "")
 
 	r.log.Info("restored volumes, redeploying", "backup_id", cmd.GetBackupId(), "deployment_id", cmd.GetDeploymentId())
-	r.handleDeploy(ctx, dockerCli, &agentv1.DeployStackCommand{
+	r.deployLocked(ctx, dockerCli, &agentv1.DeployStackCommand{
 		DeploymentId: cmd.GetDeploymentId(),
 		StackName:    cmd.GetStackName(),
 		ComposeYaml:  cmd.GetComposeYaml(),
@@ -635,6 +660,7 @@ func (r *Runner) handleUndeploy(ctx context.Context, dockerCli *dockerclient.Cli
 		r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetDeploymentId(), errors.New("docker client unavailable on this agent"))
 		return
 	}
+	defer r.lockDeployment(cmd.GetDeploymentId())()
 	err := docker.Undeploy(ctx, dockerCli, cmd.GetDeploymentId())
 	r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetDeploymentId(), err)
 }
@@ -647,7 +673,8 @@ func (r *Runner) handleDeployService(ctx context.Context, dockerCli *dockerclien
 		r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetServiceName(), errors.New("docker client unavailable on this agent"))
 		return
 	}
-	err := docker.DeployService(ctx, dockerCli, cmd.GetDeploymentId(), cmd.GetStackName(), cmd.GetComposeYaml(), cmd.GetEnv(), cmd.GetServiceName())
+	defer r.lockDeployment(cmd.GetDeploymentId())()
+	err := docker.DeployService(ctx, dockerCli, cmd.GetDeploymentId(), cmd.GetStackName(), cmd.GetComposeYaml(), cmd.GetEnv(), cmd.GetServiceName(), int(cmd.GetReplicas()), cmd.GetScaleOnly())
 	r.replyOp(ctx, outbound, cmd.GetRequestId(), cmd.GetServiceName(), err)
 }
 
@@ -972,9 +999,12 @@ func buildHeartbeat(serverID string, sentAt time.Time, snap health.Snapshot, con
 				ServerId: serverID,
 				SentAt:   timestamppb.New(sentAt),
 				Resources: &agentv1.ResourceSnapshot{
-					CpuPercent:  snap.CPUPercent,
-					MemPercent:  snap.MemPercent,
-					DiskPercent: snap.DiskPercent,
+					CpuPercent:       snap.CPUPercent,
+					MemPercent:       snap.MemPercent,
+					DiskPercent:      snap.DiskPercent,
+					TotalMemoryBytes: snap.TotalMemoryBytes,
+					NumCpus:          snap.NumCPUs,
+					TotalDiskBytes:   snap.TotalDiskBytes,
 				},
 				Containers:             containers,
 				ContainersIncluded:     containersIncluded,
@@ -985,12 +1015,14 @@ func buildHeartbeat(serverID string, sentAt time.Time, snap health.Snapshot, con
 	}
 }
 
-func deployStatusMessage(deploymentID string, phase agentv1.DeployPhase, message string) *agentv1.AgentMessage {
+func deployStatusMessage(deploymentID string, revision int32, phase agentv1.DeployPhase, service, message string) *agentv1.AgentMessage {
 	return &agentv1.AgentMessage{
 		Payload: &agentv1.AgentMessage_DeployStatus{
 			DeployStatus: &agentv1.DeployStatus{
 				DeploymentId: deploymentID,
+				Revision:     revision,
 				Phase:        phase,
+				Service:      service,
 				Message:      message,
 				UpdatedAt:    timestamppb.Now(),
 			},

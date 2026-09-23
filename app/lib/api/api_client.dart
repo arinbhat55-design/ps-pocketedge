@@ -2,10 +2,17 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models/audit_event.dart';
 import '../models/backup.dart';
 import '../models/compose_file.dart';
 import '../models/container.dart';
+import '../models/deployment.dart';
 import '../models/deployment_preview.dart';
+import '../models/deployment_request.dart';
+import '../models/deployment_revision.dart';
+import '../models/drift_report.dart';
+import '../models/environment_policy.dart';
+import '../models/git_repository.dart';
 import '../models/env_var_group.dart';
 import '../models/image.dart';
 import '../models/log_line.dart';
@@ -24,6 +31,48 @@ class ApiException implements Exception {
 
   @override
   String toString() => 'ApiException($statusCode): $message';
+}
+
+/// An action refused because its environment only allows changes during a
+/// maintenance window. The caller can retry with
+/// [GateOptions.scheduleForMaintenanceWindow] (runs at [nextWindow]) or,
+/// when [canOverride], [GateOptions.overrideMaintenanceWindow].
+class MaintenanceWindowException extends ApiException {
+  final DateTime? nextWindow;
+  final bool canOverride;
+
+  MaintenanceWindowException(
+    super.statusCode,
+    super.message, {
+    this.nextWindow,
+    this.canOverride = false,
+  });
+}
+
+/// Throws the right [ApiException] for a failed response: the JSON
+/// `error` field when there is one, and a [MaintenanceWindowException]
+/// for a maintenance-window refusal.
+Never throwApiError(http.Response response) {
+  Map<String, dynamic>? body;
+  try {
+    final decoded = jsonDecode(response.body);
+    if (decoded is Map<String, dynamic>) body = decoded;
+  } catch (_) {}
+  final message = (body?['error'] as String?) ??
+      (body?['errors'] is List
+          ? (body!['errors'] as List).join('; ')
+          : response.body.trim());
+  if (body?['outsideMaintenanceWindow'] == true) {
+    throw MaintenanceWindowException(
+      response.statusCode,
+      message,
+      nextWindow: body!['nextWindow'] == null
+          ? null
+          : DateTime.parse(body['nextWindow'] as String),
+      canOverride: body['canOverride'] as bool? ?? false,
+    );
+  }
+  throw ApiException(response.statusCode, message);
 }
 
 class EnrollmentToken {
@@ -261,24 +310,24 @@ class ApiClient {
       headers: _headers,
       body: jsonEncode({'stackId': stackId, 'serverId': serverId, 'env': env}),
     );
+    if (response.statusCode != 202) throwApiError(response);
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 202) {
-      throw ApiException(
-        response.statusCode,
-        decoded['error'] as String? ?? response.body,
-      );
-    }
     return decoded['deploymentId'] as String;
   }
 
   /// Deploys a user-authored Compose file (as opposed to [createDeployment],
-  /// which deploys from the curated stacks catalog) — the "Stack
-  /// deployment" counterpart to Deployment Management > Docker Compose's
-  /// file management.
-  Future<String> createComposeDeployment({
+  /// which deploys from the curated stacks catalog). The environment's
+  /// policy decides whether it runs now, waits for approval, or waits for
+  /// a maintenance window — see [DeploymentActionOutcome.status]. Throws a
+  /// [MaintenanceWindowException] when outside a window and [gate] says
+  /// neither to schedule nor override.
+  Future<DeploymentActionOutcome> createComposeDeployment({
     required String composeFileId,
     required String serverId,
     Map<String, String> env = const {},
+    DeploymentMetadata metadata = const DeploymentMetadata(),
+    Map<String, int> scales = const {},
+    GateOptions gate = GateOptions.none,
   }) async {
     final response = await _http.post(
       Uri.parse('$baseUrl/api/deployments'),
@@ -287,25 +336,88 @@ class ApiClient {
         'composeFileId': composeFileId,
         'serverId': serverId,
         'env': env,
+        ...metadata.toJson(),
+        if (scales.isNotEmpty) 'scales': scales,
+        ...gate.toJson(),
       }),
     );
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 202) {
-      throw ApiException(
-        response.statusCode,
-        decoded['error'] as String? ?? response.body,
-      );
-    }
-    return decoded['deploymentId'] as String;
+    if (response.statusCode != 202) throwApiError(response);
+    return DeploymentActionOutcome.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// "Deployment history": every deployment, newest first, optionally
+  /// filtered.
+  Future<List<DeploymentSummary>> listDeployments({
+    String? environment,
+    String? serverId,
+    String? composeFileId,
+    String? phase,
+    String? search,
+    bool includeRemoved = false,
+  }) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/deployments').replace(
+        queryParameters: {
+          if (environment != null && environment.isNotEmpty)
+            'environment': environment,
+          if (serverId != null && serverId.isNotEmpty) 'serverId': serverId,
+          if (composeFileId != null && composeFileId.isNotEmpty)
+            'composeFileId': composeFileId,
+          if (phase != null && phase.isNotEmpty) 'phase': phase,
+          if (search != null && search.isNotEmpty) 'q': search,
+          if (includeRemoved) 'includeRemoved': 'true',
+        },
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => DeploymentSummary.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Fetches a deployment's governance/rollout metadata — live
+  /// status/progress comes from the deployment events stream instead.
+  Future<Deployment> getDeployment(String deploymentId) async {
+    return (await getDeploymentDetail(deploymentId)).deployment;
+  }
+
+  /// Fetches a deployment with its timeline, open requests, environment
+  /// policy, and rollback target.
+  Future<DeploymentDetail> getDeploymentDetail(String deploymentId) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return DeploymentDetail.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Replaces a deployment's editable metadata — send the whole desired
+  /// state, not a partial patch.
+  Future<void> updateDeploymentMetadata(
+    String deploymentId,
+    DeploymentMetadata metadata,
+  ) async {
+    final response = await _http.patch(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/metadata'),
+      headers: _headers,
+      body: jsonEncode(metadata.toJson()),
+    );
+    if (response.statusCode != 204) throwApiError(response);
   }
 
   /// Applies a stack-level lifecycle action to every container in a
   /// deployment — start/stop/restart fan out across the deployment's
   /// current containers (response has a `results` list, one per
   /// container, each `{serverId, containerId, success, error}`); remove
-  /// tears the whole deployment down including its network (response is
+  /// tears the whole deployment down including its networks (response is
   /// `{success, error}`). Callers branch on [action] to interpret which
-  /// shape came back — see DockerComposeScreen / DeploymentStatusScreen.
+  /// shape came back — see DeploymentStatusScreen.
   Future<Map<String, dynamic>> deploymentAction(
     String deploymentId,
     String action,
@@ -315,73 +427,228 @@ class ApiClient {
       headers: _headers,
       body: jsonEncode({'action': action}),
     );
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(
-        response.statusCode,
-        decoded['error'] as String? ?? response.body,
-      );
-    }
-    return decoded;
+    if (response.statusCode != 200) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
-  /// Re-applies an existing deployment (same deployment_id) to its server.
-  /// Unlike [createDeployment], this exercises the agent's redeploy/recreate
-  /// path: the agent finds containers already labeled with this
-  /// deployment_id and replaces them, rather than creating a parallel set.
-  Future<void> redeployDeployment(String deploymentId) async {
-    final response = await _http.post(
-      Uri.parse('$baseUrl/api/deployments/$deploymentId/redeploy'),
-      headers: _headers,
-    );
-    if (response.statusCode != 202) {
-      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-      throw ApiException(
-        response.statusCode,
-        decoded['error'] as String? ?? response.body,
-      );
-    }
-  }
-
-  /// Redeploys one named service within a deployment — pulls its image and
-  /// recreates just that service's container, leaving the rest of the
-  /// stack running untouched.
-  Future<Map<String, dynamic>> redeployService(
-    String deploymentId,
-    String serviceName,
+  Future<DeploymentActionOutcome> _postAction(
+    String path,
+    Map<String, dynamic> body,
   ) async {
     final response = await _http.post(
-      Uri.parse(
-        '$baseUrl/api/deployments/$deploymentId/services/$serviceName/redeploy',
+      Uri.parse('$baseUrl$path'),
+      headers: _headers,
+      body: jsonEncode(body),
+    );
+    if (response.statusCode != 200 && response.statusCode != 202) {
+      throwApiError(response);
+    }
+    return DeploymentActionOutcome.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Re-applies an existing deployment (same deployment_id) to its server —
+  /// recreating its containers, or a rolling update with automatic
+  /// rollback when the deployment's strategy is "rolling".
+  Future<DeploymentActionOutcome> redeployDeployment(
+    String deploymentId, {
+    GateOptions gate = GateOptions.none,
+  }) => _postAction('/api/deployments/$deploymentId/redeploy', gate.toJson());
+
+  /// Redeploys one named service within a deployment — pulls its image and
+  /// recreates just that service's containers.
+  Future<DeploymentActionOutcome> redeployService(
+    String deploymentId,
+    String serviceName, {
+    GateOptions gate = GateOptions.none,
+  }) => _postAction(
+    '/api/deployments/$deploymentId/services/${Uri.encodeComponent(serviceName)}/redeploy',
+    gate.toJson(),
+  );
+
+  /// "Scale supported services": sets how many containers one service runs.
+  Future<DeploymentActionOutcome> scaleService(
+    String deploymentId,
+    String serviceName,
+    int replicas, {
+    GateOptions gate = GateOptions.none,
+  }) => _postAction(
+    '/api/deployments/$deploymentId/services/${Uri.encodeComponent(serviceName)}/scale',
+    {'replicas': replicas, ...gate.toJson()},
+  );
+
+  /// Rolls the whole stack back to exactly one of: an earlier revision
+  /// (what actually ran before), a past Compose file version, or a past
+  /// Git commit.
+  Future<DeploymentActionOutcome> rollbackDeployment(
+    String deploymentId, {
+    int? revision,
+    String? versionId,
+    String? gitCommit,
+    GateOptions gate = GateOptions.none,
+  }) => _postAction('/api/deployments/$deploymentId/rollback', {
+    'revision': ?revision,
+    'versionId': ?versionId,
+    'gitCommit': ?gitCommit,
+    ...gate.toJson(),
+  });
+
+  /// Promotes a deployment's current revision to another environment/server
+  /// as a new deployment, through the target environment's policy.
+  Future<DeploymentActionOutcome> promoteDeployment(
+    String deploymentId, {
+    required String serverId,
+    required String environment,
+    DeploymentMetadata metadata = const DeploymentMetadata(),
+    GateOptions gate = GateOptions.none,
+  }) => _postAction('/api/deployments/$deploymentId/promote', {
+    ...metadata.toJson(),
+    'serverId': serverId,
+    'environment': environment,
+    ...gate.toJson(),
+  });
+
+  Future<List<DeploymentRevision>> listDeploymentRevisions(
+    String deploymentId,
+  ) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/revisions'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => DeploymentRevision.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// One revision including the exact Compose content it ran.
+  Future<DeploymentRevision> getDeploymentRevision(
+    String deploymentId,
+    int revision,
+  ) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/revisions/$revision'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return DeploymentRevision.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// "Detect configuration drift" for one deployment.
+  Future<DriftReport> getDeploymentDrift(String deploymentId) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/drift'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return DriftReport.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Approval/scheduled requests, newest first.
+  Future<List<DeploymentRequest>> listDeploymentRequests({
+    String? status,
+    String? deploymentId,
+  }) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/deployment-requests').replace(
+        queryParameters: {
+          if (status != null && status.isNotEmpty) 'status': status,
+          'deploymentId': ?deploymentId,
+        },
       ),
       headers: _headers,
     );
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(
-        response.statusCode,
-        decoded['error'] as String? ?? response.body,
-      );
-    }
-    return decoded;
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => DeploymentRequest.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
-  /// Redeploys the whole stack using an earlier compose file version's
-  /// content instead of its current content — "Perform a controlled
-  /// rollback". Only valid for deployments sourced from a Compose file.
-  Future<void> rollbackDeployment(String deploymentId, String versionId) async {
+  /// Approves a pending request (admin). It runs now, or at the next
+  /// maintenance window unless [overrideMaintenanceWindow].
+  Future<DeploymentActionOutcome> approveDeploymentRequest(
+    String requestId, {
+    String comment = '',
+    bool overrideMaintenanceWindow = false,
+  }) => _postAction('/api/deployment-requests/$requestId/approve', {
+    'comment': comment,
+    if (overrideMaintenanceWindow) 'overrideMaintenanceWindow': true,
+  });
+
+  Future<void> rejectDeploymentRequest(
+    String requestId, {
+    String comment = '',
+  }) async {
     final response = await _http.post(
-      Uri.parse('$baseUrl/api/deployments/$deploymentId/rollback'),
+      Uri.parse('$baseUrl/api/deployment-requests/$requestId/reject'),
       headers: _headers,
-      body: jsonEncode({'versionId': versionId}),
+      body: jsonEncode({'comment': comment}),
     );
-    if (response.statusCode != 202) {
-      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-      throw ApiException(
-        response.statusCode,
-        decoded['error'] as String? ?? response.body,
-      );
-    }
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<void> cancelDeploymentRequest(
+    String requestId, {
+    String comment = '',
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/deployment-requests/$requestId/cancel'),
+      headers: _headers,
+      body: jsonEncode({'comment': comment}),
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<List<EnvironmentPolicy>> listEnvironmentPolicies() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/environment-policies'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => EnvironmentPolicy.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> updateEnvironmentPolicy(EnvironmentPolicy policy) async {
+    final response = await _http.put(
+      Uri.parse('$baseUrl/api/environment-policies/${policy.environment}'),
+      headers: _headers,
+      body: jsonEncode(policy.toJson()),
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  /// "Complete audit trail" (admin), newest first; [before] pages back.
+  Future<List<AuditEvent>> listAuditEvents({
+    String? entityType,
+    String? entityId,
+    String? search,
+    int? before,
+    int limit = 100,
+  }) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/audit-events').replace(
+        queryParameters: {
+          if (entityType != null && entityType.isNotEmpty)
+            'entityType': entityType,
+          'entityId': ?entityId,
+          if (search != null && search.isNotEmpty) 'q': search,
+          if (before != null) 'before': '$before',
+          'limit': '$limit',
+        },
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => AuditEvent.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   Future<String> createBackup(String deploymentId) async {
@@ -1482,6 +1749,7 @@ class ApiClient {
   Future<DeploymentPreview> previewDeployment({
     String? stackId,
     String? composeFileId,
+    String? serverId,
     Map<String, String> env = const {},
   }) async {
     final response = await _http.post(
@@ -1490,6 +1758,7 @@ class ApiClient {
       body: jsonEncode({
         if (stackId != null) 'stackId': stackId,
         if (composeFileId != null) 'composeFileId': composeFileId,
+        if (serverId != null) 'serverId': serverId,
         'env': env,
       }),
     );
@@ -1752,5 +2021,213 @@ class ApiClient {
     if (response.statusCode != 204) {
       throw ApiException(response.statusCode, response.body);
     }
+  }
+
+  // --- Git-based deployment -------------------------------------------
+
+  Future<List<GitRepository>> listGitRepositories() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/git-repositories'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => GitRepository.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Adds a repository (admin). The control plane checks it's reachable
+  /// first; the returned webhook info is how to configure push webhooks.
+  Future<(GitRepository, GitWebhookInfo)> createGitRepository({
+    required String name,
+    required String provider,
+    required String url,
+    String username = '',
+    String token = '',
+    String defaultBranch = 'main',
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/git-repositories'),
+      headers: _headers,
+      body: jsonEncode({
+        'name': name,
+        'provider': provider,
+        'url': url,
+        'username': username,
+        if (token.isNotEmpty) 'token': token,
+        'defaultBranch': defaultBranch,
+      }),
+    );
+    if (response.statusCode != 201) throwApiError(response);
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return (
+      GitRepository.fromJson(decoded['repository'] as Map<String, dynamic>),
+      GitWebhookInfo.fromJson(decoded['webhook'] as Map<String, dynamic>),
+    );
+  }
+
+  /// Edits a repository (admin). [token] null keeps the stored one.
+  Future<GitRepository> updateGitRepository(
+    String id, {
+    required String name,
+    required String provider,
+    required String url,
+    String username = '',
+    String? token,
+    String defaultBranch = 'main',
+  }) async {
+    final response = await _http.patch(
+      Uri.parse('$baseUrl/api/git-repositories/$id'),
+      headers: _headers,
+      body: jsonEncode({
+        'name': name,
+        'provider': provider,
+        'url': url,
+        'username': username,
+        'token': ?token,
+        'defaultBranch': defaultBranch,
+      }),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return GitRepository.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> deleteGitRepository(String id) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/git-repositories/$id'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<GitWebhookInfo> getGitWebhook(String id) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/git-repositories/$id/webhook'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return GitWebhookInfo.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<GitWebhookInfo> rotateGitWebhookSecret(String id) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/git-repositories/$id/webhook/rotate'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return GitWebhookInfo.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<GitRefs> listGitRefs(String repositoryId) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/git-repositories/$repositoryId/refs'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return GitRefs.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  /// Fetches [path] at [ref] with its Compose validation, for the import
+  /// dialog's preview.
+  Future<({String content, String commit, ComposeParseResult parse})>
+  previewGitFile(String repositoryId, {required String ref, required String path}) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/git-repositories/$repositoryId/file').replace(
+        queryParameters: {'ref': ref, 'path': path},
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return (
+      content: decoded['content'] as String,
+      commit: decoded['commit'] as String,
+      parse: ComposeParseResult.fromJson(
+        decoded['parse'] as Map<String, dynamic>,
+      ),
+    );
+  }
+
+  /// "Import Compose files from Git".
+  Future<ComposeFile> importGitComposeFile(
+    String repositoryId, {
+    required String name,
+    required String ref,
+    required String path,
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/git-repositories/$repositoryId/import'),
+      headers: _headers,
+      body: jsonEncode({'name': name, 'ref': ref, 'path': path}),
+    );
+    if (response.statusCode != 201) throwApiError(response);
+    return ComposeFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Pulls a Git-linked Compose file's latest content from its branch/tag.
+  Future<({bool changed, String commit, ComposeFile file})> syncComposeFile(
+    String composeFileId,
+  ) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/compose-files/$composeFileId/git/sync'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return (
+      changed: decoded['changed'] as bool? ?? false,
+      commit: decoded['commit'] as String? ?? '',
+      file: ComposeFile.fromJson(decoded['file'] as Map<String, dynamic>),
+    );
+  }
+
+  /// Links a Compose file to a repository path at a branch/tag (and syncs
+  /// it), or unlinks it when [repositoryId] is null.
+  Future<ComposeFile> setComposeFileGitLink(
+    String composeFileId, {
+    String? repositoryId,
+    String ref = '',
+    String path = '',
+  }) async {
+    final response = await _http.put(
+      Uri.parse('$baseUrl/api/compose-files/$composeFileId/git'),
+      headers: _headers,
+      body: jsonEncode({'repositoryId': repositoryId, 'ref': ref, 'path': path}),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return ComposeFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Recent commits that changed a Git-linked Compose file — the choices
+  /// for "Roll back to a previous commit".
+  Future<List<GitCommit>> listComposeFileCommits(
+    String composeFileId, {
+    String? ref,
+    int limit = 30,
+  }) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/compose-files/$composeFileId/git/commits')
+          .replace(
+            queryParameters: {
+              if (ref != null && ref.isNotEmpty) 'ref': ref,
+              'limit': '$limit',
+            },
+          ),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => GitCommit.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 }

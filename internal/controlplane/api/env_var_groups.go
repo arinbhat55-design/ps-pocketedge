@@ -100,6 +100,9 @@ func handleCreateEnvVarGroup(log *slog.Logger, st *store.Store) http.HandlerFunc
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		// Variable values can be secrets — the audit trail records the
+		// group, not its contents.
+		recordAudit(r, log, st, "env_var_group.create", "env_var_group", g.ID, "variable group "+g.Name+" created ("+g.Environment+")", nil)
 		writeJSON(w, http.StatusCreated, g)
 	}
 }
@@ -134,6 +137,7 @@ func handleUpdateEnvVarGroup(log *slog.Logger, st *store.Store) http.HandlerFunc
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		recordAudit(r, log, st, "env_var_group.update", "env_var_group", g.ID, "variable group "+g.Name+" updated ("+g.Environment+")", nil)
 		writeJSON(w, http.StatusOK, g)
 	}
 }
@@ -150,6 +154,7 @@ func handleDeleteEnvVarGroup(log *slog.Logger, st *store.Store) http.HandlerFunc
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		recordAudit(r, log, st, "env_var_group.delete", "env_var_group", r.PathValue("id"), "variable group deleted", nil)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
