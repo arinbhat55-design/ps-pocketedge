@@ -1,21 +1,11 @@
 import 'package:flutter/material.dart';
 
 import 'server_metrics.dart';
+import '../widgets/status_pill.dart';
 
-/// State-color convention shared by the per-server container list
-/// (server_detail_screen.dart) and the fleet-wide one
-/// (features/containers/container_list_screen.dart).
-Color containerStateColor(String state) {
-  switch (state) {
-    case 'running':
-      return Colors.green;
-    case 'exited':
-    case 'dead':
-      return Colors.red;
-    default:
-      return Colors.grey;
-  }
-}
+/// State color, from the same tone mapping as the status pills
+/// ([containerStatus]).
+Color containerStateColor(String state) => containerStatus(state).tone.color;
 
 /// One row of GET /api/containers — a [ContainerInfo] plus fleet-wide
 /// context (which server, which application/stack, who owns it, and its

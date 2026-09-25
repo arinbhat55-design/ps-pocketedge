@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
+import '../../theme/app_theme.dart';
 
 const _restartPolicyLabels = {
   'no': 'No',
@@ -129,7 +130,7 @@ class _RestartPolicyDialogState extends State<_RestartPolicyDialog> {
             ],
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(_error!, style: const TextStyle(color: AppColors.failed)),
             ],
           ],
         ),

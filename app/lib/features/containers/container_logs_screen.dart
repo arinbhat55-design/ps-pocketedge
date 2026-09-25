@@ -6,6 +6,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../api/api_client.dart';
 import '../../models/log_line.dart';
+import '../../theme/app_theme.dart';
 
 /// Live (or bounded, once a date/time range is applied) log tail for one
 /// container, with search/filter, highlighted warnings/errors, download,
@@ -138,9 +139,9 @@ class _ContainerLogsScreenState extends State<ContainerLogsScreen> {
         lower.contains('fatal') ||
         lower.contains('exception') ||
         lower.contains('panic')) {
-      return Colors.redAccent;
+      return AppColors.failed;
     }
-    if (lower.contains('warn')) return Colors.amber.shade700;
+    if (lower.contains('warn')) return AppColors.warning;
     return null;
   }
 
@@ -463,7 +464,7 @@ class _ContainerLogsScreenState extends State<ContainerLogsScreen> {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            color: Colors.orange.withValues(alpha: 0.15),
+            color: AppColors.warning.withValues(alpha: 0.15),
             child: Text(_streamError!, style: const TextStyle(fontSize: 12)),
           ),
         if (_analysis != null) _AnalysisPanel(analysis: _analysis!),
@@ -494,7 +495,7 @@ class _ContainerLogsScreenState extends State<ContainerLogsScreen> {
                         TextSpan(
                           text:
                               '${ts.toLocal().toIso8601String().substring(11, 19)} ',
-                          style: const TextStyle(color: Colors.grey),
+                          style: const TextStyle(color: AppColors.neutral),
                         ),
                       if (prefix.isNotEmpty)
                         TextSpan(

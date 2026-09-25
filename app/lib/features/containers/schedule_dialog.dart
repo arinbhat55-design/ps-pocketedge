@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
+import '../../theme/app_theme.dart';
 
 const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 // cron day-of-week is 0=Sunday..6=Saturday; _weekdayLabels is Mon-first for
@@ -236,7 +237,7 @@ class _ScheduleDialogState extends State<_ScheduleDialog> {
               ],
               if (_error != null) ...[
                 const SizedBox(height: 12),
-                Text(_error!, style: const TextStyle(color: Colors.red)),
+                Text(_error!, style: const TextStyle(color: AppColors.failed)),
               ],
             ],
           ),

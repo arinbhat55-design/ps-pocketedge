@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/server.dart';
+import '../../theme/app_theme.dart';
 
 /// Shows the create-volume dialog: pick a server (unless preset), a name,
 /// and an optional driver. Pops with `true` on a successful create.
@@ -133,7 +134,7 @@ class _CreateVolumeDialogState extends State<_CreateVolumeDialog> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(_error!, style: const TextStyle(color: AppColors.failed)),
             ],
           ],
         ),

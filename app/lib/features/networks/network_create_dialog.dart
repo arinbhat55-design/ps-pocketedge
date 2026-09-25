@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/server.dart';
+import '../../theme/app_theme.dart';
 
 /// Shows the create-network dialog: pick a server (unless preset), a name,
 /// an optional driver, and whether the network should be internal-only.
@@ -147,7 +148,7 @@ class _CreateNetworkDialogState extends State<_CreateNetworkDialog> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(_error!, style: const TextStyle(color: AppColors.failed)),
             ],
           ],
         ),

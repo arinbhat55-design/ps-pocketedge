@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/container.dart';
+import '../../theme/app_theme.dart';
 
 const _restartPolicyLabels = {
   'no': 'No',
@@ -397,7 +398,7 @@ class _ContainerConfigFormState extends State<ContainerConfigForm> {
               ),
               if (widget.error != null) ...[
                 const SizedBox(height: 12),
-                Text(widget.error!, style: const TextStyle(color: Colors.red)),
+                Text(widget.error!, style: const TextStyle(color: AppColors.failed)),
               ],
               const SizedBox(height: 20),
               FilledButton(
@@ -612,12 +613,12 @@ class _PortFieldState extends State<_PortField> {
                   const Icon(
                     Icons.warning_amber,
                     size: 14,
-                    color: Colors.orange,
+                    color: AppColors.warning,
                   ),
                   const SizedBox(width: 4),
                   Text(
                     _conflictWarning!,
-                    style: const TextStyle(color: Colors.orange, fontSize: 12),
+                    style: const TextStyle(color: AppColors.warning, fontSize: 12),
                   ),
                 ],
               ),

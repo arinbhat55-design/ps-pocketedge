@@ -185,13 +185,6 @@ class _DeploymentRow extends StatelessWidget {
     final small = Theme.of(context).textTheme.bodySmall;
     return ListTile(
       onTap: onTap,
-      leading: SizedBox(
-        height: double.infinity,
-        child: Tooltip(
-          message: humanizePhase(d.phase),
-          child: Icon(Icons.circle, size: 14, color: phaseColor(d.phase)),
-        ),
-      ),
       title: Row(
         children: [
           Flexible(
@@ -200,6 +193,8 @@ class _DeploymentRow extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          const SizedBox(width: 8),
+          StatusDot(status: d.phase),
           if (d.deployEnvironment != null) ...[
             const SizedBox(width: 8),
             _Tag(d.deployEnvironment!),
@@ -217,7 +212,7 @@ class _DeploymentRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${humanizePhase(d.phase)} on '
+            'On '
             '${summary.serverName.isEmpty ? d.serverId : summary.serverName}',
             style: small,
           ),

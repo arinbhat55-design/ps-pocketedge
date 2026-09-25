@@ -6,11 +6,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:app/api/api_client.dart';
+import 'package:app/widgets/state_message.dart';
 import 'package:app/features/servers/server_list_screen.dart';
 
 void main() {
-  testWidgets('server list screen shows empty state when no servers exist',
-      (WidgetTester tester) async {
+  testWidgets('server list screen shows empty state when no servers exist', (
+    WidgetTester tester,
+  ) async {
     final client = ApiClient(
       baseUrl: 'http://localhost:8080',
       httpClient: _FakeEmptyListClient(),
@@ -21,7 +23,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('No servers registered yet.'), findsOneWidget);
+    expect(find.text('No servers yet'), findsOneWidget);
+    // The empty state offers the next step, not just a message.
+    expect(
+      find.descendant(
+        of: find.byType(StateMessage),
+        matching: find.widgetWithText(FilledButton, 'Add server'),
+      ),
+      findsOneWidget,
+    );
   });
 }
 

@@ -2,36 +2,38 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/deployment.dart';
+import '../../widgets/status_pill.dart';
+import '../../theme/app_theme.dart';
 
-/// Colour for a deployment/revision phase or status.
-Color phaseColor(String phase) {
+/// Tone for a deployment/revision phase or status: settled-good is
+/// healthy, anything needing attention or still in flight is warning,
+/// failures are failed, and inactive states are neutral.
+StatusTone phaseTone(String phase) {
   switch (phase) {
     case 'running':
     case 'healthy':
     case 'executed':
-      return Colors.green;
+    case 'completed':
+      return StatusTone.healthy;
     case 'failed':
     case 'unhealthy':
     case 'rejected':
-      return Colors.red;
-    case 'rolled_back':
-      return Colors.deepOrange;
-    case 'awaiting_approval':
-    case 'pending_approval':
-      return Colors.purple;
-    case 'scheduled':
-      return Colors.indigo;
+      return StatusTone.failed;
     case 'stopped':
-      return Colors.blueGrey;
+    case 'scheduled':
     case 'pending':
     case 'removed':
     case 'cancelled':
     case 'unknown':
-      return Colors.grey;
+      return StatusTone.neutral;
     default:
-      return Colors.orange;
+      // rolled_back, awaiting/pending_approval, and in-progress phases.
+      return StatusTone.warning;
   }
 }
+
+/// Colour for a deployment/revision phase or status.
+Color phaseColor(String phase) => phaseTone(phase).color;
 
 /// "awaiting_approval" -> "Awaiting approval".
 String humanizePhase(String phase) {
@@ -40,7 +42,7 @@ String humanizePhase(String phase) {
   return s[0].toUpperCase() + s.substring(1);
 }
 
-/// A small coloured dot + label.
+/// A deployment status as a [StatusPill].
 class StatusDot extends StatelessWidget {
   final String status;
   final String? label;
@@ -49,13 +51,9 @@ class StatusDot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(Icons.circle, size: 10, color: phaseColor(status)),
-        const SizedBox(width: 6),
-        Text(label ?? humanizePhase(status)),
-      ],
+    return StatusPill(
+      label: label ?? humanizePhase(status),
+      tone: phaseTone(status),
     );
   }
 }
@@ -75,7 +73,7 @@ class HealthBadge extends StatelessWidget {
       'verifying' => (Icons.hourglass_top, 'Verifying health'),
       _ => (Icons.help_outline, 'Health not verified'),
     };
-    final color = status == 'unknown' ? Colors.grey : phaseColor(status);
+    final color = status == 'unknown' ? AppColors.neutral : phaseColor(status);
     return Tooltip(
       message: message.isEmpty ? label : message,
       child: Chip(
@@ -351,11 +349,7 @@ class StatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Chip(
-      visualDensity: VisualDensity.compact,
-      avatar: Icon(Icons.circle, size: 10, color: phaseColor(status)),
-      label: Text(humanizePhase(status)),
-    );
+    return StatusPill(label: humanizePhase(status), tone: phaseTone(status));
   }
 }
 

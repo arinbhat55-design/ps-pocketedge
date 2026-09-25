@@ -6,6 +6,7 @@ import 'api/api_client.dart';
 import 'api/auth_storage.dart';
 import 'features/auth/login_screen.dart';
 import 'features/shell/app_shell.dart';
+import 'theme/app_theme.dart';
 
 /// Control-plane REST API base URL. Override at build/run time with
 /// `--dart-define=CONTROL_PLANE_URL=http://host:port`
@@ -25,15 +26,8 @@ class PSPocketEdgeApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'PSpocketEdge',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
-      ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.teal,
-          brightness: Brightness.dark,
-        ),
-      ),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
       themeMode: ThemeMode.dark,
       home: const SessionGate(),
     );

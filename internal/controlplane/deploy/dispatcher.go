@@ -49,6 +49,14 @@ func (d *Dispatcher) Register(serverID string) (ch chan *agentv1.ControlMessage,
 	}
 }
 
+// IsConnected reports whether serverID currently has an open Session stream.
+func (d *Dispatcher) IsConnected(serverID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.channels[serverID]
+	return ok
+}
+
 // Send delivers msg to serverID's active Session stream. Returns
 // ErrAgentNotConnected if the agent has no open stream right now.
 func (d *Dispatcher) Send(serverID string, msg *agentv1.ControlMessage) error {

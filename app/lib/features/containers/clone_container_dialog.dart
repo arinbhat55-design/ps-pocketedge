@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
+import '../../theme/app_theme.dart';
 
 /// Shows the clone dialog. Pops with the new container's id on success,
 /// null if cancelled or failed.
@@ -103,7 +104,7 @@ class _CloneContainerDialogState extends State<_CloneContainerDialog> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(_error!, style: const TextStyle(color: AppColors.failed)),
             ],
           ],
         ),

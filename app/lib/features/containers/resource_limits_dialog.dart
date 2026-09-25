@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
+import '../../theme/app_theme.dart';
 
 const _nanoCpusPerCore = 1000000000;
 const _bytesPerMebibyte = 1024 * 1024;
@@ -164,7 +165,7 @@ class _ResourceLimitsDialogState extends State<_ResourceLimitsDialog> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(_error!, style: const TextStyle(color: AppColors.failed)),
             ],
           ],
         ),

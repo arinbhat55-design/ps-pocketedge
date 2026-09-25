@@ -8,6 +8,8 @@ import '../../models/deployment_preview.dart';
 import '../../models/env_var_group.dart';
 import '../../models/image.dart' show formatBytes;
 import '../../models/server.dart';
+import '../../widgets/page_intro.dart';
+import '../../widgets/state_message.dart';
 import '../deployments/deployment_history_screen.dart';
 import '../deployments/deployment_status_screen.dart';
 import '../deployments/deployment_widgets.dart';
@@ -17,12 +19,14 @@ import 'compose_editor_screen.dart';
 import 'compose_version_history_screen.dart';
 import 'env_var_groups_screen.dart';
 import 'env_variable_editor.dart';
+import '../../theme/app_theme.dart';
 
-/// Deployment Management > Docker Compose. Tabs mirror the feature areas
-/// from the Compose deployment spec: Compose files (authoring, validation,
-/// deploy), stack deployments (history and per-deployment management),
-/// configuration, Git-based deployment, pre-deployment validation, and
-/// governance (approvals, environment policies, audit trail).
+/// Deployment Management > Docker Compose. Tabs: Compose files (authoring,
+/// validation, deploy), History (every stack deployment and its
+/// management), Config (env var groups), Git-based deployment, and
+/// Governance (approvals, environment policies, audit trail).
+/// Pre-deployment checks have no tab of their own: their results show
+/// in the deploy preview, where they're actionable.
 class DockerComposeScreen extends StatefulWidget {
   final ApiClient apiClient;
   final bool isAdmin;
@@ -41,10 +45,9 @@ class _DockerComposeScreenState extends State<DockerComposeScreen>
     with SingleTickerProviderStateMixin {
   static const _tabs = [
     'Compose files',
-    'Stack deployment',
-    'Configuration',
-    'Git-based deployment',
-    'Pre-deployment validation',
+    'History',
+    'Config',
+    'Git',
     'Governance',
   ];
 
@@ -67,67 +70,40 @@ class _DockerComposeScreenState extends State<DockerComposeScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: Text(
-            'Docker Compose Deployment Management',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-        ),
-        TabBar(
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Deployments'),
+        bottom: TabBar(
           controller: _tabController,
           isScrollable: true,
           tabAlignment: TabAlignment.start,
           tabs: [for (final t in _tabs) Tab(text: t)],
         ),
-        const Divider(height: 1),
-        Expanded(
-          child: TabBarView(
-            controller: _tabController,
-            children: [
-              _ComposeFilesTab(
-                key: ValueKey(_filesGeneration),
-                apiClient: widget.apiClient,
-                isAdmin: widget.isAdmin,
-              ),
-              DeploymentHistoryScreen(
-                apiClient: widget.apiClient,
-                isAdmin: widget.isAdmin,
-              ),
-              _ConfigurationTab(apiClient: widget.apiClient),
-              GitRepositoriesScreen(
-                apiClient: widget.apiClient,
-                isAdmin: widget.isAdmin,
-                onComposeFilesChanged: () =>
-                    setState(() => _filesGeneration++),
-              ),
-              const _DoneInfoTab(
-                summary:
-                    'Every pre-deployment check runs automatically in the '
-                    'deploy preview dialog (rocket icon on a Compose file): '
-                    'sufficient CPU/RAM/storage, estimated resource '
-                    'consumption, a deployment risk score, required-port '
-                    'conflicts, image availability, host architecture '
-                    'compatibility, volume path validation, missing '
-                    'secrets, and network configuration. Service '
-                    'dependencies (undefined services, cycles) and '
-                    'conflicting or unsupported settings are checked '
-                    'whenever a Compose file is saved. The resource and '
-                    'image checks need a target server selected (and, for '
-                    'resources, an agent that has reported host capacity) '
-                    'to run.',
-              ),
-              GovernanceScreen(
-                apiClient: widget.apiClient,
-                isAdmin: widget.isAdmin,
-              ),
-            ],
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _ComposeFilesTab(
+            key: ValueKey(_filesGeneration),
+            apiClient: widget.apiClient,
+            isAdmin: widget.isAdmin,
           ),
-        ),
-      ],
+          DeploymentHistoryScreen(
+            apiClient: widget.apiClient,
+            isAdmin: widget.isAdmin,
+          ),
+          _ConfigurationTab(apiClient: widget.apiClient),
+          GitRepositoriesScreen(
+            apiClient: widget.apiClient,
+            isAdmin: widget.isAdmin,
+            onComposeFilesChanged: () => setState(() => _filesGeneration++),
+          ),
+          GovernanceScreen(
+            apiClient: widget.apiClient,
+            isAdmin: widget.isAdmin,
+          ),
+        ],
+      ),
     );
   }
 }
@@ -156,7 +132,9 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
   }
 
   void _refresh() {
-    setState(() => _filesFuture = widget.apiClient.listComposeFiles());
+    setState(() {
+      _filesFuture = widget.apiClient.listComposeFiles();
+    });
   }
 
   Future<void> _openCreate() async {
@@ -184,8 +162,9 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
       servers = await widget.apiClient.listServers();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to load servers: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to load servers: $e')));
       }
       return;
     }
@@ -210,7 +189,7 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
                   Icon(
                     s.status == 'online' ? Icons.dns : Icons.dns_outlined,
                     size: 18,
-                    color: s.status == 'online' ? Colors.green : null,
+                    color: s.status == 'online' ? AppColors.healthy : null,
                   ),
                   const SizedBox(width: 8),
                   Text(s.name),
@@ -224,7 +203,8 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
 
     final setup = await showDialog<_DeploySetup>(
       context: context,
-      builder: (_) => _EnvVarSetupDialog(apiClient: widget.apiClient, file: file),
+      builder: (_) =>
+          _EnvVarSetupDialog(apiClient: widget.apiClient, file: file),
     );
     if (setup == null || !mounted) return;
 
@@ -237,9 +217,9 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to preview deployment: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to preview deployment: $e')),
+        );
       }
       return;
     }
@@ -247,10 +227,8 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => _DeployPreviewDialog(
-        preview: preview,
-        serverName: server.name,
-      ),
+      builder: (_) =>
+          _DeployPreviewDialog(preview: preview, serverName: server.name),
     );
     if (confirmed != true || !mounted) return;
 
@@ -404,7 +382,9 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
       context: context,
       builder: (_) => AlertDialog(
         title: Text('Delete ${file.name}?'),
-        content: const Text('This removes the stored Compose file. This cannot be undone.'),
+        content: const Text(
+          'This removes the stored Compose file. This cannot be undone.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -426,112 +406,139 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
       _refresh();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final create = PrimaryAction(
+      label: 'New Compose file',
+      icon: Icons.add,
+      onPressed: _openCreate,
+    );
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openCreate,
-        icon: const Icon(Icons.add),
-        label: const Text('New Compose file'),
-      ),
-      body: FutureBuilder<List<ComposeFile>>(
-        future: _filesFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(
-              child: Text('Failed to load compose files: ${snapshot.error}'),
-            );
-          }
-          final files = snapshot.data ?? [];
-          if (files.isEmpty) {
-            return const Center(
-              child: Text(
-                'No Compose files yet.\nCreate one visually or paste in existing YAML.',
-                textAlign: TextAlign.center,
-              ),
-            );
-          }
-          return ListView(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            children: [
-              for (final f in files)
-                ListTile(
-                  dense: true,
-                  leading: Icon(
-                    f.isGitLinked ? Icons.source_outlined : Icons.layers_outlined,
-                  ),
-                  title: Text(f.name),
-                  subtitle: Text(
-                    [
-                      f.serviceNames.isEmpty
-                          ? 'No services'
-                          : 'Services: ${f.serviceNames.join(', ')}',
-                      if (f.isGitLinked)
-                        'Git: ${f.gitPath} @ ${f.gitRef} (${shortCommit(f.gitCommit)})',
-                    ].join('\n'),
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.rocket_launch_outlined),
-                        tooltip: 'Deploy',
-                        onPressed: () => _deploy(f),
-                      ),
-                      PopupMenuButton<String>(
-                        tooltip: 'More',
-                        onSelected: (value) {
-                          switch (value) {
-                            case 'history':
-                              _openHistory(f);
-                            case 'sync':
-                              _syncFromGit(f);
-                            case 'clone':
-                              _clone(f);
-                            case 'export':
-                              _export(f);
-                            case 'delete':
-                              _delete(f);
-                          }
-                        },
-                        itemBuilder: (context) => [
-                          if (f.isGitLinked)
-                            const PopupMenuItem(
-                              value: 'sync',
-                              child: Text('Sync from Git'),
+      floatingActionButton: create.fab(context),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          PageIntro(
+            description:
+                'Compose files you can deploy to any server. Each deploy '
+                'shows a preview with pre-deployment checks first.',
+            action: create.inline(context),
+          ),
+          const SizedBox(height: Space.sm),
+          Expanded(
+            child: FutureBuilder<List<ComposeFile>>(
+              future: _filesFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return StateMessage.error(
+                    what: 'Compose files',
+                    error: snapshot.error,
+                    onRetry: _refresh,
+                  );
+                }
+                final files = snapshot.data ?? [];
+                if (files.isEmpty) {
+                  return StateMessage(
+                    icon: Icons.layers_outlined,
+                    title: 'No Compose files yet',
+                    message:
+                        'Build one in the visual editor, paste existing YAML, or '
+                        'import one from the Git tab.',
+                    actionLabel: 'New Compose file',
+                    actionIcon: Icons.add,
+                    onAction: _openCreate,
+                  );
+                }
+                return ListView(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  children: [
+                    for (final f in files)
+                      ListTile(
+                        dense: true,
+                        leading: Icon(
+                          f.isGitLinked
+                              ? Icons.source_outlined
+                              : Icons.layers_outlined,
+                        ),
+                        title: Text(f.name),
+                        subtitle: Text(
+                          [
+                            f.serviceNames.isEmpty
+                                ? 'No services'
+                                : 'Services: ${f.serviceNames.join(', ')}',
+                            if (f.isGitLinked)
+                              'Git: ${f.gitPath} @ ${f.gitRef} (${shortCommit(f.gitCommit)})',
+                          ].join('\n'),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.rocket_launch_outlined),
+                              tooltip: 'Deploy',
+                              onPressed: () => _deploy(f),
                             ),
-                          const PopupMenuItem(
-                            value: 'history',
-                            child: Text('Version history'),
-                          ),
-                          const PopupMenuItem(value: 'clone', child: Text('Clone')),
-                          const PopupMenuItem(
-                            value: 'export',
-                            child: Text('Export / copy YAML'),
-                          ),
-                          const PopupMenuDivider(),
-                          const PopupMenuItem(
-                            value: 'delete',
-                            child: Text('Delete'),
-                          ),
-                        ],
+                            PopupMenuButton<String>(
+                              tooltip: 'More',
+                              onSelected: (value) {
+                                switch (value) {
+                                  case 'history':
+                                    _openHistory(f);
+                                  case 'sync':
+                                    _syncFromGit(f);
+                                  case 'clone':
+                                    _clone(f);
+                                  case 'export':
+                                    _export(f);
+                                  case 'delete':
+                                    _delete(f);
+                                }
+                              },
+                              itemBuilder: (context) => [
+                                if (f.isGitLinked)
+                                  const PopupMenuItem(
+                                    value: 'sync',
+                                    child: Text('Sync from Git'),
+                                  ),
+                                const PopupMenuItem(
+                                  value: 'history',
+                                  child: Text('Version history'),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'clone',
+                                  child: Text('Clone'),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'export',
+                                  child: Text('Export / copy YAML'),
+                                ),
+                                const PopupMenuDivider(),
+                                const PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text('Delete'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        onTap: () => _openEdit(f),
                       ),
-                    ],
-                  ),
-                  onTap: () => _openEdit(f),
-                ),
-            ],
-          );
-        },
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -581,37 +588,6 @@ class _ConfigurationTab extends StatelessWidget {
         ),
         const Divider(height: 1),
         Expanded(child: EnvVarGroupsScreen(apiClient: apiClient)),
-      ],
-    );
-  }
-}
-
-/// Used once every item on a tab is done — no bullet list of "planned"
-/// items left to show, unlike [_PlaceholderTab].
-class _DoneInfoTab extends StatelessWidget {
-  final String summary;
-
-  const _DoneInfoTab({required this.summary});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.check_circle_outline, size: 18, color: Colors.green),
-            const SizedBox(width: 8),
-            Text(
-              'All implemented',
-              style: Theme.of(
-                context,
-              ).textTheme.titleSmall?.copyWith(color: Colors.green),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Text(summary, style: Theme.of(context).textTheme.bodyMedium),
       ],
     );
   }
@@ -768,7 +744,9 @@ class _EnvVarSetupDialogState extends State<_EnvVarSetupDialog> {
                   ),
                   DropdownMenuItem(
                     value: 'rolling',
-                    child: Text('Rolling — one container at a time, auto-rollback'),
+                    child: Text(
+                      'Rolling — one container at a time, auto-rollback',
+                    ),
                   ),
                 ],
                 onChanged: (v) => setState(() => _strategy = v ?? 'recreate'),
@@ -805,7 +783,8 @@ class _EnvVarSetupDialogState extends State<_EnvVarSetupDialog> {
                     padding: const EdgeInsets.only(bottom: 12),
                     child: DropdownButtonFormField<EnvVarGroup>(
                       decoration: const InputDecoration(
-                        labelText: 'Load env vars from a saved group (optional)',
+                        labelText:
+                            'Load env vars from a saved group (optional)',
                         isDense: true,
                       ),
                       items: [
@@ -832,9 +811,8 @@ class _EnvVarSetupDialogState extends State<_EnvVarSetupDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(
-            context,
-          ).pop(const _DeploySetup(env: {})),
+          onPressed: () =>
+              Navigator.of(context).pop(const _DeploySetup(env: {})),
           child: const Text('Skip'),
         ),
         FilledButton(
@@ -869,6 +847,8 @@ class _DeployPreviewDialog extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    _PreflightChecklist(preview: preview),
+                    const SizedBox(height: 12),
                     if (check != null) ...[
                       _ResourceCheckSummary(check: check),
                       const SizedBox(height: 12),
@@ -881,12 +861,8 @@ class _DeployPreviewDialog extends StatelessWidget {
                       _ValidationIssuesSummary(preview: preview),
                       const SizedBox(height: 12),
                     ],
-                    if (check != null ||
-                        preview.portConflicts.isNotEmpty ||
-                        _hasValidationIssues(preview)) ...[
-                      const Divider(),
-                      const SizedBox(height: 4),
-                    ],
+                    const Divider(),
+                    const SizedBox(height: 4),
                     for (final svc in preview.services) ...[
                       Text(
                         svc.name,
@@ -944,11 +920,174 @@ class _DeployPreviewDialog extends StatelessWidget {
   }
 }
 
-/// "Confirm sufficient CPU, RAM, and storage" + "Show estimated resource
-/// consumption" + "Generate deployment risk score", rendered as a compact
-/// summary at the top of the deploy preview.
-/// "Check required ports": lists any published host port that's already
-/// bound by another container on the target server.
+enum _CheckOutcome { pass, warn, fail, skipped }
+
+/// Every pre-deployment check as one pass/warn/fail/skipped line at the top
+/// of the deploy preview, so a clean result is visible too (not just the
+/// absence of warnings). Details for anything that didn't pass follow
+/// below it in [_ResourceCheckSummary], [_PortConflictSummary] and
+/// [_ValidationIssuesSummary].
+class _PreflightChecklist extends StatelessWidget {
+  final DeploymentPreview preview;
+
+  const _PreflightChecklist({required this.preview});
+
+  List<(String, _CheckOutcome, String)> _checks() {
+    final check = preview.resourceCheck;
+    final images = preview.imageChecks;
+    final unavailable = images.where((c) => !c.available).length;
+    final wrongArch = images
+        .where((c) => c.available && !c.archCompatible)
+        .length;
+
+    return [
+      if (check == null)
+        (
+          'CPU, memory & disk',
+          _CheckOutcome.skipped,
+          'Server hasn\'t reported its capacity yet',
+        )
+      else if (!check.sufficientCpu || !check.sufficientMemory)
+        ('CPU, memory & disk', _CheckOutcome.fail, 'Not enough capacity')
+      else
+        (
+          'CPU, memory & disk',
+          switch (check.riskScore) {
+            'high' => _CheckOutcome.fail,
+            'medium' => _CheckOutcome.warn,
+            _ => _CheckOutcome.pass,
+          },
+          switch (check.riskScore) {
+            'high' => 'High risk',
+            'medium' => 'Medium risk',
+            _ => 'Low risk',
+          },
+        ),
+      preview.portConflicts.isEmpty
+          ? ('Host ports', _CheckOutcome.pass, 'No conflicts')
+          : (
+              'Host ports',
+              _CheckOutcome.fail,
+              '${preview.portConflicts.length} already in use',
+            ),
+      if (images.isEmpty)
+        ('Images & architecture', _CheckOutcome.skipped, 'Not checked')
+      else if (unavailable > 0)
+        (
+          'Images & architecture',
+          _CheckOutcome.fail,
+          '$unavailable unavailable',
+        )
+      else if (wrongArch > 0)
+        (
+          'Images & architecture',
+          _CheckOutcome.warn,
+          '$wrongArch not built for this server',
+        )
+      else
+        ('Images & architecture', _CheckOutcome.pass, 'All available'),
+      preview.volumeWarnings.isEmpty
+          ? ('Volume paths', _CheckOutcome.pass, 'Valid')
+          : (
+              'Volume paths',
+              _CheckOutcome.warn,
+              '${preview.volumeWarnings.length} issue(s)',
+            ),
+      preview.missingSecrets.isEmpty
+          ? ('Secrets & variables', _CheckOutcome.pass, 'All set')
+          : (
+              'Secrets & variables',
+              _CheckOutcome.fail,
+              '${preview.missingSecrets.length} missing',
+            ),
+      preview.networkWarnings.isEmpty
+          ? ('Networks', _CheckOutcome.pass, 'Valid')
+          : (
+              'Networks',
+              _CheckOutcome.warn,
+              '${preview.networkWarnings.length} issue(s)',
+            ),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final checks = _checks();
+    final failed = checks.where((c) => c.$2 == _CheckOutcome.fail).length;
+    final warned = checks.where((c) => c.$2 == _CheckOutcome.warn).length;
+    final headline = failed > 0
+        ? '$failed check(s) failed'
+        : warned > 0
+        ? 'Passed with $warned warning(s)'
+        : 'All checks passed';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Pre-deployment checks · $headline',
+          style: theme.textTheme.titleSmall,
+        ),
+        const SizedBox(height: 6),
+        for (final (name, outcome, detail) in checks)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              children: [
+                _outcomeIcon(context, outcome),
+                const SizedBox(width: 8),
+                Expanded(child: Text(name)),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    detail,
+                    textAlign: TextAlign.end,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Text(
+          'Service dependencies and conflicting settings were checked when '
+          'the Compose file was saved.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  static Widget _outcomeIcon(BuildContext context, _CheckOutcome outcome) {
+    return switch (outcome) {
+      _CheckOutcome.pass => const Icon(
+        Icons.check_circle,
+        size: 18,
+        color: AppColors.healthy,
+      ),
+      _CheckOutcome.warn => const Icon(
+        Icons.warning_amber_rounded,
+        size: 18,
+        color: AppColors.warning,
+      ),
+      _CheckOutcome.fail => Icon(
+        Icons.cancel,
+        size: 18,
+        color: Theme.of(context).colorScheme.error,
+      ),
+      _CheckOutcome.skipped => Icon(
+        Icons.remove_circle_outline,
+        size: 18,
+        color: Theme.of(context).colorScheme.outline,
+      ),
+    };
+  }
+}
+
 /// "Check image availability" + "Check host architecture compatibility" +
 /// "Validate volume paths" + "Detect missing secrets" + "Validate network
 /// configuration" — grouped into one list since each is a single-line
@@ -961,12 +1100,15 @@ class _ValidationIssuesSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final errorColor = Theme.of(context).colorScheme.error;
-    const warnColor = Colors.orange;
+    const warnColor = AppColors.warning;
 
     final lines = <(String, Color)>[
       for (final c in preview.imageChecks)
         if (!c.available)
-          ('${c.service}: image "${c.image}" unavailable — ${c.error}', errorColor)
+          (
+            '${c.service}: image "${c.image}" unavailable — ${c.error}',
+            errorColor,
+          )
         else if (!c.archCompatible)
           (
             '${c.service}: image "${c.image}" doesn\'t publish a build for '
@@ -1007,6 +1149,8 @@ class _ValidationIssuesSummary extends StatelessWidget {
   }
 }
 
+/// "Check required ports": lists any published host port that's already
+/// bound by another container on the target server.
 class _PortConflictSummary extends StatelessWidget {
   final List<DeploymentPortConflict> conflicts;
 
@@ -1042,6 +1186,8 @@ class _PortConflictSummary extends StatelessWidget {
   }
 }
 
+/// "Confirm sufficient CPU, RAM, and storage" + "Show estimated resource
+/// consumption" + "Generate deployment risk score".
 class _ResourceCheckSummary extends StatelessWidget {
   final DeploymentResourceCheck check;
 
@@ -1056,10 +1202,10 @@ class _ResourceCheckSummary extends StatelessWidget {
         color = Theme.of(context).colorScheme.error;
         label = 'High risk';
       case 'medium':
-        color = Colors.orange;
+        color = AppColors.warning;
         label = 'Medium risk';
       default:
-        color = Colors.green;
+        color = AppColors.healthy;
         label = 'Low risk';
     }
 

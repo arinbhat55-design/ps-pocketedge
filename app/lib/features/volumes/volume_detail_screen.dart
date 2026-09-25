@@ -4,6 +4,7 @@ import '../../api/api_client.dart';
 import '../../models/image.dart' show formatBytes;
 import '../../models/volume.dart';
 import 'volume_delete_dialog.dart';
+import '../../theme/app_theme.dart';
 
 /// Full metadata for one volume — driver, mountpoint, labels, size, and
 /// which containers currently mount it — fetched on demand from
@@ -65,12 +66,12 @@ class _VolumeDetailScreenState extends State<VolumeDetailScreen> {
             children: [
               if (volume.orphaned)
                 Card(
-                  color: Colors.orange.withValues(alpha: 0.1),
+                  color: AppColors.warning.withValues(alpha: 0.1),
                   child: const Padding(
                     padding: EdgeInsets.all(12),
                     child: Row(
                       children: [
-                        Icon(Icons.warning_amber, color: Colors.orange),
+                        Icon(Icons.warning_amber, color: AppColors.warning),
                         SizedBox(width: 12),
                         Expanded(
                           child: Text(
@@ -136,10 +137,10 @@ class _VolumeDetailScreenState extends State<VolumeDetailScreen> {
               const SizedBox(height: 24),
               OutlinedButton.icon(
                 onPressed: () => _delete(volume),
-                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                icon: const Icon(Icons.delete_outline, color: AppColors.failed),
                 label: const Text(
                   'Delete volume',
-                  style: TextStyle(color: Colors.red),
+                  style: TextStyle(color: AppColors.failed),
                 ),
               ),
             ],

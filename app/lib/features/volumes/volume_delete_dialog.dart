@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/volume.dart';
+import '../../theme/app_theme.dart';
 
 /// Shows the volume-delete confirmation dialog: the user must type the
 /// volume's exact name to enable the delete button (the client-side half of
@@ -110,13 +111,13 @@ class _VolumeDeleteDialogState extends State<_VolumeDeleteDialog> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(_error!, style: const TextStyle(color: AppColors.failed)),
               if (_offerForce) ...[
                 const SizedBox(height: 4),
                 const Text(
                   'This volume is still in use. Forcing removal may break '
                   'the container(s) using it.',
-                  style: TextStyle(color: Colors.orange),
+                  style: TextStyle(color: AppColors.warning),
                 ),
               ],
             ],
@@ -129,7 +130,7 @@ class _VolumeDeleteDialogState extends State<_VolumeDeleteDialog> {
           child: const Text('Cancel'),
         ),
         FilledButton(
-          style: FilledButton.styleFrom(backgroundColor: Colors.red),
+          style: FilledButton.styleFrom(backgroundColor: AppColors.failed),
           onPressed: _loading || (!_nameMatches && !_offerForce)
               ? null
               : () => _submit(force: _offerForce),

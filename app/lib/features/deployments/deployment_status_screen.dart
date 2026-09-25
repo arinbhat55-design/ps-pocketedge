@@ -16,6 +16,7 @@ import '../../models/git_repository.dart';
 import '../../models/server.dart';
 import '../backups/backups_screen.dart';
 import 'deployment_widgets.dart';
+import '../../theme/app_theme.dart';
 
 /// One deployment's live status and everything you can do to it: the
 /// rollout timeline (streamed), per-service progress, scaling, revisions
@@ -691,7 +692,7 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
                 padding: const EdgeInsets.all(16),
                 child: Text(
                   'Failed to load deployment: $_detailError',
-                  style: const TextStyle(color: Colors.red),
+                  style: const TextStyle(color: AppColors.failed),
                 ),
               )
             else
@@ -710,7 +711,7 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Text(
                   _streamError!,
-                  style: const TextStyle(color: Colors.red),
+                  style: const TextStyle(color: AppColors.failed),
                 ),
               ),
             const Divider(height: 1),
@@ -1297,7 +1298,7 @@ class _DriftReportView extends StatelessWidget {
                 Icon(
                   drifted ? Icons.warning_amber : Icons.check_circle_outline,
                   size: 18,
-                  color: drifted ? Colors.orange : Colors.green,
+                  color: drifted ? AppColors.warning : AppColors.healthy,
                 ),
                 const SizedBox(width: 8),
                 Text(title, style: Theme.of(context).textTheme.titleSmall),
@@ -1322,7 +1323,7 @@ class _DriftReportView extends StatelessWidget {
         Text(
           report.drifted ? 'Drift detected' : 'No drift — everything matches',
           style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            color: report.drifted ? Colors.orange : Colors.green,
+            color: report.drifted ? AppColors.warning : AppColors.healthy,
           ),
         ),
         Text(
@@ -1851,7 +1852,7 @@ class _MetadataDialogState extends State<_MetadataDialog> {
               ],
               if (_error != null) ...[
                 const SizedBox(height: 8),
-                Text(_error!, style: const TextStyle(color: Colors.red)),
+                Text(_error!, style: const TextStyle(color: AppColors.failed)),
               ],
             ],
           ),

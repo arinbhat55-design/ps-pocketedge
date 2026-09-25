@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../api/api_client.dart';
 import '../../models/image.dart';
 import '../../models/server.dart';
+import '../../theme/app_theme.dart';
 
 /// Shows the pull-image sheet: pick a server (unless preset), search a
 /// registry (Docker Hub by default, or a configured private registry) to
@@ -298,7 +299,7 @@ class _PullImageSheetState extends State<_PullImageSheet> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(_error!, style: const TextStyle(color: AppColors.failed)),
             ],
             const SizedBox(height: 16),
             Row(

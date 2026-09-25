@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../api/api_client.dart';
 import '../../models/schedule.dart';
 import 'schedule_dialog.dart';
+import '../../theme/app_theme.dart';
 
 /// Lists a single container's start/stop schedules (recurring and
 /// one-time), with an enable switch and delete per row, and an "Add
@@ -40,7 +41,9 @@ class _ContainerSchedulesScreenState extends State<ContainerSchedulesScreen> {
   }
 
   void _refresh() {
-    setState(() => _schedulesFuture = _load());
+    setState(() {
+      _schedulesFuture = _load();
+    });
   }
 
   Future<void> _addSchedule() async {
@@ -140,7 +143,7 @@ class _ContainerSchedulesScreenState extends State<ContainerSchedulesScreen> {
               return ListTile(
                 leading: Icon(
                   s.action == 'start' ? Icons.play_arrow : Icons.stop,
-                  color: s.enabled ? null : Colors.grey,
+                  color: s.enabled ? null : AppColors.neutral,
                 ),
                 title: Text(
                   '${s.action == 'start' ? 'Start' : 'Stop'} — ${_describe(s)}',

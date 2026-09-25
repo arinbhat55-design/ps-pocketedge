@@ -28,14 +28,20 @@ class _ImagePolicyScreenState extends State<ImagePolicyScreen> {
   }
 
   void _refreshPatterns() {
-    setState(() => _patternsFuture = widget.apiClient.listApprovedImages());
+    setState(() {
+      _patternsFuture = widget.apiClient.listApprovedImages();
+    });
   }
 
   Future<void> _toggle(bool value) async {
     setState(() => _togglingPolicy = true);
     try {
       await widget.apiClient.setImagePolicyEnabled(value);
-      if (mounted) setState(() => _enabledFuture = Future.value(value));
+      if (mounted) {
+        setState(() {
+          _enabledFuture = Future.value(value);
+        });
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(

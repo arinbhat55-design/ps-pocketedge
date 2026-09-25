@@ -8,6 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../../api/api_client.dart';
 import '../../models/image.dart' show formatBytes;
 import '../../models/server_metrics.dart';
+import '../../theme/app_theme.dart';
 
 /// Real-time and historical CPU/memory/network/storage consumption for one
 /// container. Live values ride the same per-server WebSocket stream the
@@ -136,7 +137,7 @@ class _ContainerResourcesScreenState extends State<ContainerResourcesScreen> {
             padding: const EdgeInsets.only(bottom: 16),
             child: Text(
               _streamError!,
-              style: const TextStyle(color: Colors.orange),
+              style: const TextStyle(color: AppColors.warning),
             ),
           ),
         if (latest == null)
@@ -176,12 +177,12 @@ class _ContainerResourcesScreenState extends State<ContainerResourcesScreen> {
             ],
           ),
         const SizedBox(height: 24),
-        _MetricChart(label: 'CPU %', values: _cpuHistory, color: Colors.blue),
+        _MetricChart(label: 'CPU %', values: _cpuHistory, color: AppColors.chartLine),
         const SizedBox(height: 16),
         _MetricChart(
           label: 'Memory %',
           values: _memHistory,
-          color: Colors.purple,
+          color: AppColors.chartLine,
         ),
       ],
     );

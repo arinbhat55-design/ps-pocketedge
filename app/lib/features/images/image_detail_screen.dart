@@ -2,14 +2,15 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/image.dart';
+import '../../theme/app_theme.dart';
 
 const _severityOrder = ['critical', 'high', 'medium', 'low', 'unknown'];
 const _severityColors = {
-  'critical': Colors.red,
-  'high': Colors.deepOrange,
-  'medium': Colors.orange,
+  'critical': AppColors.failed,
+  'high': AppColors.warning,
+  'medium': AppColors.warning,
   'low': Colors.blueGrey,
-  'unknown': Colors.grey,
+  'unknown': AppColors.neutral,
 };
 
 /// Full detail for one image: the cheap [ImageSummary] fields (already
@@ -87,7 +88,9 @@ class _ImageDetailScreenState extends State<ImageDetailScreen> {
         widget.image.repoTags.first,
       );
       if (mounted) {
-        setState(() => _scanFuture = Future.value(result));
+        setState(() {
+          _scanFuture = Future.value(result);
+        });
       }
     } catch (e) {
       if (mounted) setState(() => _scanError = '$e');
@@ -108,7 +111,7 @@ class _ImageDetailScreenState extends State<ImageDetailScreen> {
         children: [
           if (img.dangling)
             const Card(
-              color: Colors.amber,
+              color: AppColors.warning,
               child: Padding(
                 padding: EdgeInsets.all(12),
                 child: Row(
@@ -164,8 +167,8 @@ class _ImageDetailScreenState extends State<ImageDetailScreen> {
                           ? Icons.check_circle
                           : Icons.new_releases,
                       color: _updateStatus!.upToDate
-                          ? Colors.green
-                          : Colors.orange,
+                          ? AppColors.healthy
+                          : AppColors.warning,
                       size: 18,
                     ),
                     const SizedBox(width: 8),
@@ -204,7 +207,7 @@ class _ImageDetailScreenState extends State<ImageDetailScreen> {
           if (_scanError != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text(_scanError!, style: const TextStyle(color: Colors.red)),
+              child: Text(_scanError!, style: const TextStyle(color: AppColors.failed)),
             ),
           if (_scanFuture != null)
             FutureBuilder<ScanResult?>(
@@ -352,7 +355,7 @@ class _ScanSummary extends StatelessWidget {
                     Icons.circle,
                     size: 10,
                     color: _severityColors[v.severity.toLowerCase()] ??
-                        Colors.grey,
+                        AppColors.neutral,
                   ),
                   title: Text('${v.id} — ${v.pkgName}'),
                   subtitle: Text(

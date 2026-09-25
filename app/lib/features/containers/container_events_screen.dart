@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/log_line.dart';
+import '../../theme/app_theme.dart';
 
 /// Bounded history of Docker events for one container (start/stop/die/
 /// health_status/oom/...) — the troubleshooting "what happened here" view.
@@ -70,10 +71,10 @@ class _ContainerEventsScreenState extends State<ContainerEventsScreen> {
         action == 'die' ||
         action == 'oom' ||
         action == 'kill') {
-      return Colors.redAccent;
+      return AppColors.failed;
     }
     if (action == 'start' || action.contains('health_status: healthy')) {
-      return Colors.green;
+      return AppColors.healthy;
     }
     return null;
   }

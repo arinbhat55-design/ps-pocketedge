@@ -2,11 +2,14 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
+import '../../widgets/page_intro.dart';
+import '../../widgets/state_message.dart';
 import '../../models/image.dart' show formatBytes;
 import '../../models/volume.dart';
 import 'volume_create_dialog.dart';
 import 'volume_delete_dialog.dart';
 import 'volume_detail_screen.dart';
+import '../../theme/app_theme.dart';
 
 /// Volume management: fleet-wide (or per-server) volume inventory with
 /// search/filter, create/delete, orphan detection, and usage/metadata
@@ -45,7 +48,9 @@ class _VolumeListScreenState extends State<VolumeListScreen> {
   }
 
   void _refresh() {
-    setState(() => _volumesFuture = _load());
+    setState(() {
+      _volumesFuture = _load();
+    });
   }
 
   List<VolumeSummary> _filter(List<VolumeSummary> volumes) {
@@ -91,16 +96,27 @@ class _VolumeListScreenState extends State<VolumeListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final create = PrimaryAction(
+      label: 'Create volume',
+      icon: Icons.add,
+      onPressed: _openCreate,
+    );
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openCreate,
-        icon: const Icon(Icons.add),
-        label: const Text('Create volume'),
+      appBar: AppBar(
+        title: const Text('Volumes'),
+        actions: [?create.appBarAction(context)],
       ),
+      floatingActionButton: create.fab(context),
       body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const PageIntro(
+            description:
+                'Named volumes keep container data across restarts and '
+                're-creates. Orphaned ones are attached to nothing.',
+          ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            padding: const EdgeInsets.fromLTRB(Space.lg, Space.md, Space.lg, 0),
             child: TextField(
               controller: _searchController,
               onChanged: (_) => setState(() {}),
@@ -120,23 +136,29 @@ class _VolumeListScreenState extends State<VolumeListScreen> {
                   return const Center(child: CircularProgressIndicator());
                 }
                 if (snapshot.hasError) {
-                  return Center(
-                    child: Text('Failed to load volumes: ${snapshot.error}'),
+                  return StateMessage.error(
+                    what: 'volumes',
+                    error: snapshot.error,
+                    onRetry: _refresh,
                   );
                 }
                 final all = snapshot.data ?? [];
-                final servers = <String, String>{
+                // Merged rather than replaced: the listing is filtered by
+                // server, so rebuilding from it alone would hide the other
+                // servers' chips.
+                _serverNames = {
+                  ..._serverNames,
                   for (final v in all) v.serverId: v.serverName,
                 };
-                _serverNames = servers;
+                final servers = _serverNames;
                 final volumes = _filter(all);
 
                 return Column(
                   children: [
                     Padding(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
+                        horizontal: Space.lg,
+                        vertical: Space.md,
                       ),
                       child: Wrap(
                         spacing: 8,
@@ -174,7 +196,35 @@ class _VolumeListScreenState extends State<VolumeListScreen> {
                     ),
                     Expanded(
                       child: volumes.isEmpty
-                          ? const Center(child: Text('No volumes found.'))
+                          ? (all.isNotEmpty || _selectedServerId != null
+                                ? StateMessage(
+                                    icon: Icons.filter_alt_off_outlined,
+                                    title: 'No volumes match',
+                                    message:
+                                        'Nothing matches the current search '
+                                        'and filters.',
+                                    actionLabel: 'Clear filters',
+                                    actionIcon: Icons.filter_alt_off,
+                                    onAction: () {
+                                      _searchController.clear();
+                                      final reload = _selectedServerId != null;
+                                      setState(() {
+                                        _selectedServerId = null;
+                                        _orphanedOnly = false;
+                                      });
+                                      if (reload) _refresh();
+                                    },
+                                  )
+                                : StateMessage(
+                                    icon: Icons.storage_outlined,
+                                    title: 'No volumes yet',
+                                    message:
+                                        'Named volumes keep container data '
+                                        'across restarts and re-creates.',
+                                    actionLabel: 'Create volume',
+                                    actionIcon: Icons.add,
+                                    onAction: _openCreate,
+                                  ))
                           : _VolumeTable(
                               volumes: volumes,
                               onOpenDetail: _openDetail,
@@ -279,7 +329,7 @@ class _VolumeTableState extends State<_VolumeTable> {
           Icon(
             volume.orphaned ? Icons.help_outline : Icons.storage_outlined,
             size: 18,
-            color: volume.orphaned ? Colors.orange : null,
+            color: volume.orphaned ? AppColors.warning : null,
           ),
         ),
         DataCell(Text(volume.name)),
@@ -295,7 +345,7 @@ class _VolumeTableState extends State<_VolumeTable> {
             icon: const Icon(Icons.delete_outline, size: 18),
             tooltip: 'Delete',
             visualDensity: VisualDensity.compact,
-            color: Colors.red,
+            color: AppColors.failed,
             onPressed: () => widget.onDelete(volume),
           ),
         ),

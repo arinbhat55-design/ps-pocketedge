@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/image.dart';
+import '../../theme/app_theme.dart';
 
 /// Admin-only CRUD for private registry credentials, used for pulling
 /// from/searching private registries elsewhere in the Images module.
@@ -24,7 +25,9 @@ class _RegistriesScreenState extends State<RegistriesScreen> {
   }
 
   void _refresh() {
-    setState(() => _registriesFuture = widget.apiClient.listRegistries());
+    setState(() {
+      _registriesFuture = widget.apiClient.listRegistries();
+    });
   }
 
   Future<void> _addRegistry() async {
@@ -111,7 +114,7 @@ class _RegistriesScreenState extends State<RegistriesScreen> {
             child: const Text('Cancel'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.failed),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Remove'),
           ),

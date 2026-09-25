@@ -5,6 +5,7 @@ import '../../api/api_client.dart';
 import '../../models/compose_file.dart';
 import '../../models/deployment.dart';
 import '../../models/git_repository.dart';
+import '../../theme/app_theme.dart';
 
 /// Git-based deployment: repositories Compose files can be imported from,
 /// their push-webhook setup, and the Compose files linked to each (with
@@ -463,7 +464,7 @@ class _RepositoryDialogState extends State<_RepositoryDialog> {
               ),
               if (_error != null) ...[
                 const SizedBox(height: 8),
-                Text(_error!, style: const TextStyle(color: Colors.red)),
+                Text(_error!, style: const TextStyle(color: AppColors.failed)),
               ],
             ],
           ),
@@ -658,7 +659,7 @@ class _ImportFromGitDialogState extends State<ImportFromGitDialog> {
                   if (snapshot.hasError) {
                     return Text(
                       'Couldn\'t list branches: ${snapshot.error}',
-                      style: const TextStyle(color: Colors.red),
+                      style: const TextStyle(color: AppColors.failed),
                     );
                   }
                   final refs = snapshot.data;
@@ -724,13 +725,13 @@ class _ImportFromGitDialogState extends State<ImportFromGitDialog> {
                   '${preview.parse.valid ? 'valid Compose file' : 'invalid'}'
                   '${preview.parse.serviceNames.isEmpty ? '' : ' • services: ${preview.parse.serviceNames.join(', ')}'}',
                   style: TextStyle(
-                    color: preview.parse.valid ? Colors.green : Colors.red,
+                    color: preview.parse.valid ? AppColors.healthy : AppColors.failed,
                   ),
                 ),
                 for (final e in preview.parse.errors)
-                  Text('• $e', style: const TextStyle(color: Colors.red)),
+                  Text('• $e', style: const TextStyle(color: AppColors.failed)),
                 for (final w in preview.parse.warnings)
-                  Text('• $w', style: const TextStyle(color: Colors.orange)),
+                  Text('• $w', style: const TextStyle(color: AppColors.warning)),
                 const SizedBox(height: 8),
                 Container(
                   height: 220,
@@ -764,7 +765,7 @@ class _ImportFromGitDialogState extends State<ImportFromGitDialog> {
               ],
               if (_error != null) ...[
                 const SizedBox(height: 8),
-                Text(_error!, style: const TextStyle(color: Colors.red)),
+                Text(_error!, style: const TextStyle(color: AppColors.failed)),
               ],
             ],
           ),

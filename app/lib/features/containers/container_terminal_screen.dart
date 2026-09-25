@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../api/api_client.dart';
+import '../../theme/app_theme.dart';
 
 /// ANSI CSI escape sequences (cursor movement, color codes, etc.) stripped
 /// from pty output before display — this widget is a plain scrollback
@@ -195,7 +196,7 @@ class _ContainerTerminalScreenState extends State<ContainerTerminalScreen> {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            color: Colors.orange.withValues(alpha: 0.15),
+            color: AppColors.warning.withValues(alpha: 0.15),
             child: Text(_exitMessage!, style: const TextStyle(fontSize: 12)),
           ),
         Expanded(

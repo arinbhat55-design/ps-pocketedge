@@ -51,6 +51,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 
 	mux.Handle("GET /api/servers", authMgr.RequireAuth(handleListServers(log, st)))
 	mux.Handle("POST /api/servers/enroll-token", authMgr.RequireAuth(handleCreateEnrollmentToken(log, st)))
+	mux.Handle("DELETE /api/servers/{id}", authMgr.RequireAdmin(handleRemoveServer(log, st, dispatcher)))
 	mux.Handle("GET /api/servers/{id}", authMgr.RequireAuth(handleGetServer(log, st)))
 	mux.Handle("GET /api/servers/{id}/metrics", authMgr.RequireAuth(handleGetServerMetrics(log, st)))
 	// Auth via ?token= query param, not the Authorization header — see

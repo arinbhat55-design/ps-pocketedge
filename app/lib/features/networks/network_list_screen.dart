@@ -2,9 +2,12 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
+import '../../widgets/page_intro.dart';
+import '../../widgets/state_message.dart';
 import '../../models/network.dart';
 import 'network_connect_dialog.dart';
 import 'network_create_dialog.dart';
+import '../../theme/app_theme.dart';
 
 /// Network management: fleet-wide (or per-server) network inventory with
 /// create/remove and connecting/disconnecting containers.
@@ -33,7 +36,9 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
   }
 
   void _refresh() {
-    setState(() => _networksFuture = _load());
+    setState(() {
+      _networksFuture = _load();
+    });
   }
 
   Future<void> _openCreate() async {
@@ -99,7 +104,7 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
             child: const Text('Cancel'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.failed),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Remove'),
           ),
@@ -132,74 +137,107 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final create = PrimaryAction(
+      label: 'Create network',
+      icon: Icons.add,
+      onPressed: _openCreate,
+    );
     return Scaffold(
-      appBar: AppBar(title: const Text('Networks')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openCreate,
-        icon: const Icon(Icons.add),
-        label: const Text('Create network'),
+      appBar: AppBar(
+        title: const Text('Networks'),
+        actions: [?create.appBarAction(context)],
       ),
-      body: FutureBuilder<List<NetworkSummary>>(
-        future: _networksFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(
-              child: Text('Failed to load networks: ${snapshot.error}'),
-            );
-          }
-          final all = snapshot.data ?? [];
-          final servers = <String, String>{
-            for (final n in all) n.serverId: n.serverName,
-          };
-          _serverNames = servers;
+      floatingActionButton: create.fab(context),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const PageIntro(
+            description:
+                'Docker networks on each server. Containers on the same '
+                'network can reach each other by name.',
+          ),
+          Expanded(
+            child: FutureBuilder<List<NetworkSummary>>(
+              future: _networksFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return StateMessage.error(
+                    what: 'networks',
+                    error: snapshot.error,
+                    onRetry: _refresh,
+                  );
+                }
+                final all = snapshot.data ?? [];
+                // Merged rather than replaced: the listing is filtered by server,
+                // so rebuilding from it alone would hide the other servers' chips.
+                _serverNames = {
+                  ..._serverNames,
+                  for (final n in all) n.serverId: n.serverName,
+                };
+                final servers = _serverNames;
 
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                return Column(
                   children: [
-                    ChoiceChip(
-                      label: const Text('All servers'),
-                      selected: _selectedServerId == null,
-                      onSelected: (_) {
-                        setState(() => _selectedServerId = null);
-                        _refresh();
-                      },
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: Space.lg,
+                        vertical: Space.md,
+                      ),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          ChoiceChip(
+                            label: const Text('All servers'),
+                            selected: _selectedServerId == null,
+                            onSelected: (_) {
+                              setState(() => _selectedServerId = null);
+                              _refresh();
+                            },
+                          ),
+                          for (final entry in servers.entries)
+                            ChoiceChip(
+                              label: Text(entry.value),
+                              selected: _selectedServerId == entry.key,
+                              onSelected: (_) {
+                                setState(() => _selectedServerId = entry.key);
+                                _refresh();
+                              },
+                            ),
+                        ],
+                      ),
                     ),
-                    for (final entry in servers.entries)
-                      ChoiceChip(
-                        label: Text(entry.value),
-                        selected: _selectedServerId == entry.key,
-                        onSelected: (_) {
-                          setState(() => _selectedServerId = entry.key);
-                          _refresh();
-                        },
-                      ),
+                    Expanded(
+                      child: all.isEmpty
+                          ? StateMessage(
+                              icon: Icons.hub_outlined,
+                              title: _selectedServerId == null
+                                  ? 'No networks yet'
+                                  : 'No networks on this server',
+                              message:
+                                  'Custom networks let containers reach each other '
+                                  'by name. Docker\'s built-in networks appear once '
+                                  'a server has reported in.',
+                              actionLabel: 'Create network',
+                              actionIcon: Icons.add,
+                              onAction: _openCreate,
+                            )
+                          : _NetworkTable(
+                              networks: all,
+                              onConnect: _openConnect,
+                              onDisconnect: _disconnect,
+                              onRemove: _removeNetwork,
+                            ),
+                    ),
                   ],
-                ),
-              ),
-              Expanded(
-                child: all.isEmpty
-                    ? const Center(child: Text('No networks found.'))
-                    : _NetworkTable(
-                        networks: all,
-                        onConnect: _openConnect,
-                        onDisconnect: _disconnect,
-                        onRemove: _removeNetwork,
-                      ),
-              ),
-            ],
-          );
-        },
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -332,7 +370,7 @@ class _NetworkTableState extends State<_NetworkTable> {
                   icon: const Icon(Icons.delete_outline, size: 18),
                   tooltip: 'Remove network',
                   visualDensity: VisualDensity.compact,
-                  color: Colors.red,
+                  color: AppColors.failed,
                   onPressed: () => widget.onRemove(network),
                 ),
               ],
@@ -360,7 +398,10 @@ class _NetworkTableState extends State<_NetworkTable> {
                   children: [
                     const Icon(Icons.view_in_ar_outlined, size: 16),
                     const SizedBox(width: 6),
-                    Text(shortId, style: const TextStyle(fontFamily: 'monospace')),
+                    Text(
+                      shortId,
+                      style: const TextStyle(fontFamily: 'monospace'),
+                    ),
                   ],
                 ),
               ),

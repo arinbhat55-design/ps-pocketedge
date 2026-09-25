@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
+import '../../theme/app_theme.dart';
 
 /// Shows the rename dialog. Pops with true on success, false/null if
 /// cancelled or failed.
@@ -93,7 +94,7 @@ class _RenameContainerDialogState extends State<_RenameContainerDialog> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(_error!, style: const TextStyle(color: AppColors.failed)),
             ],
           ],
         ),

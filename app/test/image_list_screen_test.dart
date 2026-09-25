@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:app/api/api_client.dart';
+import 'package:app/widgets/state_message.dart';
 import 'package:app/features/images/image_list_screen.dart';
 
 void main() {
@@ -18,13 +19,18 @@ void main() {
     );
 
     await tester.pumpWidget(
-      MaterialApp(
-        home: ImageListScreen(apiClient: client, isAdmin: false),
-      ),
+      MaterialApp(home: ImageListScreen(apiClient: client, isAdmin: false)),
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('No images found.'), findsOneWidget);
+    expect(find.text('No images yet'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(StateMessage),
+        matching: find.widgetWithText(FilledButton, 'Pull image'),
+      ),
+      findsOneWidget,
+    );
     // Non-admin users shouldn't see the Registries/Policy tabs.
     expect(find.text('Registries'), findsNothing);
     expect(find.text('Policy'), findsNothing);
@@ -91,7 +97,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('nginx:latest'), findsOneWidget);
-    expect(find.textContaining('(dangling)'), findsOneWidget);
+    expect(find.text('Untagged image'), findsOneWidget);
+    expect(find.text('Dangling'), findsOneWidget);
     // A "my-server" chip for filtering plus its appearance in each row's
     // subtitle.
     expect(find.text('my-server'), findsWidgets);

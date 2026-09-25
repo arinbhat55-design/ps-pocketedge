@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/user.dart';
+import '../../widgets/state_message.dart';
 import '../containers/container_list_screen.dart';
 import '../compose/docker_compose_screen.dart';
 import '../images/image_list_screen.dart';
@@ -11,13 +12,12 @@ import '../users/change_password_dialog.dart';
 import '../users/user_list_screen.dart';
 import '../volumes/volume_list_screen.dart';
 
-/// Post-login shell: a persistent left [NavigationRail] listing the app's
-/// main modules (Servers, Containers, and — admin only — Users), with the
-/// selected module's screen shown alongside it in an [IndexedStack] so
-/// switching tabs doesn't lose each module's scroll/search state. Replaces
-/// the old design where ServerListScreen was the sole home screen and
-/// every other module was reached by pushing/popping from its AppBar
-/// icons.
+/// Post-login shell: lists the app's main modules (Servers, Containers,
+/// ... and — admin only — Users), with the selected module's screen in an
+/// [IndexedStack] so switching modules doesn't lose each one's
+/// scroll/search state. Wider than [kCompactWidth] it's a persistent left
+/// [NavigationRail]; on phones it's a bottom [NavigationBar] with a "More"
+/// sheet for the remaining modules and account actions.
 class AppShell extends StatefulWidget {
   final ApiClient apiClient;
   final VoidCallback onLogout;
@@ -62,12 +62,14 @@ class _AppShellState extends State<AppShell> {
             icon: Icons.dns_outlined,
             selectedIcon: Icons.dns,
             label: 'Servers',
-            builder: (_) => ServerListScreen(apiClient: widget.apiClient),
+            builder: (_) =>
+                ServerListScreen(apiClient: widget.apiClient, isAdmin: isAdmin),
           ),
           _ModuleDestination(
             icon: Icons.view_in_ar_outlined,
             selectedIcon: Icons.view_in_ar,
             label: 'Container Management',
+            shortLabel: 'Containers',
             builder: (_) => ContainerListScreen(apiClient: widget.apiClient),
           ),
           _ModuleDestination(
@@ -93,6 +95,7 @@ class _AppShellState extends State<AppShell> {
             icon: Icons.rocket_launch_outlined,
             selectedIcon: Icons.rocket_launch,
             label: 'Deployment Management',
+            shortLabel: 'Deploy',
             builder: (_) => DockerComposeScreen(
               apiClient: widget.apiClient,
               isAdmin: isAdmin,
@@ -113,8 +116,21 @@ class _AppShellState extends State<AppShell> {
         final selectedIndex = _selectedIndex < destinations.length
             ? _selectedIndex
             : 0;
-        final wide = MediaQuery.of(context).size.width > 800;
+        final pages = IndexedStack(
+          index: selectedIndex,
+          children: [for (final d in destinations) d.builder(context)],
+        );
 
+        if (isCompactWidth(context)) {
+          return _buildPhoneLayout(
+            destinations: destinations,
+            selectedIndex: selectedIndex,
+            email: snapshot.data?.email,
+            body: pages,
+          );
+        }
+
+        final wide = MediaQuery.sizeOf(context).width > 800;
         return Scaffold(
           body: Row(
             children: [
@@ -146,37 +162,149 @@ class _AppShellState extends State<AppShell> {
                     NavigationRailDestination(
                       icon: Icon(d.icon),
                       selectedIcon: Icon(d.selectedIcon),
-                      label: Text(d.label),
+                      label: Text(wide ? d.label : d.shortLabel),
                     ),
                 ],
               ),
               const VerticalDivider(width: 1),
-              Expanded(
-                child: IndexedStack(
-                  index: selectedIndex,
-                  children: [for (final d in destinations) d.builder(context)],
-                ),
-              ),
+              Expanded(child: pages),
             ],
           ),
         );
       },
     );
   }
+
+  /// Phones: a bottom [NavigationBar] with the first
+  /// [_primaryDestinationCount] modules plus a "More" slot that opens a
+  /// sheet listing the rest (Networks, Volumes, Users) and the account
+  /// actions the rail shows on wider screens.
+  Widget _buildPhoneLayout({
+    required List<_ModuleDestination> destinations,
+    required int selectedIndex,
+    required String? email,
+    required Widget body,
+  }) {
+    final primary = destinations.take(_primaryDestinationCount).toList();
+    final overflow = destinations.skip(_primaryDestinationCount).toList();
+    final inOverflow = selectedIndex >= primary.length;
+    final moreDestination = inOverflow ? destinations[selectedIndex] : null;
+
+    return Scaffold(
+      body: body,
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: inOverflow ? primary.length : selectedIndex,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        onDestinationSelected: (i) {
+          if (i < primary.length) {
+            setState(() => _selectedIndex = i);
+          } else {
+            _openMoreSheet(
+              overflow: overflow,
+              firstOverflowIndex: primary.length,
+              selectedIndex: selectedIndex,
+              email: email,
+            );
+          }
+        },
+        destinations: [
+          for (final d in primary)
+            NavigationDestination(
+              icon: Icon(d.icon),
+              selectedIcon: Icon(d.selectedIcon),
+              label: d.shortLabel,
+            ),
+          NavigationDestination(
+            icon: Icon(moreDestination?.icon ?? Icons.menu),
+            selectedIcon: Icon(moreDestination?.selectedIcon ?? Icons.menu),
+            label: moreDestination?.shortLabel ?? 'More',
+            tooltip: 'More',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openMoreSheet({
+    required List<_ModuleDestination> overflow,
+    required int firstOverflowIndex,
+    required int selectedIndex,
+    required String? email,
+  }) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            for (var i = 0; i < overflow.length; i++)
+              ListTile(
+                leading: Icon(
+                  firstOverflowIndex + i == selectedIndex
+                      ? overflow[i].selectedIcon
+                      : overflow[i].icon,
+                ),
+                title: Text(overflow[i].label),
+                selected: firstOverflowIndex + i == selectedIndex,
+                onTap: () => Navigator.of(
+                  context,
+                ).pop('module:${firstOverflowIndex + i}'),
+              ),
+            const Divider(),
+            if (email != null)
+              ListTile(
+                leading: const CircleAvatar(
+                  radius: 14,
+                  child: Icon(Icons.person, size: 16),
+                ),
+                title: Text(email, overflow: TextOverflow.ellipsis),
+                subtitle: const Text('Signed in'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.password),
+              title: const Text('Change password'),
+              onTap: () => Navigator.of(context).pop('password'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Log out'),
+              onTap: () => Navigator.of(context).pop('logout'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action.startsWith('module:')) {
+      setState(() => _selectedIndex = int.parse(action.substring(7)));
+    } else if (action == 'password') {
+      _openChangePassword();
+    } else if (action == 'logout') {
+      widget.onLogout();
+    }
+  }
 }
+
+/// How many modules get their own slot in the phone bottom bar; the rest
+/// go behind "More". Four plus "More" keeps each slot wide enough for its
+/// label on a 360 px screen.
+const _primaryDestinationCount = 4;
 
 class _ModuleDestination {
   final IconData icon;
   final IconData selectedIcon;
   final String label;
+  final String shortLabel;
   final WidgetBuilder builder;
 
   const _ModuleDestination({
     required this.icon,
     required this.selectedIcon,
     required this.label,
+    String? shortLabel,
     required this.builder,
-  });
+  }) : shortLabel = shortLabel ?? label;
 }
 
 class _AccountMenu extends StatelessWidget {

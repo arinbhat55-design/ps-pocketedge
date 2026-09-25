@@ -14,6 +14,11 @@ import 'recreate_container_dialog.dart';
 import 'rename_container_dialog.dart';
 import 'resource_limits_dialog.dart';
 import 'restart_policy_dialog.dart';
+import '../../theme/app_theme.dart';
+import '../../models/server.dart';
+import '../../widgets/formatting.dart';
+import '../../widgets/notice_banner.dart';
+import '../../widgets/status_pill.dart';
 
 /// Full detail for one container: the cheap [ContainerInfo] fields (already
 /// known from the list/stream, shown immediately) plus the expensive
@@ -26,6 +31,8 @@ class ContainerDetailScreen extends StatefulWidget {
   final String serverId;
   final String serverName;
   final ContainerInfo container;
+  // 0 Overview, 1 Resources, 2 Logs, 3 Terminal, 4 Events.
+  final int initialTab;
 
   const ContainerDetailScreen({
     super.key,
@@ -33,6 +40,7 @@ class ContainerDetailScreen extends StatefulWidget {
     required this.serverId,
     required this.serverName,
     required this.container,
+    this.initialTab = 0,
   });
 
   @override
@@ -44,6 +52,7 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
   late final TabController _tabController = TabController(
     length: 5,
     vsync: this,
+    initialIndex: widget.initialTab,
   );
   late Future<ContainerDetail> _detailFuture;
   late final String _currentName = widget.container.name;
@@ -54,10 +63,30 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
   // the fleet-wide/per-server list knows to refresh instead of showing
   // stale state.
   bool _changed = false;
+  // The container's server, to tell live state from a stale snapshot:
+  // if its agent has stopped reporting, the state below is only the last
+  // thing it reported.
+  Server? _server;
+
+  bool get _serverDisconnected =>
+      _server != null && serverStatus(_server!).tone == StatusTone.failed;
+
+  Future<void> _loadServer() async {
+    try {
+      final servers = await widget.apiClient.listServers();
+      if (!mounted) return;
+      setState(() {
+        _server = servers.where((s) => s.id == widget.serverId).firstOrNull;
+      });
+    } catch (_) {
+      // Without it the page behaves as before (state shown as reported).
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    _loadServer();
     _detailFuture = widget.apiClient.inspectContainer(
       widget.serverId,
       widget.container.containerId,
@@ -203,7 +232,7 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
             child: const Text('Cancel'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.failed),
             onPressed: () => Navigator.of(context).pop(true),
             child: Text(action == 'kill' ? 'Force-kill' : 'Remove'),
           ),
@@ -474,11 +503,46 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
             ),
           ),
         if (c.deploymentId != null) const SizedBox(height: 16),
+        if (_serverDisconnected) ...[
+          NoticeBanner(
+            tone: StatusTone.warning,
+            icon: Icons.link_off,
+            title: '${widget.serverName} is disconnected',
+            message: _server!.lastHeartbeatAt == null
+                ? 'Its agent hasn\'t reported yet, so this container\'s '
+                      'current state is unknown.'
+                : 'Its agent last reported '
+                      '${formatAgo(_server!.lastHeartbeatAt!)}. Details below '
+                      'are from that report and may be out of date; actions '
+                      'will fail until it reconnects.',
+          ),
+          const SizedBox(height: Space.lg),
+        ],
         Row(
           children: [
-            Icon(Icons.circle, size: 10, color: containerStateColor(c.state)),
-            const SizedBox(width: 8),
-            Text(c.status?.isNotEmpty == true ? c.status! : c.state),
+            StatusPill.of(
+              _serverDisconnected
+                  ? (label: 'Unknown', tone: StatusTone.neutral)
+                  : containerStatusDetailed(c.state, c.status),
+            ),
+            if (_serverDisconnected) ...[
+              const SizedBox(width: Space.sm),
+              Flexible(
+                child: Text(
+                  'Was ${containerStatus(c.state).label.toLowerCase()}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ] else if (c.status?.isNotEmpty == true) ...[
+              const SizedBox(width: Space.sm),
+              Flexible(
+                child: Text(
+                  c.status!,
+                  style: Theme.of(context).textTheme.bodySmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
           ],
         ),
         const SizedBox(height: 16),
@@ -558,7 +622,7 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Text(
                   'Failed to load container details: ${snapshot.error}',
-                  style: const TextStyle(color: Colors.orange),
+                  style: const TextStyle(color: AppColors.warning),
                 ),
               );
             }

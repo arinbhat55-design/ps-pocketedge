@@ -51,10 +51,11 @@ func (s *Store) CreateServer(ctx context.Context, hostname, osName, arch, agentV
 
 // GetAgentTokenHash returns the hashed bearer credential for serverID, used
 // to authenticate the agent's persistent Session stream. Returns
-// ErrNotFound if no such server exists.
+// ErrNotFound if no such server exists or it has been removed, so a
+// removed server's agent can no longer connect.
 func (s *Store) GetAgentTokenHash(ctx context.Context, serverID string) (string, error) {
 	var hash string
-	err := s.pool.QueryRow(ctx, `SELECT agent_token_hash FROM servers WHERE id = $1`, serverID).Scan(&hash)
+	err := s.pool.QueryRow(ctx, `SELECT agent_token_hash FROM servers WHERE id = $1 AND removed_at IS NULL`, serverID).Scan(&hash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
@@ -73,13 +74,14 @@ func (s *Store) RecordHeartbeat(ctx context.Context, serverID string, resources 
 	_, err = s.pool.Exec(ctx, `
 		UPDATE servers
 		SET status = 'online', last_heartbeat_at = now(), last_resources = $2
-		WHERE id = $1
+		WHERE id = $1 AND removed_at IS NULL
 	`, serverID, payload)
 	return err
 }
 
 // GetServer looks up a single server by ID. Returns ErrNotFound if it
-// doesn't exist.
+// doesn't exist. Removed servers are still returned, so deployment history
+// can keep showing where a past deployment ran.
 func (s *Store) GetServer(ctx context.Context, id string) (*Server, error) {
 	var sv Server
 	err := s.pool.QueryRow(ctx, `
@@ -96,11 +98,13 @@ func (s *Store) GetServer(ctx context.Context, id string) (*Server, error) {
 	return &sv, nil
 }
 
-// ListServers returns all registered servers, most recently created first.
+// ListServers returns all registered, non-removed servers, most recently
+// created first.
 func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, name, hostname, os, arch, agent_version, status, last_heartbeat_at, last_resources, created_at
 		FROM servers
+		WHERE removed_at IS NULL
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -118,4 +122,40 @@ func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 		servers = append(servers, sv)
 	}
 	return servers, rows.Err()
+}
+
+// RetireServer removes a server from the fleet: it's marked removed (hidden
+// from ListServers, its agent can no longer authenticate) and its
+// point-in-time data — container snapshot, metric history, and container
+// schedules — is deleted. The row itself stays so deployments and backups
+// that ran on it keep their reference. Returns ErrNotFound if the server
+// doesn't exist or was already removed.
+func (s *Store) RetireServer(ctx context.Context, id string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE servers SET removed_at = now(), status = 'removed'
+		WHERE id = $1 AND removed_at IS NULL
+	`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	for _, table := range []string{
+		"server_containers",
+		"server_metric_samples",
+		"container_metric_samples",
+		"container_schedules",
+	} {
+		if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE server_id = $1`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
+import '../../theme/app_theme.dart';
 
 class LoginScreen extends StatefulWidget {
   final ApiClient apiClient;
@@ -87,7 +88,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   if (_error != null) ...[
                     const SizedBox(height: 12),
-                    Text(_error!, style: const TextStyle(color: Colors.red)),
+                    Text(_error!, style: const TextStyle(color: AppColors.failed)),
                   ],
                   const SizedBox(height: 24),
                   FilledButton(

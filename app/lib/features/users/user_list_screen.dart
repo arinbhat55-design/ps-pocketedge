@@ -4,6 +4,9 @@ import '../../api/api_client.dart';
 import '../../models/user.dart';
 import 'add_user_dialog.dart';
 import 'reset_password_dialog.dart';
+import '../../theme/app_theme.dart';
+import '../../widgets/page_intro.dart';
+import '../../widgets/state_message.dart';
 
 class UserListScreen extends StatefulWidget {
   final ApiClient apiClient;
@@ -95,91 +98,122 @@ class _UserListScreenState extends State<UserListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final addUser = PrimaryAction(
+      label: 'Add user',
+      icon: Icons.person_add_alt,
+      onPressed: _openAddUser,
+    );
     return Scaffold(
-      appBar: AppBar(title: const Text('Users')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openAddUser,
-        icon: const Icon(Icons.add),
-        label: const Text('Add user'),
+      appBar: AppBar(
+        title: const Text('Users'),
+        actions: [?addUser.appBarAction(context)],
       ),
-      body: RefreshIndicator(
-        onRefresh: _refresh,
-        child: FutureBuilder<List<AppUser>>(
-          future: _usersFuture,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (snapshot.hasError) {
-              return ListView(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text('Failed to load users: ${snapshot.error}'),
-                  ),
-                ],
-              );
-            }
-            final users = snapshot.data ?? [];
-            return ListView.builder(
-              itemCount: users.length,
-              itemBuilder: (context, index) {
-                final user = users[index];
-                final isSelf = user.id == widget.currentUserId;
-                return ListTile(
-                  leading: Icon(
-                    Icons.person,
-                    color: user.isAdmin ? Colors.teal : Colors.grey,
-                  ),
-                  title: Text(user.email),
-                  subtitle: Text(
-                    '${user.role}${isSelf ? ' • you' : ''} • '
-                    'created ${user.createdAt.toLocal()}',
-                  ),
-                  trailing: PopupMenuButton<String>(
-                    onSelected: (action) {
-                      switch (action) {
-                        case 'make-admin':
-                          _changeRole(user, 'admin');
-                          break;
-                        case 'make-viewer':
-                          _changeRole(user, 'viewer');
-                          break;
-                        case 'reset-password':
-                          _resetPassword(user);
-                          break;
-                        case 'delete':
-                          _deleteUser(user);
-                          break;
-                      }
+      floatingActionButton: addUser.fab(context),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const PageIntro(
+            description:
+                'People who can sign in, and their roles. Admins can '
+                'manage users.',
+          ),
+          const SizedBox(height: Space.sm),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: _refresh,
+              child: FutureBuilder<List<AppUser>>(
+                future: _usersFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return StateMessage.error(
+                      what: 'users',
+                      error: snapshot.error,
+                      onRetry: _refresh,
+                    );
+                  }
+                  final users = snapshot.data ?? [];
+                  return ListView.builder(
+                    itemCount: users.length,
+                    itemBuilder: (context, index) {
+                      final user = users[index];
+                      final isSelf = user.id == widget.currentUserId;
+                      final joined = user.createdAt
+                          .toLocal()
+                          .toString()
+                          .split(' ')
+                          .first;
+                      return ListTile(
+                        leading: CircleAvatar(
+                          radius: 16,
+                          backgroundColor: AppColors.surfaceHighest,
+                          foregroundColor: AppColors.textSecondary,
+                          child: Text(
+                            user.email.isEmpty
+                                ? '?'
+                                : user.email[0].toUpperCase(),
+                          ),
+                        ),
+                        title: Text(
+                          user.email,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        subtitle: Text(
+                          [
+                            user.isAdmin ? 'Admin' : 'Viewer',
+                            if (isSelf) 'you',
+                            'joined $joined',
+                          ].join('  ·  '),
+                        ),
+                        trailing: PopupMenuButton<String>(
+                          onSelected: (action) {
+                            switch (action) {
+                              case 'make-admin':
+                                _changeRole(user, 'admin');
+                                break;
+                              case 'make-viewer':
+                                _changeRole(user, 'viewer');
+                                break;
+                              case 'reset-password':
+                                _resetPassword(user);
+                                break;
+                              case 'delete':
+                                _deleteUser(user);
+                                break;
+                            }
+                          },
+                          itemBuilder: (context) => [
+                            if (user.role != 'admin')
+                              const PopupMenuItem(
+                                value: 'make-admin',
+                                child: Text('Make admin'),
+                              ),
+                            if (user.role != 'viewer')
+                              const PopupMenuItem(
+                                value: 'make-viewer',
+                                child: Text('Make viewer'),
+                              ),
+                            const PopupMenuItem(
+                              value: 'reset-password',
+                              child: Text('Reset password'),
+                            ),
+                            PopupMenuItem(
+                              value: 'delete',
+                              enabled: !isSelf,
+                              child: const Text('Delete'),
+                            ),
+                          ],
+                        ),
+                      );
                     },
-                    itemBuilder: (context) => [
-                      if (user.role != 'admin')
-                        const PopupMenuItem(
-                          value: 'make-admin',
-                          child: Text('Make admin'),
-                        ),
-                      if (user.role != 'viewer')
-                        const PopupMenuItem(
-                          value: 'make-viewer',
-                          child: Text('Make viewer'),
-                        ),
-                      const PopupMenuItem(
-                        value: 'reset-password',
-                        child: Text('Reset password'),
-                      ),
-                      PopupMenuItem(
-                        value: 'delete',
-                        enabled: !isSelf,
-                        child: const Text('Delete'),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            );
-          },
-        ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

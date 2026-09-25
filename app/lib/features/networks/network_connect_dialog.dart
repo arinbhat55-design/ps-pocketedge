@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/container.dart';
+import '../../theme/app_theme.dart';
 
 /// Shows a dialog to pick one of [serverId]'s containers and attach it to
 /// [networkId]/[networkName]. Pops with `true` on a successful connect.
@@ -116,7 +117,7 @@ class _NetworkConnectDialogState extends State<_NetworkConnectDialog> {
                   ),
                 if (_error != null) ...[
                   const SizedBox(height: 12),
-                  Text(_error!, style: const TextStyle(color: Colors.red)),
+                  Text(_error!, style: const TextStyle(color: AppColors.failed)),
                 ],
               ],
             );

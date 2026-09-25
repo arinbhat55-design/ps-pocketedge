@@ -7,6 +7,7 @@ import '../../models/deployment_request.dart';
 import '../../models/environment_policy.dart';
 import '../deployments/deployment_status_screen.dart';
 import '../deployments/deployment_widgets.dart';
+import '../../theme/app_theme.dart';
 
 /// Deployment governance: the approval queue, per-environment policies
 /// (approval, required change request/rollback plan, maintenance windows),
@@ -390,7 +391,7 @@ class _EnvironmentPoliciesViewState extends State<EnvironmentPoliciesView> {
                               ? 'No upcoming window'
                               : 'Next window: ${formatTimestamp(p.nextWindow!)}',
                           style: TextStyle(
-                            color: p.inMaintenanceWindow ? Colors.green : null,
+                            color: p.inMaintenanceWindow ? AppColors.healthy : null,
                           ),
                         ),
                     ],
@@ -556,7 +557,7 @@ class _PolicyDialogState extends State<_PolicyDialog> {
                 ),
               ),
               if (_error != null)
-                Text(_error!, style: const TextStyle(color: Colors.red)),
+                Text(_error!, style: const TextStyle(color: AppColors.failed)),
             ],
           ),
         ),
@@ -836,7 +837,7 @@ class _AuditTrailViewState extends State<AuditTrailView> {
         if (_error != null)
           Padding(
             padding: const EdgeInsets.all(16),
-            child: Text(_error!, style: const TextStyle(color: Colors.red)),
+            child: Text(_error!, style: const TextStyle(color: AppColors.failed)),
           ),
         Expanded(
           child: NotificationListener<ScrollNotification>(

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../api/api_client.dart';
 import '../../models/compose_file.dart';
 import 'compose_visual_editor.dart';
+import '../../theme/app_theme.dart';
 
 enum _Mode { visual, yaml }
 
@@ -284,7 +285,7 @@ class _ComposeEditorScreenState extends State<ComposeEditorScreen> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: Text(_error!, style: const TextStyle(color: Colors.red)),
+              child: Text(_error!, style: const TextStyle(color: AppColors.failed)),
             ),
           if (_mode == _Mode.yaml && _yamlErrors.isNotEmpty)
             Container(
@@ -319,7 +320,7 @@ class _ComposeEditorScreenState extends State<ComposeEditorScreen> {
               margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.orange.withValues(alpha: 0.12),
+                color: AppColors.warning.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Column(

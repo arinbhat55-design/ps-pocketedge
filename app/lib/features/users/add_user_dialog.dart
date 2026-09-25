@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
+import '../../theme/app_theme.dart';
 
 class AddUserDialog extends StatefulWidget {
   final ApiClient apiClient;
@@ -85,7 +86,7 @@ class _AddUserDialogState extends State<AddUserDialog> {
               ),
               if (_error != null) ...[
                 const SizedBox(height: 12),
-                Text(_error!, style: const TextStyle(color: Colors.red)),
+                Text(_error!, style: const TextStyle(color: AppColors.failed)),
               ],
             ],
           ),

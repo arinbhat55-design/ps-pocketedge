@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/backup.dart';
+import '../../theme/app_theme.dart';
 
 /// Lists a deployment's backups and lets the user take a new one or
 /// restore an existing one. Restore progress itself shows up on the
@@ -133,11 +134,11 @@ class _BackupsScreenState extends State<BackupsScreen> {
   Color _statusColor(String status) {
     switch (status) {
       case 'completed':
-        return Colors.green;
+        return AppColors.healthy;
       case 'failed':
-        return Colors.red;
+        return AppColors.failed;
       default:
-        return Colors.orange;
+        return AppColors.warning;
     }
   }
 

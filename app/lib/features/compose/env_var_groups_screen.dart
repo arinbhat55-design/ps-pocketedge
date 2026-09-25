@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../api/api_client.dart';
 import '../../models/env_var_group.dart';
 import 'env_variable_editor.dart';
+import '../../theme/app_theme.dart';
 
 const _environmentLabels = {
   'development': 'Development',
@@ -17,7 +18,7 @@ Color _environmentColor(BuildContext context, String environment) {
     case 'production':
       return scheme.error;
     case 'staging':
-      return Colors.orange;
+      return AppColors.warning;
     case 'test':
       return Colors.blue;
     default:
@@ -49,7 +50,9 @@ class _EnvVarGroupsScreenState extends State<EnvVarGroupsScreen> {
   }
 
   void _refresh() {
-    setState(() => _groupsFuture = widget.apiClient.listEnvVarGroups());
+    setState(() {
+      _groupsFuture = widget.apiClient.listEnvVarGroups();
+    });
   }
 
   Future<void> _openCreate() async {
@@ -301,7 +304,7 @@ class _EnvVarGroupDialogState extends State<_EnvVarGroupDialog> {
               ),
               if (_error != null) ...[
                 const SizedBox(height: 8),
-                Text(_error!, style: const TextStyle(color: Colors.red)),
+                Text(_error!, style: const TextStyle(color: AppColors.failed)),
               ],
             ],
           ),

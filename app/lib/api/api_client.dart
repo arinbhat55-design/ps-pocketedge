@@ -215,6 +215,25 @@ class ApiClient {
     }
   }
 
+  /// Retires a server that's no longer reporting (admin only). Throws an
+  /// [ApiException] with the control plane's reason on failure — 409 while
+  /// the server's agent is still connected.
+  Future<void> removeServer(String serverId) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/servers/$serverId'),
+      headers: _headers,
+    );
+    if (response.statusCode == 204) return;
+    var message = response.body.trim();
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map && decoded['error'] is String) {
+        message = decoded['error'] as String;
+      }
+    } catch (_) {}
+    throw ApiException(response.statusCode, message);
+  }
+
   Future<List<Server>> listServers() async {
     final response = await _http.get(
       Uri.parse('$baseUrl/api/servers'),

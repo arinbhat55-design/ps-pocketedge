@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../api/api_client.dart';
+import '../../theme/app_theme.dart';
 
 class AddServerDialog extends StatefulWidget {
   final ApiClient apiClient;
@@ -42,7 +43,7 @@ class _AddServerDialogState extends State<AddServerDialog> {
       content: SizedBox(
         width: 480,
         child: _error != null
-            ? Text(_error!, style: const TextStyle(color: Colors.red))
+            ? Text(_error!, style: const TextStyle(color: AppColors.failed))
             : _token == null
             ? const Center(
                 child: Padding(
