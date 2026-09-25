@@ -110,3 +110,42 @@ func emptyTarReader() *bytes.Reader {
 	_ = tw.Close()
 	return bytes.NewReader(buf.Bytes())
 }
+
+// quiesceStopTimeout is how long a database gets to shut down cleanly
+// before a quiesced backup — longer than stopAndRemoveContainer's 10s,
+// since a database flushing buffers on shutdown is exactly what makes the
+// snapshot consistent, and killing it early would defeat the point.
+const quiesceStopTimeout = 60
+
+// QuiesceDeployment stops deploymentID's running containers (set-aside
+// rolling-update containers excluded) so its volumes can be copied at
+// rest, and returns a func that starts them again in their original
+// order. The resume func is safe to call even if stopping failed partway:
+// it starts whatever was stopped.
+func QuiesceDeployment(ctx context.Context, cli *client.Client, deploymentID string) (resume func(context.Context) error, err error) {
+	list, err := deploymentContainers(ctx, cli, deploymentID)
+	if err != nil {
+		return func(context.Context) error { return nil }, err
+	}
+	var stopped []string
+	resume = func(ctx context.Context) error {
+		var firstErr error
+		for _, id := range stopped {
+			if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to restart container %s after backup: %w", id, err)
+			}
+		}
+		return firstErr
+	}
+	timeout := quiesceStopTimeout
+	for _, c := range liveContainers(list) {
+		if !c.Running {
+			continue
+		}
+		if err := cli.ContainerStop(ctx, c.ID, container.StopOptions{Timeout: &timeout}); err != nil {
+			return resume, fmt.Errorf("failed to stop %s for backup: %w", c.Name, err)
+		}
+		stopped = append(stopped, c.ID)
+	}
+	return resume, nil
+}

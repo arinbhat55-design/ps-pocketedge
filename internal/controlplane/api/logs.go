@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/vault"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
 
@@ -97,7 +99,7 @@ func parseLogRangeParams(w http.ResponseWriter, r *http.Request, defaultTail int
 // collects every LogChunk until the agent reports done, within timeout —
 // the bounded-fetch counterpart to handleContainerLogsStream's live tail,
 // shared by download and AI analysis.
-func fetchContainerLogs(dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRelay, serverID, containerID string, tailLines int, since, until time.Time, timeout time.Duration) ([]logLineJSON, error) {
+func fetchContainerLogs(dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRelay, serverID, containerID string, tailLines int, since, until time.Time, timeout time.Duration, secrets []string) ([]logLineJSON, error) {
 	requestID, err := auth.RandomToken()
 	if err != nil {
 		return nil, err
@@ -133,7 +135,7 @@ func fetchContainerLogs(dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRe
 					ContainerID:       containerID,
 					TimestampUnixNano: l.GetTimestampUnixNano(),
 					Stream:            l.GetStream(),
-					Message:           l.GetMessage(),
+					Message:           vault.Redact(l.GetMessage(), secrets),
 				})
 			}
 			if chunk.GetDone() {
@@ -154,7 +156,7 @@ func fetchContainerLogs(dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRe
 // typically every container in the same deployment) into one interleaved
 // feed. Auth via ?token=, the same documented exception every WS endpoint
 // in this package uses (see handleServerStream's doc comment).
-func handleContainerLogsStream(log *slog.Logger, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRelay) http.HandlerFunc {
+func handleContainerLogsStream(log *slog.Logger, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRelay, secrets secretSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, err := authMgr.ParseToken(r.URL.Query().Get("token")); err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -162,6 +164,11 @@ func handleContainerLogsStream(log *slog.Logger, authMgr *auth.Manager, dispatch
 		}
 
 		serverID := r.PathValue("id")
+		redact, err := secrets(r.Context(), serverID)
+		if err != nil {
+			http.Error(w, "failed to prepare log redaction", http.StatusInternalServerError)
+			return
+		}
 		containerIDs := []string{r.PathValue("containerId")}
 		if with := r.URL.Query().Get("with"); with != "" {
 			for _, id := range strings.Split(with, ",") {
@@ -299,7 +306,7 @@ func handleContainerLogsStream(log *slog.Logger, authMgr *auth.Manager, dispatch
 						ContainerID:       chunk.GetContainerId(),
 						TimestampUnixNano: l.GetTimestampUnixNano(),
 						Stream:            l.GetStream(),
-						Message:           l.GetMessage(),
+						Message:           vault.Redact(l.GetMessage(), redact),
 					}
 				}
 				out := logChunkJSON{ContainerID: chunk.GetContainerId(), Lines: lines, Done: chunk.GetDone(), Error: chunk.GetErrorMessage()}
@@ -314,7 +321,7 @@ func handleContainerLogsStream(log *slog.Logger, authMgr *auth.Manager, dispatch
 // handleDownloadContainerLogs returns a bounded log dump as a plain-text
 // attachment — the "download logs" action, and also usable for "share"
 // (the client can hand the downloaded file to the OS share sheet).
-func handleDownloadContainerLogs(log *slog.Logger, dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRelay) http.HandlerFunc {
+func handleDownloadContainerLogs(log *slog.Logger, dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRelay, secrets secretSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		serverID := r.PathValue("id")
 		containerID := r.PathValue("containerId")
@@ -324,7 +331,12 @@ func handleDownloadContainerLogs(log *slog.Logger, dispatcher *deploy.Dispatcher
 			return
 		}
 
-		lines, err := fetchContainerLogs(dispatcher, relay, serverID, containerID, tail, since, until, logFetchTimeout)
+		redact, err := secrets(r.Context(), serverID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare log redaction"})
+			return
+		}
+		lines, err := fetchContainerLogs(dispatcher, relay, serverID, containerID, tail, since, until, logFetchTimeout, redact)
 		if err != nil {
 			if errors.Is(err, deploy.ErrAgentNotConnected) {
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "server not connected"})
@@ -423,7 +435,7 @@ func handleAIStatus(aiClient *ai.Client) http.HandlerFunc {
 // handleAnalyzeContainerLogs fetches a bounded recent log window plus
 // whatever container context the store has (image, status) and asks
 // ai.Client for a summary/root-cause/recommendation.
-func handleAnalyzeContainerLogs(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRelay, aiClient *ai.Client) http.HandlerFunc {
+func handleAnalyzeContainerLogs(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRelay, aiClient *ai.Client, secrets secretSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !aiClient.Configured() {
 			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": ai.ErrNotConfigured.Error()})
@@ -433,7 +445,13 @@ func handleAnalyzeContainerLogs(log *slog.Logger, st *store.Store, dispatcher *d
 		serverID := r.PathValue("id")
 		containerID := r.PathValue("containerId")
 
-		lines, err := fetchContainerLogs(dispatcher, relay, serverID, containerID, aiAnalysisTail, time.Time{}, time.Time{}, logFetchTimeout)
+		// Redacted before anything leaves for the AI provider.
+		redact, err := secrets(r.Context(), serverID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare log redaction"})
+			return
+		}
+		lines, err := fetchContainerLogs(dispatcher, relay, serverID, containerID, aiAnalysisTail, time.Time{}, time.Time{}, logFetchTimeout, redact)
 		if err != nil {
 			if errors.Is(err, deploy.ErrAgentNotConnected) {
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "server not connected"})
@@ -464,5 +482,22 @@ func handleAnalyzeContainerLogs(log *slog.Logger, st *store.Store, dispatcher *d
 			return
 		}
 		writeJSON(w, http.StatusOK, analysis)
+	}
+}
+
+// secretSource returns the credential values to mask in serverID's
+// container logs — every live database credential on that server, since
+// a log line from one container can easily quote another's connection
+// string. Callers fail closed on an error: logs that might carry an
+// unmasked credential are not served.
+type secretSource func(ctx context.Context, serverID string) ([]string, error)
+
+func vaultSecretSource(log *slog.Logger, v *vault.Vault) secretSource {
+	return func(ctx context.Context, serverID string) ([]string, error) {
+		secrets, err := v.ServerSecrets(ctx, serverID)
+		if err != nil {
+			log.Error("failed to load secrets for log redaction", "server_id", serverID, "error", err)
+		}
+		return secrets, err
 	}
 }

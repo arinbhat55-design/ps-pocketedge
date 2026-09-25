@@ -288,6 +288,10 @@ message BackupCommand {
   string backup_id = 1;
   string deployment_id = 2;
   string upload_url = 3;
+  // quiesce stops the deployment's running containers for the duration of
+  // the snapshot and starts them again afterwards, so a database's files
+  // are copied at rest rather than mid-write. Costs a short outage.
+  bool quiesce = 4;
 }
 
 message BackupStatus {

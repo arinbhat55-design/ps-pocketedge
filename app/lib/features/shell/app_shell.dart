@@ -5,6 +5,7 @@ import '../../models/user.dart';
 import '../../widgets/state_message.dart';
 import '../containers/container_list_screen.dart';
 import '../compose/docker_compose_screen.dart';
+import '../databases/database_marketplace_screen.dart';
 import '../images/image_list_screen.dart';
 import '../networks/network_list_screen.dart';
 import '../servers/server_list_screen.dart';
@@ -97,6 +98,15 @@ class _AppShellState extends State<AppShell> {
             label: 'Deployment Management',
             shortLabel: 'Deploy',
             builder: (_) => DockerComposeScreen(
+              apiClient: widget.apiClient,
+              isAdmin: isAdmin,
+            ),
+          ),
+          _ModuleDestination(
+            icon: Icons.storefront_outlined,
+            selectedIcon: Icons.storefront,
+            label: 'Databases',
+            builder: (_) => DatabaseMarketplaceScreen(
               apiClient: widget.apiClient,
               isAdmin: isAdmin,
             ),

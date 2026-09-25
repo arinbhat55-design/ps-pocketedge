@@ -17,11 +17,13 @@ import (
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/api"
 	authpkg "github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/backup"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/dbops"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/grpcserver"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/livestate"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/schedule"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
+	vaultpkg "github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/vault"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version"
 )
@@ -40,6 +42,7 @@ func main() {
 	adminPassword := flag.String("admin-password", os.Getenv("ADMIN_PASSWORD"), "password for the seeded admin user, only used if no users exist yet; generated and logged if unset (env ADMIN_PASSWORD)")
 	publicURL := flag.String("public-url", envOr("PUBLIC_URL", "http://localhost:8080"), "URL agents use to reach this control plane's REST API, for backup/restore blob transfer (env PUBLIC_URL); must be reachable from every enrolled agent, not just localhost, once agents run on other machines")
 	backupDir := flag.String("backup-dir", envOr("BACKUP_DIR", "./data/backups"), "local directory to store backup blobs in (env BACKUP_DIR)")
+	vaultKeyFile := flag.String("vault-key-file", envOr("VAULT_KEY_FILE", "./data/vault.key"), "file holding the key that encrypts stored database credentials, generated on first start if missing (env VAULT_KEY_FILE); ignored when VAULT_KEY is set. Back it up: without it, stored credentials cannot be decrypted")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -100,6 +103,25 @@ func main() {
 	volumeDetailWaiter := deploy.NewVolumeDetailWaiter()
 	volumeOpWaiter := deploy.NewVolumeOpWaiter()
 
+	vaultKey, keyCreated, err := vaultpkg.LoadKey(os.Getenv("VAULT_KEY"), *vaultKeyFile)
+	if err != nil {
+		log.Error("failed to load vault key", "error", err)
+		os.Exit(1)
+	}
+	if keyCreated {
+		log.Warn("generated a new credential vault key — back this file up; stored database credentials cannot be decrypted without it", "file", *vaultKeyFile)
+	}
+	cipher, err := vaultpkg.NewCipher(vaultKey)
+	if err != nil {
+		log.Error("failed to initialize vault", "error", err)
+		os.Exit(1)
+	}
+	credentialVault := vaultpkg.New(st, cipher)
+	// Vault references in deployment env are resolved here, at the last
+	// hop before an agent, and nowhere else.
+	dispatcher.SetEnvResolver(credentialVault.EnvResolver())
+	databaseOps := dbops.New(log, st, credentialVault, dispatcher, execStreamRelay)
+
 	blobs, err := backup.NewBlobStore(*backupDir)
 	if err != nil {
 		log.Error("failed to initialize backup storage", "dir", *backupDir, "error", err)
@@ -111,10 +133,11 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter, credentialVault, databaseOps),
 	}
 
 	scheduler := schedule.New(log, st, dispatcher, opWaiter)
+	databaseScheduler := schedule.NewDatabaseScheduler(log, st, dispatcher, databaseOps, blobs, *publicURL)
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -127,6 +150,7 @@ func main() {
 	}()
 	go pruneMetricsLoop(ctx, log, st)
 	go scheduler.Run(ctx)
+	go databaseScheduler.Run(ctx)
 	go api.RunGovernanceWorker(ctx, log, st, dispatcher, events, opWaiter)
 
 	select {

@@ -494,6 +494,30 @@ func (r *Runner) handleBackup(ctx context.Context, dockerCli *dockerclient.Clien
 		return
 	}
 
+	if cmd.GetQuiesce() {
+		// Hold the deployment lock for the whole stop/copy/start window
+		// so a redeploy can't start containers against volumes that are
+		// mid-copy, or be undone by the restart below.
+		defer r.lockDeployment(cmd.GetDeploymentId())()
+		report(agentv1.TaskPhase_TASK_PHASE_RUNNING, "stopping containers for a consistent snapshot")
+		resume, err := docker.QuiesceDeployment(ctx, dockerCli, cmd.GetDeploymentId())
+		// Restart on every path out of here, including a failed stop or
+		// upload; use a fresh context so a cancelled session still brings
+		// the database back.
+		defer func() {
+			restartCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if rerr := resume(restartCtx); rerr != nil {
+				r.log.Error("failed to restart containers after backup", "backup_id", cmd.GetBackupId(), "error", rerr)
+			}
+		}()
+		if err != nil {
+			r.log.Error("backup quiesce failed", "backup_id", cmd.GetBackupId(), "error", err)
+			report(agentv1.TaskPhase_TASK_PHASE_FAILED, err.Error())
+			return
+		}
+	}
+
 	report(agentv1.TaskPhase_TASK_PHASE_RUNNING, "snapshotting volumes")
 
 	reader, err := docker.BackupVolumes(ctx, dockerCli, cmd.GetDeploymentId())

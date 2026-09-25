@@ -675,60 +675,67 @@ func handleCreateDeployment(d *deployer) http.HandlerFunc {
 		}
 		n.Env = env
 
-		// Fail fast on policy requirements before creating anything.
-		env0 := ""
-		if n.Environment != nil {
-			env0 = *n.Environment
-		}
-		policy, err := d.st.GetEnvironmentPolicy(r.Context(), env0)
+		outcome, deploymentID, err := d.create(r.Context(), a, n, req.gateOptions, summary)
 		if err != nil {
-			writeActionError(w, d.log, err)
-			return
-		}
-		if err := checkPolicyRequirements(policy, actionDeploy, req.ChangeRequest, req.RollbackPlan); err != nil {
-			writeActionError(w, d.log, err)
-			return
-		}
-		if err := d.precheckMaintenanceWindow(policy, a, req.gateOptions); err != nil {
-			writeActionError(w, d.log, err)
-			return
-		}
-
-		deploymentID, err := d.st.InsertDeployment(r.Context(), n)
-		if err != nil {
-			writeActionError(w, d.log, err)
-			return
-		}
-		d.event(r.Context(), deploymentID, "pending", "deployment created", a.ID)
-		d.audit(r.Context(), a, "deployment.create", "deployment", deploymentID, summary, map[string]any{
-			"serverId": req.ServerID, "environment": n.Environment, "changeRequest": req.ChangeRequest,
-		})
-
-		dep, err := d.st.GetDeployment(r.Context(), deploymentID)
-		if err != nil {
-			writeActionError(w, d.log, err)
-			return
-		}
-		outcome, err := d.submit(r.Context(), dep, actionDeploy, actionParams{}, a, req.gateOptions, true)
-		if err != nil {
-			// The deployment row exists either way; report its ID so the
-			// client can show it (e.g. a "server not connected" failure).
 			var ae *actionError
-			if errors.As(err, &ae) {
+			if deploymentID != "" && errors.As(err, &ae) {
 				if ae.extra == nil {
 					ae.extra = map[string]any{}
 				}
 				ae.extra["deploymentId"] = deploymentID
-				if ae.status != http.StatusConflict {
-					_ = d.st.UpdateDeploymentPhase(r.Context(), deploymentID, "failed")
-					d.event(r.Context(), deploymentID, "failed", ae.msg, a.ID)
-				}
 			}
 			writeActionError(w, d.log, err)
 			return
 		}
 		writeJSON(w, http.StatusAccepted, outcome)
 	}
+}
+
+// create checks n's environment policy, inserts the deployment, and
+// submits its first deploy through the governance gate. deploymentID is
+// set whenever the row was inserted, even if submitting then failed (e.g.
+// the server isn't connected) — the deployment exists and is marked
+// failed, and the caller should say so.
+func (d *deployer) create(ctx context.Context, a actor, n store.NewDeployment, gate gateOptions, summary string) (outcome *actionOutcome, deploymentID string, err error) {
+	// Fail fast on policy requirements before creating anything.
+	env0 := ""
+	if n.Environment != nil {
+		env0 = *n.Environment
+	}
+	policy, err := d.st.GetEnvironmentPolicy(ctx, env0)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := checkPolicyRequirements(policy, actionDeploy, n.ChangeRequest, n.RollbackPlan); err != nil {
+		return nil, "", err
+	}
+	if err := d.precheckMaintenanceWindow(policy, a, gate); err != nil {
+		return nil, "", err
+	}
+
+	deploymentID, err = d.st.InsertDeployment(ctx, n)
+	if err != nil {
+		return nil, "", err
+	}
+	d.event(ctx, deploymentID, "pending", "deployment created", a.ID)
+	d.audit(ctx, a, "deployment.create", "deployment", deploymentID, summary, map[string]any{
+		"serverId": n.ServerID, "environment": n.Environment, "changeRequest": n.ChangeRequest,
+	})
+
+	dep, err := d.st.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return nil, deploymentID, err
+	}
+	outcome, err = d.submit(ctx, dep, actionDeploy, actionParams{}, a, gate, true)
+	if err != nil {
+		var ae *actionError
+		if errors.As(err, &ae) && ae.status != http.StatusConflict {
+			_ = d.st.UpdateDeploymentPhase(ctx, deploymentID, "failed")
+			d.event(ctx, deploymentID, "failed", ae.msg, a.ID)
+		}
+		return nil, deploymentID, err
+	}
+	return outcome, deploymentID, nil
 }
 
 // deploymentDetailResponse is GET /api/deployments/{id}: the deployment,

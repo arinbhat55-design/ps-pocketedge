@@ -51,3 +51,12 @@ func (s *BlobStore) Save(backupID string, r io.Reader) (path string, size int64,
 func (s *BlobStore) Open(path string) (*os.File, error) {
 	return os.Open(path)
 }
+
+// Remove deletes a stored blob. A blob that's already gone is not an
+// error — retention may race a manual cleanup.
+func (s *BlobStore) Remove(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}

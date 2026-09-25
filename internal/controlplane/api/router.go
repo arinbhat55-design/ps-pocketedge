@@ -12,9 +12,11 @@ import (
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/ai"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/backup"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/dbops"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/livestate"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/vault"
 )
 
 // defaultMetricsWindow is how far back GET .../metrics looks when the
@@ -35,8 +37,9 @@ const enrollmentTokenTTL = 1 * time.Hour
 // this API from its dev server origin during local development; this
 // should be tightened together with publicURL before any non-local
 // deployment.
-func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter) http.Handler {
+func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter, v *vault.Vault, ops *dbops.Ops) http.Handler {
 	aiClient := ai.New()
+	secrets := vaultSecretSource(log, v)
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
@@ -107,6 +110,27 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("PUT /api/environment-policies/{environment}", authMgr.RequireAdmin(handleUpdateEnvironmentPolicy(d)))
 	mux.Handle("GET /api/audit-events", authMgr.RequireAdmin(handleListAuditEvents(d)))
 
+	// Database Marketplace: curated engine catalog, one-click deployment
+	// wizard, deployed instances, and their vaulted credentials.
+	dbs := &databaseAPI{log: log, st: st, d: d, vault: v, ops: ops, dispatcher: dispatcher, publicURL: publicURL}
+	mux.Handle("GET /api/database-engines", authMgr.RequireAuth(dbs.handleListEngines()))
+	mux.Handle("POST /api/databases/preview", authMgr.RequireAuth(dbs.handlePreview()))
+	mux.Handle("GET /api/databases", authMgr.RequireAuth(dbs.handleList()))
+	mux.Handle("POST /api/databases", authMgr.RequireAuth(dbs.handleCreate()))
+	mux.Handle("GET /api/databases/{id}", authMgr.RequireAuth(dbs.handleGet()))
+	mux.Handle("PUT /api/databases/{id}/backup-policy", authMgr.RequireAuth(dbs.handleUpdateBackupPolicy()))
+	mux.Handle("POST /api/databases/{id}/backups", authMgr.RequireAuth(dbs.handleCreateBackup()))
+	mux.Handle("GET /api/databases/{id}/credentials", authMgr.RequireAuth(dbs.handleListCredentials()))
+	mux.Handle("POST /api/databases/{id}/temporary-credentials", authMgr.RequireAuth(dbs.handleCreateTemporary()))
+	mux.Handle("POST /api/secrets/{id}/reveal", authMgr.RequireAuth(dbs.handleReveal()))
+	mux.Handle("POST /api/secrets/{id}/download", authMgr.RequireAuth(dbs.handleDownload()))
+	mux.Handle("POST /api/secrets/{id}/rotate", authMgr.RequireAuth(dbs.handleRotate()))
+	mux.Handle("POST /api/secrets/{id}/revoke", authMgr.RequireAuth(dbs.handleRevoke()))
+	mux.Handle("GET /api/secrets/{id}/grants", authMgr.RequireAuth(dbs.handleListGrants()))
+	mux.Handle("PUT /api/secrets/{id}/grants/{userId}", authMgr.RequireAuth(dbs.handlePutGrant()))
+	mux.Handle("DELETE /api/secrets/{id}/grants/{userId}", authMgr.RequireAuth(dbs.handleDeleteGrant()))
+	mux.Handle("GET /api/users/directory", authMgr.RequireAuth(handleUserDirectory(log, st)))
+
 	// Git-based deployment.
 	mux.Handle("GET /api/git-repositories", authMgr.RequireAuth(handleListGitRepositories(log, st)))
 	mux.Handle("POST /api/git-repositories", authMgr.RequireAdmin(handleCreateGitRepository(log, st, publicURL)))
@@ -142,9 +166,9 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	// endpoints, not the Authorization header — same documented exception
 	// as handleServerStream (browsers can't set custom headers on a
 	// WebSocket handshake).
-	mux.HandleFunc("GET /api/servers/{id}/containers/{containerId}/logs/stream", handleContainerLogsStream(log, authMgr, dispatcher, logStreamRelay))
-	mux.Handle("GET /api/servers/{id}/containers/{containerId}/logs/download", authMgr.RequireAuth(handleDownloadContainerLogs(log, dispatcher, logStreamRelay)))
-	mux.Handle("POST /api/servers/{id}/containers/{containerId}/logs/analyze", authMgr.RequireAuth(handleAnalyzeContainerLogs(log, st, dispatcher, logStreamRelay, aiClient)))
+	mux.HandleFunc("GET /api/servers/{id}/containers/{containerId}/logs/stream", handleContainerLogsStream(log, authMgr, dispatcher, logStreamRelay, secrets))
+	mux.Handle("GET /api/servers/{id}/containers/{containerId}/logs/download", authMgr.RequireAuth(handleDownloadContainerLogs(log, dispatcher, logStreamRelay, secrets)))
+	mux.Handle("POST /api/servers/{id}/containers/{containerId}/logs/analyze", authMgr.RequireAuth(handleAnalyzeContainerLogs(log, st, dispatcher, logStreamRelay, aiClient, secrets)))
 	mux.Handle("GET /api/servers/{id}/containers/{containerId}/events", authMgr.RequireAuth(handleListContainerEvents(log, dispatcher, eventListWaiter)))
 	mux.HandleFunc("GET /api/servers/{id}/containers/{containerId}/exec", handleContainerExec(log, authMgr, dispatcher, execStreamRelay))
 	mux.Handle("GET /api/ai/status", authMgr.RequireAuth(handleAIStatus(aiClient)))
@@ -386,7 +410,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

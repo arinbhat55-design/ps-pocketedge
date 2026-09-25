@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -15,12 +16,26 @@ import (
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
 
+// handleCreateBackup takes an on-demand backup. The optional body
+// {"consistent": bool} stops the deployment's containers for the snapshot;
+// when omitted, a database instance uses its configured policy and any
+// other deployment is snapshotted live, as before.
 func handleCreateBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, publicURL string) http.HandlerFunc {
+	type request struct {
+		Consistent *bool `json:"consistent"`
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := auth.ClaimsFromContext(r.Context())
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		var req request
+		if r.ContentLength > 0 {
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
 		}
 
 		deploymentID := r.PathValue("id")
@@ -35,29 +50,27 @@ func handleCreateBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.Di
 			return
 		}
 
-		backupID, err := st.CreateBackup(r.Context(), deployment.ID, deployment.ServerID, claims.UserID)
-		if err != nil {
-			log.Error("failed to create backup", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
+		quiesce := false
+		if req.Consistent != nil {
+			quiesce = *req.Consistent
+		} else if db, err := st.GetDatabaseInstanceByDeployment(r.Context(), deployment.ID); err == nil {
+			quiesce = db.BackupConsistent
 		}
 
-		cmd := &agentv1.ControlMessage{
-			Payload: &agentv1.ControlMessage_Backup{
-				Backup: &agentv1.BackupCommand{
-					BackupId:     backupID,
-					DeploymentId: deployment.ID,
-					UploadUrl:    publicURL + "/api/agent/backups/" + backupID + "/blob",
-				},
-			},
-		}
-		if err := dispatcher.Send(deployment.ServerID, cmd); err != nil {
-			log.Warn("failed to dispatch backup command", "backup_id", backupID, "error", err)
-			_ = st.UpdateBackupStatus(r.Context(), backupID, "failed", "server not connected: "+err.Error())
+		backupID, err := backup.Start(r.Context(), log, st, dispatcher, publicURL, backup.Request{
+			Deployment: deployment, CreatedBy: claims.UserID, Origin: "manual", Quiesce: quiesce,
+		})
+		var notConnected *backup.ErrServerNotConnected
+		if errors.As(err, &notConnected) {
 			writeJSON(w, http.StatusConflict, map[string]string{
 				"backupId": backupID,
 				"error":    "server not connected",
 			})
+			return
+		}
+		if err != nil {
+			log.Error("failed to create backup", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 

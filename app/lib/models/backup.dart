@@ -3,6 +3,9 @@ class Backup {
   final String deploymentId;
   final String status;
   final String message;
+
+  /// manual or scheduled.
+  final String origin;
   final int? sizeBytes;
   final DateTime createdAt;
   final DateTime? completedAt;
@@ -12,6 +15,7 @@ class Backup {
     required this.deploymentId,
     required this.status,
     required this.message,
+    this.origin = 'manual',
     required this.sizeBytes,
     required this.createdAt,
     required this.completedAt,
@@ -25,6 +29,7 @@ class Backup {
       deploymentId: json['deploymentId'] as String,
       status: json['status'] as String,
       message: json['message'] as String? ?? '',
+      origin: json['origin'] as String? ?? 'manual',
       sizeBytes: json['sizeBytes'] as int?,
       createdAt: DateTime.parse(json['createdAt'] as String),
       completedAt: json['completedAt'] == null

@@ -6,6 +6,7 @@ import '../models/audit_event.dart';
 import '../models/backup.dart';
 import '../models/compose_file.dart';
 import '../models/container.dart';
+import '../models/database.dart';
 import '../models/deployment.dart';
 import '../models/deployment_preview.dart';
 import '../models/deployment_request.dart';
@@ -73,6 +74,15 @@ Never throwApiError(http.Response response) {
     );
   }
   throw ApiException(response.statusCode, message);
+}
+
+/// A rotation where the database accepted the new password but the
+/// control plane failed to store it. [newPassword] is the only copy — the
+/// user must save it.
+class UnsavedCredentialException extends ApiException {
+  final String newPassword;
+
+  UnsavedCredentialException(super.statusCode, super.message, this.newPassword);
 }
 
 class EnrollmentToken {
@@ -717,6 +727,239 @@ class ApiClient {
         decoded['error'] as String? ?? response.body,
       );
     }
+  }
+
+  // ---- Database Marketplace ----
+
+  Future<List<DatabaseEngine>> listDatabaseEngines() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/database-engines'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => DatabaseEngine.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Validates a wizard submission against the catalog and the target
+  /// server and returns the Compose file it would deploy — nothing is
+  /// created.
+  Future<DatabasePreview> previewDatabase(DatabaseRequest request) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/preview'),
+      headers: _headers,
+      body: jsonEncode(request.toJson()),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return DatabasePreview.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// One-click deploy. Credentials are generated and vaulted server-side;
+  /// none are returned here — see [revealSecret] / [downloadSecret].
+  Future<DatabaseCreateResult> createDatabase(DatabaseRequest request) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases'),
+      headers: _headers,
+      body: jsonEncode(request.toJson()),
+    );
+    if (response.statusCode != 202) throwApiError(response);
+    return DatabaseCreateResult.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<List<DatabaseInstance>> listDatabases() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/databases'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => DatabaseInstance.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<DatabaseDetail> getDatabase(String id) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/databases/$id'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return DatabaseDetail.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// [cron] is a 5-field UTC cron expression, or empty for no schedule.
+  Future<DatabaseInstance> updateDatabaseBackupPolicy(
+    String id, {
+    required String cron,
+    required bool consistent,
+    required int retentionDays,
+    required int retentionCount,
+  }) async {
+    final response = await _http.put(
+      Uri.parse('$baseUrl/api/databases/$id/backup-policy'),
+      headers: _headers,
+      body: jsonEncode({
+        'cron': cron,
+        'consistent': consistent,
+        'retentionDays': retentionDays,
+        'retentionCount': retentionCount,
+      }),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return DatabaseInstance.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Takes a backup now, using the database's consistency setting.
+  Future<String> backupDatabase(String id) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$id/backups'),
+      headers: _headers,
+    );
+    if (response.statusCode != 202) throwApiError(response);
+    return (jsonDecode(response.body) as Map<String, dynamic>)['backupId']
+        as String;
+  }
+
+  Future<List<DatabaseCredential>> listDatabaseCredentials(String id) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/databases/$id/credentials'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => DatabaseCredential.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Issues a read-only database login that expires after [ttl].
+  Future<DatabaseCredential> createTemporaryCredential(
+    String databaseId,
+    Duration ttl,
+  ) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$databaseId/temporary-credentials'),
+      headers: _headers,
+      body: jsonEncode({'ttlMinutes': ttl.inMinutes}),
+    );
+    if (response.statusCode != 201) throwApiError(response);
+    return DatabaseCredential.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Decrypts a credential for display. Audited server-side.
+  Future<RevealedSecret> revealSecret(String secretId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/secrets/$secretId/reveal'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return RevealedSecret.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// The one-time credentials file (.env format). A second call fails
+  /// with 410 until the credential is rotated.
+  Future<String> downloadSecret(String secretId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/secrets/$secretId/download'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return response.body;
+  }
+
+  Future<RotationResult> rotateSecret(
+    String secretId, {
+    GateOptions gate = const GateOptions(),
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/secrets/$secretId/rotate'),
+      headers: _headers,
+      body: jsonEncode(gate.toJson()),
+    );
+    if (response.statusCode == 500) {
+      final body = jsonDecode(response.body);
+      if (body is Map<String, dynamic> && body['newPassword'] is String) {
+        throw UnsavedCredentialException(
+          500,
+          body['error'] as String? ?? 'Rotation could not be saved',
+          body['newPassword'] as String,
+        );
+      }
+    }
+    if (response.statusCode != 200) throwApiError(response);
+    return RotationResult.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Drops a temporary credential's database login now.
+  Future<void> revokeSecret(String secretId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/secrets/$secretId/revoke'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<List<SecretGrant>> listSecretGrants(String secretId) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/secrets/$secretId/grants'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => SecretGrant.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Shares a credential with [userId]; [expiresAt] makes it temporary.
+  Future<List<SecretGrant>> shareSecret(
+    String secretId,
+    String userId, {
+    DateTime? expiresAt,
+  }) async {
+    final response = await _http.put(
+      Uri.parse('$baseUrl/api/secrets/$secretId/grants/$userId'),
+      headers: _headers,
+      body: jsonEncode({
+        if (expiresAt != null) 'expiresAt': expiresAt.toUtc().toIso8601String(),
+      }),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => SecretGrant.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> unshareSecret(String secretId, String userId) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/secrets/$secretId/grants/$userId'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  /// Every user's id and email, for picking whom to share with.
+  Future<List<DirectoryUser>> listUserDirectory() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/users/directory'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => DirectoryUser.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   /// Fleet-wide container inventory, optionally narrowed by any of these

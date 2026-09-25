@@ -7,7 +7,10 @@ package deploy
 
 import (
 	"errors"
+	"fmt"
 	"sync"
+
+	"google.golang.org/protobuf/proto"
 
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
@@ -20,6 +23,22 @@ var ErrAgentNotConnected = errors.New("agent not connected")
 type Dispatcher struct {
 	mu       sync.Mutex
 	channels map[string]chan *agentv1.ControlMessage
+	resolve  EnvResolver
+}
+
+// EnvResolver replaces vault references in a deployment env with the
+// secrets' plaintext. It returns env itself when there is nothing to
+// resolve.
+type EnvResolver func(env map[string]string) (map[string]string, error)
+
+// SetEnvResolver installs the resolver Send applies to every command that
+// carries a deployment env. Resolution happens here, at the last hop
+// before the agent, so the rest of the control plane — stored env,
+// revisions, API responses, logs — only ever handles references.
+func (d *Dispatcher) SetEnvResolver(r EnvResolver) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.resolve = r
 }
 
 func NewDispatcher() *Dispatcher {
@@ -62,9 +81,17 @@ func (d *Dispatcher) IsConnected(serverID string) bool {
 func (d *Dispatcher) Send(serverID string, msg *agentv1.ControlMessage) error {
 	d.mu.Lock()
 	ch, ok := d.channels[serverID]
+	resolve := d.resolve
 	d.mu.Unlock()
 	if !ok {
 		return ErrAgentNotConnected
+	}
+	if resolve != nil {
+		resolved, err := resolveEnv(msg, resolve)
+		if err != nil {
+			return fmt.Errorf("failed to resolve credentials: %w", err)
+		}
+		msg = resolved
 	}
 
 	select {
@@ -73,4 +100,37 @@ func (d *Dispatcher) Send(serverID string, msg *agentv1.ControlMessage) error {
 	default:
 		return errors.New("agent command queue full")
 	}
+}
+
+// resolveEnv returns msg with its env resolved. The caller's message is
+// never modified: when anything is resolved, a clone is sent instead.
+func resolveEnv(msg *agentv1.ControlMessage, resolve EnvResolver) (*agentv1.ControlMessage, error) {
+	var env map[string]string
+	switch p := msg.GetPayload().(type) {
+	case *agentv1.ControlMessage_DeployStack:
+		env = p.DeployStack.GetEnv()
+	case *agentv1.ControlMessage_DeployService:
+		env = p.DeployService.GetEnv()
+	case *agentv1.ControlMessage_Restore:
+		env = p.Restore.GetEnv()
+	default:
+		return msg, nil
+	}
+	if len(env) == 0 {
+		return msg, nil
+	}
+	resolved, err := resolve(env)
+	if err != nil {
+		return nil, err
+	}
+	out := proto.Clone(msg).(*agentv1.ControlMessage)
+	switch p := out.GetPayload().(type) {
+	case *agentv1.ControlMessage_DeployStack:
+		p.DeployStack.Env = resolved
+	case *agentv1.ControlMessage_DeployService:
+		p.DeployService.Env = resolved
+	case *agentv1.ControlMessage_Restore:
+		p.Restore.Env = resolved
+	}
+	return out, nil
 }

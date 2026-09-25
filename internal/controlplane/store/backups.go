@@ -12,24 +12,27 @@ import (
 // of a deployment, taken on demand (no scheduling yet — see the plan's
 // "Future Phases" note on this being a later addition).
 type Backup struct {
-	ID           string     `json:"id"`
-	DeploymentID string     `json:"deploymentId"`
-	ServerID     string     `json:"serverId"`
-	Status       string     `json:"status"`
-	Message      string     `json:"message"`
-	SizeBytes    *int64     `json:"sizeBytes,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	CompletedAt  *time.Time `json:"completedAt,omitempty"`
+	ID           string `json:"id"`
+	DeploymentID string `json:"deploymentId"`
+	ServerID     string `json:"serverId"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	// Origin is "manual" or "scheduled".
+	Origin      string     `json:"origin"`
+	SizeBytes   *int64     `json:"sizeBytes,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
-// CreateBackup inserts a new backup row in the 'pending' phase.
-func (s *Store) CreateBackup(ctx context.Context, deploymentID, serverID, createdBy string) (string, error) {
+// CreateBackup inserts a new backup row in the 'pending' phase. createdBy
+// is empty for a scheduled backup; origin is "manual" or "scheduled".
+func (s *Store) CreateBackup(ctx context.Context, deploymentID, serverID, createdBy, origin string) (string, error) {
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO backups (deployment_id, server_id, status, created_by)
-		VALUES ($1, $2, 'pending', $3)
+		INSERT INTO backups (deployment_id, server_id, status, created_by, origin)
+		VALUES ($1, $2, 'pending', $3, $4)
 		RETURNING id
-	`, deploymentID, serverID, createdBy).Scan(&id)
+	`, deploymentID, serverID, nullableUUID(createdBy), origin).Scan(&id)
 	return id, err
 }
 
@@ -38,9 +41,9 @@ func (s *Store) CreateBackup(ctx context.Context, deploymentID, serverID, create
 func (s *Store) GetBackup(ctx context.Context, id string) (*Backup, error) {
 	var b Backup
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, deployment_id, server_id, status, coalesce(message, ''), size_bytes, created_at, completed_at
+		SELECT id, deployment_id, server_id, status, coalesce(message, ''), origin, size_bytes, created_at, completed_at
 		FROM backups WHERE id = $1
-	`, id).Scan(&b.ID, &b.DeploymentID, &b.ServerID, &b.Status, &b.Message, &b.SizeBytes, &b.CreatedAt, &b.CompletedAt)
+	`, id).Scan(&b.ID, &b.DeploymentID, &b.ServerID, &b.Status, &b.Message, &b.Origin, &b.SizeBytes, &b.CreatedAt, &b.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -54,7 +57,7 @@ func (s *Store) GetBackup(ctx context.Context, id string) (*Backup, error) {
 // first.
 func (s *Store) ListBackupsForDeployment(ctx context.Context, deploymentID string) ([]Backup, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, deployment_id, server_id, status, coalesce(message, ''), size_bytes, created_at, completed_at
+		SELECT id, deployment_id, server_id, status, coalesce(message, ''), origin, size_bytes, created_at, completed_at
 		FROM backups WHERE deployment_id = $1 ORDER BY created_at DESC
 	`, deploymentID)
 	if err != nil {
@@ -65,7 +68,7 @@ func (s *Store) ListBackupsForDeployment(ctx context.Context, deploymentID strin
 	backups := []Backup{}
 	for rows.Next() {
 		var b Backup
-		if err := rows.Scan(&b.ID, &b.DeploymentID, &b.ServerID, &b.Status, &b.Message, &b.SizeBytes, &b.CreatedAt, &b.CompletedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.DeploymentID, &b.ServerID, &b.Status, &b.Message, &b.Origin, &b.SizeBytes, &b.CreatedAt, &b.CompletedAt); err != nil {
 			return nil, err
 		}
 		backups = append(backups, b)
@@ -94,7 +97,7 @@ func (s *Store) UpdateBackupStatus(ctx context.Context, id, status, message stri
 func (s *Store) CompleteBackupUpload(ctx context.Context, id, storagePath string, sizeBytes int64) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE backups
-		SET status = 'completed', storage_path = $2, size_bytes = $3, completed_at = now()
+		SET status = 'completed', storage_path = $2, size_bytes = $3, completed_at = now(), message = NULL
 		WHERE id = $1
 	`, id, storagePath, sizeBytes)
 	return err
@@ -113,4 +116,48 @@ func (s *Store) GetBackupStoragePath(ctx context.Context, id string) (string, er
 		return "", err
 	}
 	return *path, nil
+}
+
+// ExpiredBackup is a backup that falls outside its instance's retention
+// policy, with where its blob lives (if it has one) so the caller can
+// delete it.
+type ExpiredBackup struct {
+	ID          string
+	StoragePath *string
+}
+
+// ExpiredBackups returns deploymentID's completed backups beyond the
+// retention policy: older than retentionDays (0 = no age limit), or beyond
+// the newest retentionCount (0 = no count limit). Only completed backups
+// are considered and counted — a pending or failed one neither expires
+// nor protects an older good one from pruning.
+func (s *Store) ExpiredBackups(ctx context.Context, deploymentID string, retentionDays, retentionCount int, now time.Time) ([]ExpiredBackup, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, storage_path FROM (
+			SELECT id, storage_path, created_at,
+			       row_number() OVER (ORDER BY created_at DESC) AS rank
+			FROM backups WHERE deployment_id = $1 AND status = 'completed'
+		) b
+		WHERE ($2 > 0 AND b.created_at < $4::timestamptz - make_interval(days => $2))
+		   OR ($3 > 0 AND b.rank > $3)
+	`, deploymentID, retentionDays, retentionCount, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ExpiredBackup{}
+	for rows.Next() {
+		var e ExpiredBackup
+		if err := rows.Scan(&e.ID, &e.StoragePath); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// DeleteBackup removes a backup row.
+func (s *Store) DeleteBackup(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM backups WHERE id = $1`, id)
+	return err
 }

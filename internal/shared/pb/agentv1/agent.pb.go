@@ -2310,10 +2310,14 @@ func (x *Ack) GetMessageId() string {
 // starve heartbeats/other commands sharing this stream's one outbound
 // channel.
 type BackupCommand struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	BackupId      string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
-	DeploymentId  string                 `protobuf:"bytes,2,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
-	UploadUrl     string                 `protobuf:"bytes,3,opt,name=upload_url,json=uploadUrl,proto3" json:"upload_url,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	BackupId     string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	DeploymentId string                 `protobuf:"bytes,2,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	UploadUrl    string                 `protobuf:"bytes,3,opt,name=upload_url,json=uploadUrl,proto3" json:"upload_url,omitempty"`
+	// quiesce stops the deployment's running containers for the duration of
+	// the snapshot and starts them again afterwards, so a database's files
+	// are copied at rest rather than mid-write. Costs a short outage.
+	Quiesce       bool `protobuf:"varint,4,opt,name=quiesce,proto3" json:"quiesce,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2367,6 +2371,13 @@ func (x *BackupCommand) GetUploadUrl() string {
 		return x.UploadUrl
 	}
 	return ""
+}
+
+func (x *BackupCommand) GetQuiesce() bool {
+	if x != nil {
+		return x.Quiesce
+	}
+	return false
 }
 
 type BackupStatus struct {
@@ -6641,12 +6652,13 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\brevision\x18\x06 \x01(\x05R\brevision\"$\n" +
 	"\x03Ack\x12\x1d\n" +
 	"\n" +
-	"message_id\x18\x01 \x01(\tR\tmessageId\"p\n" +
+	"message_id\x18\x01 \x01(\tR\tmessageId\"\x8a\x01\n" +
 	"\rBackupCommand\x12\x1b\n" +
 	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12#\n" +
 	"\rdeployment_id\x18\x02 \x01(\tR\fdeploymentId\x12\x1d\n" +
 	"\n" +
-	"upload_url\x18\x03 \x01(\tR\tuploadUrl\"\x8f\x01\n" +
+	"upload_url\x18\x03 \x01(\tR\tuploadUrl\x12\x18\n" +
+	"\aquiesce\x18\x04 \x01(\bR\aquiesce\"\x8f\x01\n" +
 	"\fBackupStatus\x12\x1b\n" +
 	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12)\n" +
 	"\x05phase\x18\x02 \x01(\x0e2\x13.agent.v1.TaskPhaseR\x05phase\x12\x18\n" +
