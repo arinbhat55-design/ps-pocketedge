@@ -59,7 +59,8 @@ Never throwApiError(http.Response response) {
     final decoded = jsonDecode(response.body);
     if (decoded is Map<String, dynamic>) body = decoded;
   } catch (_) {}
-  final message = (body?['error'] as String?) ??
+  final message =
+      (body?['error'] as String?) ??
       (body?['errors'] is List
           ? (body!['errors'] as List).join('; ')
           : response.body.trim());
@@ -818,14 +819,242 @@ class ApiClient {
   }
 
   /// Takes a backup now, using the database's consistency setting.
-  Future<String> backupDatabase(String id) async {
+  Future<String> backupDatabase(String id, {bool? consistent}) async {
     final response = await _http.post(
       Uri.parse('$baseUrl/api/databases/$id/backups'),
+      headers: _headers,
+      body: consistent == null ? null : jsonEncode({'consistent': consistent}),
+    );
+    if (response.statusCode != 202) throwApiError(response);
+    return (jsonDecode(response.body) as Map<String, dynamic>)['backupId']
+        as String;
+  }
+
+  Future<Map<String, dynamic>> postgresOverview(String id) async =>
+      _postgresObject(id, 'overview');
+
+  Future<DeploymentActionOutcome> reconfigureDatabase(
+    String id, {
+    required String version,
+    required int memoryMb,
+    required double cpus,
+    required int storageGb,
+    GateOptions gate = GateOptions.none,
+  }) async {
+    final response = await _http.patch(
+      Uri.parse('$baseUrl/api/databases/$id/configuration'),
+      headers: _headers,
+      body: jsonEncode({
+        'version': version,
+        'memoryMb': memoryMb,
+        'cpus': cpus,
+        'storageGb': storageGb,
+        ...gate.toJson(),
+      }),
+    );
+    if (response.statusCode != 202) throwApiError(response);
+    final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    return DeploymentActionOutcome.fromJson(
+      payload['deployment'] as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> removeDatabase(String id) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/databases/$id'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<void> refreshDatabaseFromBackup(
+    String targetId,
+    String backupId,
+  ) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$targetId/refresh-from-backup'),
+      headers: _headers,
+      body: jsonEncode({'backupId': backupId}),
+    );
+    if (response.statusCode != 202) throwApiError(response);
+  }
+
+  Future<String> createPostgresLogicalBackup(String id) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$id/logical-backups'),
       headers: _headers,
     );
     if (response.statusCode != 202) throwApiError(response);
     return (jsonDecode(response.body) as Map<String, dynamic>)['backupId']
         as String;
+  }
+
+  Future<DeploymentActionOutcome> migratePostgresFromBackup(
+    String targetId,
+    String backupId, {
+    GateOptions gate = GateOptions.none,
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$targetId/migrate-from-backup'),
+      headers: _headers,
+      body: jsonEncode({'backupId': backupId, ...gate.toJson()}),
+    );
+    if (response.statusCode != 202) throwApiError(response);
+    return DeploymentActionOutcome.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<Map<String, dynamic>> postgresMetrics(String id) async =>
+      _postgresObject(id, 'metrics');
+
+  Future<List<Map<String, dynamic>>> postgresAlerts(String id) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/alerts'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .cast<Map<String, dynamic>>();
+  }
+
+  Future<Map<String, dynamic>> postgresSizes(String id) async =>
+      _postgresObject(id, 'sizes');
+
+  Future<List<Map<String, dynamic>>> postgresSessions(String id) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/sessions'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .cast<Map<String, dynamic>>();
+  }
+
+  Future<List<Map<String, dynamic>>> postgresSlowQueries(String id) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/slow-queries'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .cast<Map<String, dynamic>>();
+  }
+
+  Future<void> enablePostgresInsights(String id) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/query-insights/enable'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<Map<String, dynamic>> _postgresObject(String id, String path) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/$path'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> testPostgresConnection(String id) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/connection-test'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<String> postgresQuery(
+    String id,
+    String sql, {
+    String database = '',
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/query'),
+      headers: _headers,
+      body: jsonEncode({'sql': sql, 'database': database}),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return response.body;
+  }
+
+  Future<void> postgresCreateDatabase(String id, String name) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/databases'),
+      headers: _headers,
+      body: jsonEncode({'name': name}),
+    );
+    if (response.statusCode != 201) throwApiError(response);
+  }
+
+  Future<void> postgresDeleteDatabase(String id, String name) async {
+    final response = await _http.delete(
+      Uri.parse(
+        '$baseUrl/api/databases/$id/postgres/databases/${Uri.encodeComponent(name)}',
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<String> postgresCreateUser(
+    String id,
+    String username,
+    String database,
+    String permission,
+  ) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/users'),
+      headers: _headers,
+      body: jsonEncode({
+        'username': username,
+        'database': database,
+        'permission': permission,
+      }),
+    );
+    if (response.statusCode != 201) throwApiError(response);
+    return (jsonDecode(response.body) as Map<String, dynamic>)['secretId']
+        as String;
+  }
+
+  Future<void> postgresSetPermission(
+    String id,
+    String username,
+    String database,
+    String permission,
+  ) async {
+    final response = await _http.put(
+      Uri.parse(
+        '$baseUrl/api/databases/$id/postgres/users/${Uri.encodeComponent(username)}/permissions',
+      ),
+      headers: _headers,
+      body: jsonEncode({'database': database, 'permission': permission}),
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<void> postgresTerminateSession(String id, int pid) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/sessions/$pid/terminate'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<void> postgresSetConnectionLimit(
+    String id,
+    String database,
+    int limit,
+  ) async {
+    final response = await _http.put(
+      Uri.parse('$baseUrl/api/databases/$id/postgres/connection-limit'),
+      headers: _headers,
+      body: jsonEncode({'database': database, 'limit': limit}),
+    );
+    if (response.statusCode != 204) throwApiError(response);
   }
 
   Future<List<DatabaseCredential>> listDatabaseCredentials(String id) async {
@@ -2028,7 +2257,9 @@ class ApiClient {
       final decoded = jsonDecode(response.body);
       throw ApiException(
         response.statusCode,
-        decoded is Map ? (decoded['error'] as String? ?? response.body) : response.body,
+        decoded is Map
+            ? (decoded['error'] as String? ?? response.body)
+            : response.body,
       );
     }
     return DeploymentPreview.fromJson(
@@ -2121,8 +2352,7 @@ class ApiClient {
     final decoded = jsonDecode(response.body) as List<dynamic>;
     return decoded
         .map(
-          (e) =>
-              ComposeFileVersionSummary.fromJson(e as Map<String, dynamic>),
+          (e) => ComposeFileVersionSummary.fromJson(e as Map<String, dynamic>),
         )
         .toList();
   }
@@ -2398,11 +2628,15 @@ class ApiClient {
   /// Fetches [path] at [ref] with its Compose validation, for the import
   /// dialog's preview.
   Future<({String content, String commit, ComposeParseResult parse})>
-  previewGitFile(String repositoryId, {required String ref, required String path}) async {
+  previewGitFile(
+    String repositoryId, {
+    required String ref,
+    required String path,
+  }) async {
     final response = await _http.get(
-      Uri.parse('$baseUrl/api/git-repositories/$repositoryId/file').replace(
-        queryParameters: {'ref': ref, 'path': path},
-      ),
+      Uri.parse(
+        '$baseUrl/api/git-repositories/$repositoryId/file',
+      ).replace(queryParameters: {'ref': ref, 'path': path}),
       headers: _headers,
     );
     if (response.statusCode != 200) throwApiError(response);
@@ -2462,7 +2696,11 @@ class ApiClient {
     final response = await _http.put(
       Uri.parse('$baseUrl/api/compose-files/$composeFileId/git'),
       headers: _headers,
-      body: jsonEncode({'repositoryId': repositoryId, 'ref': ref, 'path': path}),
+      body: jsonEncode({
+        'repositoryId': repositoryId,
+        'ref': ref,
+        'path': path,
+      }),
     );
     if (response.statusCode != 200) throwApiError(response);
     return ComposeFile.fromJson(
@@ -2478,13 +2716,14 @@ class ApiClient {
     int limit = 30,
   }) async {
     final response = await _http.get(
-      Uri.parse('$baseUrl/api/compose-files/$composeFileId/git/commits')
-          .replace(
-            queryParameters: {
-              if (ref != null && ref.isNotEmpty) 'ref': ref,
-              'limit': '$limit',
-            },
-          ),
+      Uri.parse(
+        '$baseUrl/api/compose-files/$composeFileId/git/commits',
+      ).replace(
+        queryParameters: {
+          if (ref != null && ref.isNotEmpty) 'ref': ref,
+          'limit': '$limit',
+        },
+      ),
       headers: _headers,
     );
     if (response.statusCode != 200) throwApiError(response);

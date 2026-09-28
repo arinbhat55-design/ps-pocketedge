@@ -1,9 +1,11 @@
 package docker
 
 import (
+	"archive/tar"
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/containerd/errdefs"
@@ -62,6 +64,15 @@ func RestoreVolumes(ctx context.Context, cli *client.Client, cmd *agentv1.Restor
 		_, err := io.Copy(io.Discard, tarStream)
 		return err
 	}
+	if source := cmd.GetSourceDeploymentId(); source != "" && source != cmd.GetDeploymentId() {
+		sourceStream := tarStream
+		reader, writer := io.Pipe()
+		defer reader.Close()
+		go func() {
+			writer.CloseWithError(remapBackupVolumeNames(sourceStream, writer, source, cmd.GetDeploymentId()))
+		}()
+		tarStream = reader
+	}
 
 	if err := pullImage(ctx, cli, backupHelperImage); err != nil {
 		return fmt.Errorf("failed to pull backup helper image: %w", err)
@@ -91,6 +102,68 @@ func RestoreVolumes(ctx context.Context, cli *client.Client, cmd *agentv1.Restor
 		return fmt.Errorf("failed to extract backup into volumes: %w", err)
 	}
 	return nil
+}
+
+// remapBackupVolumeNames streams a backup taken from one deployment into
+// another's volume namespace. The archive's top-level /backup directory is
+// preserved; only its Docker volume-name component changes.
+func remapBackupVolumeNames(src io.Reader, dst io.Writer, sourceID, targetID string) (resultErr error) {
+	tr := tar.NewReader(src)
+	tw := tar.NewWriter(dst)
+	defer func() {
+		if err := tw.Close(); resultErr == nil {
+			resultErr = err
+		}
+	}()
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		copyHeader := *h
+		copyHeader.Name = remapBackupPath(h.Name, sourceID, targetID)
+		copyHeader.Linkname = remapBackupPath(h.Linkname, sourceID, targetID)
+		if len(h.PAXRecords) > 0 {
+			copyHeader.PAXRecords = make(map[string]string, len(h.PAXRecords))
+			for k, v := range h.PAXRecords {
+				if k != "path" && k != "linkpath" {
+					copyHeader.PAXRecords[k] = v
+				}
+			}
+		}
+		if err := tw.WriteHeader(&copyHeader); err != nil {
+			return err
+		}
+		if _, err := io.Copy(tw, tr); err != nil {
+			return err
+		}
+	}
+}
+
+func remapBackupPath(path, sourceID, targetID string) string {
+	parts := strings.SplitN(path, "/", 3)
+	if len(parts) < 2 || (parts[0] != "backup" && parts[0] != ".") {
+		return path
+	}
+	index := 1
+	if parts[0] == "." {
+		if len(parts) < 3 || parts[1] != "backup" {
+			return path
+		}
+		parts = strings.SplitN(path, "/", 4)
+		index = 2
+	}
+	if len(parts) <= index {
+		return path
+	}
+	oldPrefix := "pe-" + sourceID + "-"
+	if strings.HasPrefix(parts[index], oldPrefix) {
+		parts[index] = "pe-" + targetID + "-" + strings.TrimPrefix(parts[index], oldPrefix)
+	}
+	return strings.Join(parts, "/")
 }
 
 // recreateVolumesClean returns the same compose-volume-name -> Docker-

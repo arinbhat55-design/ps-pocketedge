@@ -292,6 +292,10 @@ message BackupCommand {
   // the snapshot and starts them again afterwards, so a database's files
   // are copied at rest rather than mid-write. Costs a short outage.
   bool quiesce = 4;
+  // Stream a pg_dump custom archive of postgres_database instead of volumes.
+  bool postgres_logical = 5;
+  string postgres_username = 6;
+  string postgres_database = 7;
 }
 
 message BackupStatus {
@@ -314,6 +318,16 @@ message RestoreCommand {
   string stack_name = 4;
   string compose_yaml = 5;
   map<string, string> env = 6;
+  // Nonempty when refreshing a different deployment from this backup.
+  // The tar's volume names are remapped from source to deployment_id.
+  string source_deployment_id = 7;
+  // Reapply the target's vaulted PostgreSQL password after restoring data
+  // from another instance, whose pg_authid still contains the source hash.
+  bool sync_postgres_password = 8;
+  string postgres_username = 9;
+  string postgres_database = 10;
+  // Restore a pg_dump custom archive into the already running target.
+  bool postgres_logical = 11;
 }
 
 // RestoreStatus covers only the download+extract step. Once that

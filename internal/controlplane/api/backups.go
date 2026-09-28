@@ -13,6 +13,7 @@ import (
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/backup"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/vault"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
 
@@ -109,7 +110,7 @@ func handleGetBackup(log *slog.Logger, st *store.Store) http.HandlerFunc {
 // handleRestoreBackup dispatches a RestoreCommand for backup's deployment.
 // Restore always targets the deployment the backup was taken from — there
 // is no "restore into a new/different deployment" yet.
-func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, publicURL string) http.HandlerFunc {
+func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, publicURL string, v *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var triggeredBy string
 		if claims, ok := auth.ClaimsFromContext(r.Context()); ok {
@@ -131,6 +132,10 @@ func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.D
 			http.Error(w, "backup is not in a restorable state", http.StatusConflict)
 			return
 		}
+		if b.Format != "volumes" {
+			http.Error(w, "logical PostgreSQL backups must be migrated into a target database", http.StatusBadRequest)
+			return
+		}
 
 		deployment, err := st.GetDeployment(r.Context(), b.DeploymentID)
 		if err != nil {
@@ -142,6 +147,12 @@ func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.D
 		if err != nil {
 			log.Error("failed to resolve deployment source", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		resolvedEnv, err := v.ResolveEnv(r.Context(), deployment.Env)
+		if err != nil {
+			log.Error("failed to resolve restore credentials", "backup_id", backupID, "error", err)
+			http.Error(w, "could not resolve deployment credentials", http.StatusConflict)
 			return
 		}
 
@@ -157,7 +168,7 @@ func handleRestoreBackup(log *slog.Logger, st *store.Store, dispatcher *deploy.D
 					DownloadUrl:  publicURL + "/api/agent/backups/" + backupID + "/blob",
 					StackName:    stackName,
 					ComposeYaml:  composeYAML,
-					Env:          deployment.Env,
+					Env:          resolvedEnv,
 				},
 			},
 		}
@@ -230,7 +241,19 @@ func handleDownloadBackupBlob(log *slog.Logger, st *store.Store, blobs *backup.B
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		if !authenticateAgent(r, st, b.ServerID) {
+		allowed := authenticateAgent(r, st, b.ServerID)
+		if !allowed {
+			targetServerID := r.URL.Query().Get("serverId")
+			if targetServerID != "" && authenticateAgent(r, st, targetServerID) {
+				allowed, err = st.HasBackupRestoreGrant(r.Context(), backupID, targetServerID)
+				if err != nil {
+					log.Error("failed to check backup restore grant", "error", err)
+					http.Error(w, "internal server error", 500)
+					return
+				}
+			}
+		}
+		if !allowed {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

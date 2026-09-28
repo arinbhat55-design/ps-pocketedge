@@ -15,11 +15,15 @@ import 'database_widgets.dart';
 class DatabaseWizardScreen extends StatefulWidget {
   final ApiClient apiClient;
   final DatabaseEngine engine;
+  final DatabaseInstance? cloneSource;
+  final String? cloneBackupId;
 
   const DatabaseWizardScreen({
     super.key,
     required this.apiClient,
     required this.engine,
+    this.cloneSource,
+    this.cloneBackupId,
   });
 
   @override
@@ -75,6 +79,24 @@ class _DatabaseWizardScreenState extends State<DatabaseWizardScreen> {
   @override
   void initState() {
     super.initState();
+    final source = widget.cloneSource;
+    if (source != null) {
+      _version = engine.versions.any((v) => v.tag == source.version)
+          ? source.version
+          : source.version.split('.').first;
+      _name.text = '${source.name}-clone';
+      _databaseName.text = source.databaseName;
+      _username.text = source.adminUsername;
+      _serverId = source.serverId;
+      _profile = source.profile;
+      _port.text = '${source.port + 1}';
+      _access = source.access;
+      _memory.text = '${source.memoryMb}';
+      _cpus.text = _fmtCpus(source.cpus);
+      _storage.text = '${source.storageGb}';
+      _highAvailability = source.highAvailability;
+      _consistentBackups = true;
+    }
     _serversFuture = widget.apiClient.listServers();
   }
 
@@ -139,6 +161,7 @@ class _DatabaseWizardScreenState extends State<DatabaseWizardScreen> {
     retentionDays: int.tryParse(_retentionDays.text) ?? 0,
     retentionCount: int.tryParse(_retentionCount.text) ?? 0,
     changeRequest: _changeRequest.text.trim(),
+    cloneBackupId: widget.cloneBackupId,
   );
 
   int get _lastStep => engine.persistent ? 3 : 2;
@@ -236,7 +259,13 @@ class _DatabaseWizardScreenState extends State<DatabaseWizardScreen> {
     ];
 
     return Scaffold(
-      appBar: AppBar(title: Text('Deploy ${engine.name}')),
+      appBar: AppBar(
+        title: Text(
+          widget.cloneSource == null
+              ? 'Deploy ${engine.name}'
+              : 'Create clone of ${widget.cloneSource!.name}',
+        ),
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 860),

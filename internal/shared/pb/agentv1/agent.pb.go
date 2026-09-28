@@ -2317,9 +2317,13 @@ type BackupCommand struct {
 	// quiesce stops the deployment's running containers for the duration of
 	// the snapshot and starts them again afterwards, so a database's files
 	// are copied at rest rather than mid-write. Costs a short outage.
-	Quiesce       bool `protobuf:"varint,4,opt,name=quiesce,proto3" json:"quiesce,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Quiesce bool `protobuf:"varint,4,opt,name=quiesce,proto3" json:"quiesce,omitempty"`
+	// Stream a pg_dump custom archive of postgres_database instead of volumes.
+	PostgresLogical  bool   `protobuf:"varint,5,opt,name=postgres_logical,json=postgresLogical,proto3" json:"postgres_logical,omitempty"`
+	PostgresUsername string `protobuf:"bytes,6,opt,name=postgres_username,json=postgresUsername,proto3" json:"postgres_username,omitempty"`
+	PostgresDatabase string `protobuf:"bytes,7,opt,name=postgres_database,json=postgresDatabase,proto3" json:"postgres_database,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *BackupCommand) Reset() {
@@ -2378,6 +2382,27 @@ func (x *BackupCommand) GetQuiesce() bool {
 		return x.Quiesce
 	}
 	return false
+}
+
+func (x *BackupCommand) GetPostgresLogical() bool {
+	if x != nil {
+		return x.PostgresLogical
+	}
+	return false
+}
+
+func (x *BackupCommand) GetPostgresUsername() string {
+	if x != nil {
+		return x.PostgresUsername
+	}
+	return ""
+}
+
+func (x *BackupCommand) GetPostgresDatabase() string {
+	if x != nil {
+		return x.PostgresDatabase
+	}
+	return ""
 }
 
 type BackupStatus struct {
@@ -2455,15 +2480,25 @@ func (x *BackupStatus) GetSizeBytes() int64 {
 // bring the containers back up on top of the restored data rather than
 // just leaving the volumes populated with nothing running).
 type RestoreCommand struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	BackupId      string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
-	DeploymentId  string                 `protobuf:"bytes,2,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
-	DownloadUrl   string                 `protobuf:"bytes,3,opt,name=download_url,json=downloadUrl,proto3" json:"download_url,omitempty"`
-	StackName     string                 `protobuf:"bytes,4,opt,name=stack_name,json=stackName,proto3" json:"stack_name,omitempty"`
-	ComposeYaml   string                 `protobuf:"bytes,5,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
-	Env           map[string]string      `protobuf:"bytes,6,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	BackupId     string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	DeploymentId string                 `protobuf:"bytes,2,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	DownloadUrl  string                 `protobuf:"bytes,3,opt,name=download_url,json=downloadUrl,proto3" json:"download_url,omitempty"`
+	StackName    string                 `protobuf:"bytes,4,opt,name=stack_name,json=stackName,proto3" json:"stack_name,omitempty"`
+	ComposeYaml  string                 `protobuf:"bytes,5,opt,name=compose_yaml,json=composeYaml,proto3" json:"compose_yaml,omitempty"`
+	Env          map[string]string      `protobuf:"bytes,6,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Nonempty when refreshing a different deployment from this backup.
+	// The tar's volume names are remapped from source to deployment_id.
+	SourceDeploymentId string `protobuf:"bytes,7,opt,name=source_deployment_id,json=sourceDeploymentId,proto3" json:"source_deployment_id,omitempty"`
+	// Reapply the target's vaulted PostgreSQL password after restoring data
+	// from another instance, whose pg_authid still contains the source hash.
+	SyncPostgresPassword bool   `protobuf:"varint,8,opt,name=sync_postgres_password,json=syncPostgresPassword,proto3" json:"sync_postgres_password,omitempty"`
+	PostgresUsername     string `protobuf:"bytes,9,opt,name=postgres_username,json=postgresUsername,proto3" json:"postgres_username,omitempty"`
+	PostgresDatabase     string `protobuf:"bytes,10,opt,name=postgres_database,json=postgresDatabase,proto3" json:"postgres_database,omitempty"`
+	// Restore a pg_dump custom archive into the already running target.
+	PostgresLogical bool `protobuf:"varint,11,opt,name=postgres_logical,json=postgresLogical,proto3" json:"postgres_logical,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RestoreCommand) Reset() {
@@ -2536,6 +2571,41 @@ func (x *RestoreCommand) GetEnv() map[string]string {
 		return x.Env
 	}
 	return nil
+}
+
+func (x *RestoreCommand) GetSourceDeploymentId() string {
+	if x != nil {
+		return x.SourceDeploymentId
+	}
+	return ""
+}
+
+func (x *RestoreCommand) GetSyncPostgresPassword() bool {
+	if x != nil {
+		return x.SyncPostgresPassword
+	}
+	return false
+}
+
+func (x *RestoreCommand) GetPostgresUsername() string {
+	if x != nil {
+		return x.PostgresUsername
+	}
+	return ""
+}
+
+func (x *RestoreCommand) GetPostgresDatabase() string {
+	if x != nil {
+		return x.PostgresDatabase
+	}
+	return ""
+}
+
+func (x *RestoreCommand) GetPostgresLogical() bool {
+	if x != nil {
+		return x.PostgresLogical
+	}
+	return false
 }
 
 // RestoreStatus covers only the download+extract step. Once that
@@ -6652,19 +6722,22 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\brevision\x18\x06 \x01(\x05R\brevision\"$\n" +
 	"\x03Ack\x12\x1d\n" +
 	"\n" +
-	"message_id\x18\x01 \x01(\tR\tmessageId\"\x8a\x01\n" +
+	"message_id\x18\x01 \x01(\tR\tmessageId\"\x8f\x02\n" +
 	"\rBackupCommand\x12\x1b\n" +
 	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12#\n" +
 	"\rdeployment_id\x18\x02 \x01(\tR\fdeploymentId\x12\x1d\n" +
 	"\n" +
 	"upload_url\x18\x03 \x01(\tR\tuploadUrl\x12\x18\n" +
-	"\aquiesce\x18\x04 \x01(\bR\aquiesce\"\x8f\x01\n" +
+	"\aquiesce\x18\x04 \x01(\bR\aquiesce\x12)\n" +
+	"\x10postgres_logical\x18\x05 \x01(\bR\x0fpostgresLogical\x12+\n" +
+	"\x11postgres_username\x18\x06 \x01(\tR\x10postgresUsername\x12+\n" +
+	"\x11postgres_database\x18\a \x01(\tR\x10postgresDatabase\"\x8f\x01\n" +
 	"\fBackupStatus\x12\x1b\n" +
 	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12)\n" +
 	"\x05phase\x18\x02 \x01(\x0e2\x13.agent.v1.TaskPhaseR\x05phase\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1d\n" +
 	"\n" +
-	"size_bytes\x18\x04 \x01(\x03R\tsizeBytes\"\xa4\x02\n" +
+	"size_bytes\x18\x04 \x01(\x03R\tsizeBytes\"\x91\x04\n" +
 	"\x0eRestoreCommand\x12\x1b\n" +
 	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12#\n" +
 	"\rdeployment_id\x18\x02 \x01(\tR\fdeploymentId\x12!\n" +
@@ -6672,7 +6745,13 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"stack_name\x18\x04 \x01(\tR\tstackName\x12!\n" +
 	"\fcompose_yaml\x18\x05 \x01(\tR\vcomposeYaml\x123\n" +
-	"\x03env\x18\x06 \x03(\v2!.agent.v1.RestoreCommand.EnvEntryR\x03env\x1a6\n" +
+	"\x03env\x18\x06 \x03(\v2!.agent.v1.RestoreCommand.EnvEntryR\x03env\x120\n" +
+	"\x14source_deployment_id\x18\a \x01(\tR\x12sourceDeploymentId\x124\n" +
+	"\x16sync_postgres_password\x18\b \x01(\bR\x14syncPostgresPassword\x12+\n" +
+	"\x11postgres_username\x18\t \x01(\tR\x10postgresUsername\x12+\n" +
+	"\x11postgres_database\x18\n" +
+	" \x01(\tR\x10postgresDatabase\x12)\n" +
+	"\x10postgres_logical\x18\v \x01(\bR\x0fpostgresLogical\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x96\x01\n" +

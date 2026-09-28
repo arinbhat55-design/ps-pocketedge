@@ -42,6 +42,10 @@ func New(log *slog.Logger, st *store.Store, v *vault.Vault, dispatcher *deploy.D
 	return &Ops{log: log, st: st, vault: v, dispatcher: dispatcher, relay: relay}
 }
 
+// Relay is shared with database administration commands that run inside
+// the primary container through the same one-shot exec transport.
+func (o *Ops) Relay() *deploy.ExecStreamRelay { return o.relay }
+
 // CommandError is an in-container command that ran but failed. Output has
 // every credential involved already masked.
 type CommandError struct {

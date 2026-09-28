@@ -412,6 +412,9 @@ func buildPostgres(b *builder) error {
 		"-c", fmt.Sprintf("shared_buffers=%dMB", b.memoryMB(0.25, 32)),
 		"-c", fmt.Sprintf("effective_cache_size=%dMB", b.memoryMB(0.75, 64)),
 		"-c", "max_connections=" + map[bool]string{true: "200", false: "100"}[o.Profile == "production"],
+		"-c", "shared_preload_libraries=pg_stat_statements",
+		"-c", "pg_stat_statements.track=all",
+		"-c", "track_io_timing=on",
 	}
 	env := map[string]string{
 		"POSTGRES_USER":     o.Username,

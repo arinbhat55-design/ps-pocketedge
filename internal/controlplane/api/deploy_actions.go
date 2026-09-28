@@ -22,11 +22,13 @@ import (
 // Deployment actions that go through the governance gate (environment
 // policy: approval, maintenance window) and, once allowed, execute.
 const (
-	actionDeploy          = "deploy"
-	actionRedeploy        = "redeploy"
-	actionRollback        = "rollback"
-	actionScale           = "scale"
-	actionRedeployService = "redeploy_service"
+	actionDeploy              = "deploy"
+	actionRedeploy            = "redeploy"
+	actionRollback            = "rollback"
+	actionScale               = "scale"
+	actionRedeployService     = "redeploy_service"
+	actionDatabaseReconfigure = "database_reconfigure"
+	actionDatabaseMigration   = "database_migration"
 )
 
 // maxReplicas bounds a scale request — a typo shouldn't start 5000
@@ -49,7 +51,24 @@ type actionParams struct {
 	FromDeploymentID string `json:"fromDeploymentId,omitempty"`
 	FromRevision     int    `json:"fromRevision,omitempty"`
 	// Automatic actions (auto-rollback, webhook) note why they ran.
-	Reason string `json:"reason,omitempty"`
+	Reason            string                   `json:"reason,omitempty"`
+	DatabaseConfig    *databaseConfigParams    `json:"databaseConfig,omitempty"`
+	DatabaseMigration *databaseMigrationParams `json:"databaseMigration,omitempty"`
+}
+
+type databaseMigrationParams struct {
+	TargetID string `json:"targetId"`
+	BackupID string `json:"backupId"`
+}
+
+type databaseConfigParams struct {
+	InstanceID             string  `json:"instanceId"`
+	Version                string  `json:"version"`
+	MemoryMB               int     `json:"memoryMb"`
+	CPUs                   float64 `json:"cpus"`
+	StorageGB              int     `json:"storageGb"`
+	ComposeYAML            string  `json:"composeYaml"`
+	ExpectedComposeVersion int     `json:"expectedComposeVersion"`
 }
 
 // actionError carries the HTTP status an action failure should map to.
@@ -128,6 +147,7 @@ type deployer struct {
 	dispatcher *deploy.Dispatcher
 	events     *deploy.EventBus
 	opWaiter   *deploy.OpWaiter
+	publicURL  string
 	now        func() time.Time
 }
 
@@ -179,6 +199,10 @@ func describeAction(action string, p actionParams) string {
 		return fmt.Sprintf("scale service %q to %d replica(s)", p.Service, p.Replicas)
 	case actionRedeployService:
 		return fmt.Sprintf("redeploy service %q", p.Service)
+	case actionDatabaseReconfigure:
+		return "change PostgreSQL version or resources"
+	case actionDatabaseMigration:
+		return "migrate PostgreSQL data from a logical backup"
 	}
 	return action
 }
@@ -443,6 +467,10 @@ func (d *deployer) execute(ctx context.Context, dep *store.Deployment, action st
 		return d.executeScale(ctx, dep, p, a)
 	case actionRedeployService:
 		return d.executeServiceRedeploy(ctx, dep, p, a)
+	case actionDatabaseReconfigure:
+		return d.executeDatabaseReconfigure(ctx, dep, p, a)
+	case actionDatabaseMigration:
+		return d.executeDatabaseMigration(ctx, dep, p, a)
 	}
 	return nil, newActionError(http.StatusBadRequest, "unknown action %q", action)
 }

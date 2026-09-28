@@ -31,7 +31,10 @@ type Request struct {
 	Origin string
 	// Quiesce stops the deployment's containers during the snapshot (see
 	// agentv1.BackupCommand.quiesce).
-	Quiesce bool
+	Quiesce          bool
+	PostgresLogical  bool
+	PostgresUsername string
+	PostgresDatabase string
 }
 
 // Start records a pending backup and dispatches its BackupCommand. The
@@ -40,17 +43,24 @@ type Request struct {
 // REST endpoint and the backup scheduler.
 func Start(ctx context.Context, log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, publicURL string, req Request) (string, error) {
 	dep := req.Deployment
-	backupID, err := st.CreateBackup(ctx, dep.ID, dep.ServerID, req.CreatedBy, req.Origin)
+	format := "volumes"
+	if req.PostgresLogical {
+		format = "postgres_custom"
+	}
+	backupID, err := st.CreateBackup(ctx, dep.ID, dep.ServerID, req.CreatedBy, req.Origin, req.Quiesce, format)
 	if err != nil {
 		return "", err
 	}
 	cmd := &agentv1.ControlMessage{
 		Payload: &agentv1.ControlMessage_Backup{
 			Backup: &agentv1.BackupCommand{
-				BackupId:     backupID,
-				DeploymentId: dep.ID,
-				UploadUrl:    publicURL + "/api/agent/backups/" + backupID + "/blob",
-				Quiesce:      req.Quiesce,
+				BackupId:         backupID,
+				DeploymentId:     dep.ID,
+				UploadUrl:        publicURL + "/api/agent/backups/" + backupID + "/blob",
+				Quiesce:          req.Quiesce,
+				PostgresLogical:  req.PostgresLogical,
+				PostgresUsername: req.PostgresUsername,
+				PostgresDatabase: req.PostgresDatabase,
 			},
 		},
 	}

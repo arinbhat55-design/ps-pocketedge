@@ -448,12 +448,12 @@ func (r *Runner) flushBufferedHeartbeats(ctx context.Context, stream agentv1.Age
 // further commands.
 func (r *Runner) handleDeploy(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.DeployStackCommand, outbound chan<- *agentv1.AgentMessage) {
 	defer r.lockDeployment(cmd.GetDeploymentId())()
-	r.deployLocked(ctx, dockerCli, cmd, outbound)
+	_ = r.deployLocked(ctx, dockerCli, cmd, outbound)
 }
 
 // deployLocked is handleDeploy's body, for callers already holding the
 // deployment's lock (handleRestore).
-func (r *Runner) deployLocked(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.DeployStackCommand, outbound chan<- *agentv1.AgentMessage) {
+func (r *Runner) deployLocked(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.DeployStackCommand, outbound chan<- *agentv1.AgentMessage) error {
 	report := func(phase agentv1.DeployPhase, service, message string) {
 		select {
 		case outbound <- deployStatusMessage(cmd.GetDeploymentId(), cmd.GetRevision(), phase, service, message):
@@ -464,15 +464,16 @@ func (r *Runner) deployLocked(ctx context.Context, dockerCli *dockerclient.Clien
 	if dockerCli == nil {
 		r.log.Error("cannot deploy, no docker client available", "deployment_id", cmd.GetDeploymentId())
 		report(agentv1.DeployPhase_DEPLOY_PHASE_FAILED, "", "docker client unavailable on this agent")
-		return
+		return fmt.Errorf("docker client unavailable")
 	}
 
 	r.log.Info("deploying stack", "deployment_id", cmd.GetDeploymentId(), "stack", cmd.GetStackName())
 	if err := docker.Deploy(ctx, dockerCli, cmd, report); err != nil {
 		r.log.Error("deploy failed", "deployment_id", cmd.GetDeploymentId(), "error", err)
-		return
+		return err
 	}
 	r.log.Info("deploy succeeded", "deployment_id", cmd.GetDeploymentId())
+	return nil
 }
 
 // handleBackup snapshots the deployment's volumes and PUTs the resulting
@@ -518,9 +519,15 @@ func (r *Runner) handleBackup(ctx context.Context, dockerCli *dockerclient.Clien
 		}
 	}
 
-	report(agentv1.TaskPhase_TASK_PHASE_RUNNING, "snapshotting volumes")
-
-	reader, err := docker.BackupVolumes(ctx, dockerCli, cmd.GetDeploymentId())
+	var reader io.ReadCloser
+	var err error
+	if cmd.GetPostgresLogical() {
+		report(agentv1.TaskPhase_TASK_PHASE_RUNNING, "exporting PostgreSQL database")
+		reader, err = docker.DumpPostgres(ctx, dockerCli, cmd.GetDeploymentId(), cmd.GetPostgresUsername(), cmd.GetPostgresDatabase())
+	} else {
+		report(agentv1.TaskPhase_TASK_PHASE_RUNNING, "snapshotting volumes")
+		reader, err = docker.BackupVolumes(ctx, dockerCli, cmd.GetDeploymentId())
+	}
 	if err != nil {
 		r.log.Error("backup snapshot failed", "backup_id", cmd.GetBackupId(), "error", err)
 		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "failed to snapshot volumes: "+err.Error())
@@ -568,21 +575,40 @@ func (r *Runner) handleRestore(ctx context.Context, dockerCli *dockerclient.Clie
 		return
 	}
 	defer body.Close()
+	if cmd.GetPostgresLogical() {
+		if err := docker.RestorePostgresLogical(ctx, dockerCli, cmd.GetDeploymentId(), cmd.GetPostgresUsername(), cmd.GetPostgresDatabase(), body); err != nil {
+			r.log.Error("PostgreSQL logical restore failed", "backup_id", cmd.GetBackupId(), "error", err)
+			report(agentv1.TaskPhase_TASK_PHASE_FAILED, "PostgreSQL migration failed: "+err.Error())
+			return
+		}
+		report(agentv1.TaskPhase_TASK_PHASE_COMPLETED, "PostgreSQL logical migration completed")
+		return
+	}
 
 	if err := docker.RestoreVolumes(ctx, dockerCli, cmd, body); err != nil {
 		r.log.Error("restore extraction failed", "backup_id", cmd.GetBackupId(), "error", err)
 		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "failed to restore volumes: "+err.Error())
 		return
 	}
-	report(agentv1.TaskPhase_TASK_PHASE_COMPLETED, "")
-
 	r.log.Info("restored volumes, redeploying", "backup_id", cmd.GetBackupId(), "deployment_id", cmd.GetDeploymentId())
-	r.deployLocked(ctx, dockerCli, &agentv1.DeployStackCommand{
+	err = r.deployLocked(ctx, dockerCli, &agentv1.DeployStackCommand{
 		DeploymentId: cmd.GetDeploymentId(),
 		StackName:    cmd.GetStackName(),
 		ComposeYaml:  cmd.GetComposeYaml(),
 		Env:          cmd.GetEnv(),
 	}, outbound)
+	if err != nil {
+		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "redeploy after restore failed: "+err.Error())
+		return
+	}
+	if cmd.GetSyncPostgresPassword() {
+		if err := docker.SyncPostgresPassword(ctx, dockerCli, cmd.GetDeploymentId(), cmd.GetPostgresUsername(), cmd.GetPostgresDatabase(), cmd.GetEnv()["DB_PASSWORD"]); err != nil {
+			r.log.Error("failed to synchronize target PostgreSQL password after refresh", "deployment_id", cmd.GetDeploymentId(), "error", err)
+			report(agentv1.TaskPhase_TASK_PHASE_FAILED, "database restored but target password could not be synchronized: "+err.Error())
+			return
+		}
+	}
+	report(agentv1.TaskPhase_TASK_PHASE_COMPLETED, "")
 }
 
 // handleInspectContainer runs a live ContainerInspect for cmd.ContainerId

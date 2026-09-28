@@ -192,6 +192,7 @@ class DatabaseRequest {
   final int retentionCount;
   final String changeRequest;
   final String rollbackPlan;
+  final String? cloneBackupId;
 
   const DatabaseRequest({
     required this.engine,
@@ -215,6 +216,7 @@ class DatabaseRequest {
     required this.retentionCount,
     this.changeRequest = '',
     this.rollbackPlan = '',
+    this.cloneBackupId,
   });
 
   Map<String, dynamic> toJson() => {
@@ -241,6 +243,7 @@ class DatabaseRequest {
     },
     if (changeRequest.isNotEmpty) 'changeRequest': changeRequest,
     if (rollbackPlan.isNotEmpty) 'rollbackPlan': rollbackPlan,
+    if (cloneBackupId != null) 'cloneBackupId': cloneBackupId,
   };
 }
 
@@ -399,11 +402,17 @@ class DatabaseDetail {
   final DatabaseInstance instance;
   final DatabaseEngine? engine;
   final List<Backup> backups;
+  final bool canManage;
+  final String? cloneStatus;
+  final String? cloneMessage;
 
   const DatabaseDetail({
     required this.instance,
     required this.engine,
     required this.backups,
+    required this.canManage,
+    this.cloneStatus,
+    this.cloneMessage,
   });
 
   factory DatabaseDetail.fromJson(Map<String, dynamic> json) => DatabaseDetail(
@@ -414,6 +423,9 @@ class DatabaseDetail {
     backups: (json['backups'] as List<dynamic>? ?? [])
         .map((e) => Backup.fromJson(e as Map<String, dynamic>))
         .toList(),
+    canManage: json['canManage'] as bool? ?? false,
+    cloneStatus: (json['clone'] as Map<String, dynamic>?)?['status'] as String?,
+    cloneMessage: (json['clone'] as Map<String, dynamic>?)?['message'] as String?,
   );
 }
 

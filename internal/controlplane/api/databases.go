@@ -46,6 +46,7 @@ func (api *databaseAPI) handleListEngines() http.HandlerFunc {
 type databaseRequest struct {
 	gateOptions
 	Engine           string  `json:"engine"`
+	CloneBackupID    string  `json:"cloneBackupId"`
 	Version          string  `json:"version"`
 	Name             string  `json:"name"`
 	ServerID         string  `json:"serverId"`
@@ -299,6 +300,28 @@ func (api *databaseAPI) handleCreate() http.HandlerFunc {
 			writeActionError(w, api.log, err)
 			return
 		}
+		if req.CloneBackupID != "" {
+			if p.engine.ID != "postgresql" {
+				writeActionError(w, api.log, newActionError(400, "cloning from a backup currently supports PostgreSQL"))
+				return
+			}
+			b, err := api.st.GetBackup(ctx, req.CloneBackupID)
+			if err != nil || b.Status != "completed" || b.Format != "volumes" || !b.Quiesced {
+				writeActionError(w, api.log, newActionError(409, "clone requires a completed consistent volume backup"))
+				return
+			}
+			source, err := api.st.GetDatabaseInstanceByDeployment(ctx, b.DeploymentID)
+			if err != nil || !canManageInstance(a, source) {
+				writeActionError(w, api.log, newActionError(403, "access to the clone source is required"))
+				return
+			}
+			sourceMajor, _ := postgresMajor(source.Version)
+			targetMajor, _ := postgresMajor(p.opts.Version)
+			if source.Engine != "postgresql" || sourceMajor != targetMajor || source.AdminUsername != p.opts.Username || source.DatabaseName != p.opts.DatabaseName {
+				writeActionError(w, api.log, newActionError(409, "clone source and target must have the same PostgreSQL major version, administrator, and primary database name"))
+				return
+			}
+		}
 
 		// Credentials first: the deployment's env refers to them.
 		env := map[string]string{}
@@ -382,6 +405,12 @@ func (api *databaseAPI) handleCreate() http.HandlerFunc {
 		if err := api.st.LinkSecretsToDatabase(ctx, instanceID, secretIDs); err != nil {
 			writeActionError(w, api.log, err)
 			return
+		}
+		if req.CloneBackupID != "" {
+			if err := api.st.CreateDatabaseCloneJob(ctx, instanceID, req.CloneBackupID); err != nil {
+				writeActionError(w, api.log, err)
+				return
+			}
 		}
 		api.d.audit(ctx, a, "database.create", "database", instanceID, summary, map[string]any{
 			"engine": p.engine.ID, "version": p.opts.Version, "serverId": p.server.ID,
@@ -470,8 +499,10 @@ func (api *databaseAPI) handleGet() http.HandlerFunc {
 	type response struct {
 		databaseView
 		// Not "engine": that key is the instance's engine ID.
-		Engine  *dbcatalog.Engine `json:"engineInfo,omitempty"`
-		Backups []store.Backup    `json:"backups"`
+		Engine    *dbcatalog.Engine       `json:"engineInfo,omitempty"`
+		Backups   []store.Backup          `json:"backups"`
+		Clone     *store.DatabaseCloneJob `json:"clone,omitempty"`
+		CanManage bool                    `json:"canManage"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		inst, ok := api.loadInstance(w, r)
@@ -484,7 +515,12 @@ func (api *databaseAPI) handleGet() http.HandlerFunc {
 			return
 		}
 		engine, _ := dbcatalog.Get(inst.Engine)
-		writeJSON(w, http.StatusOK, response{databaseView: api.view(inst), Engine: engine, Backups: backups})
+		clone, err := api.st.GetDatabaseCloneJob(r.Context(), inst.ID)
+		if err != nil {
+			writeActionError(w, api.log, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, response{databaseView: api.view(inst), Engine: engine, Backups: backups, Clone: clone, CanManage: canManageInstance(actorFromRequest(r), inst)})
 	}
 }
 
@@ -539,6 +575,9 @@ func (api *databaseAPI) handleUpdateBackupPolicy() http.HandlerFunc {
 }
 
 func (api *databaseAPI) handleCreateBackup() http.HandlerFunc {
+	type request struct {
+		Consistent *bool `json:"consistent"`
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		a := actorFromRequest(r)
 		inst, ok := api.loadInstance(w, r)
@@ -549,13 +588,28 @@ func (api *databaseAPI) handleCreateBackup() http.HandlerFunc {
 			http.Error(w, "this engine keeps no data on disk, so there is nothing to back up", http.StatusBadRequest)
 			return
 		}
+		quiesce := inst.BackupConsistent
+		if r.ContentLength > 0 {
+			var req request
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+				http.Error(w, "invalid backup request", http.StatusBadRequest)
+				return
+			}
+			if req.Consistent != nil {
+				if !canManageInstance(a, inst) {
+					http.Error(w, "only the database owner or an admin can override backup consistency", http.StatusForbidden)
+					return
+				}
+				quiesce = *req.Consistent
+			}
+		}
 		dep, err := api.st.GetDeployment(r.Context(), inst.DeploymentID)
 		if err != nil {
 			writeActionError(w, api.log, err)
 			return
 		}
 		backupID, err := backup.Start(r.Context(), api.log, api.st, api.dispatcher, api.publicURL, backup.Request{
-			Deployment: dep, CreatedBy: a.ID, Origin: "manual", Quiesce: inst.BackupConsistent,
+			Deployment: dep, CreatedBy: a.ID, Origin: "manual", Quiesce: quiesce,
 		})
 		var notConnected *backup.ErrServerNotConnected
 		if errors.As(err, &notConnected) {

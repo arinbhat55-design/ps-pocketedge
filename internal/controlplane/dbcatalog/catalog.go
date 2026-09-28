@@ -182,8 +182,9 @@ type Plan struct {
 }
 
 var (
-	instanceNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{1,38}[a-z0-9]$`)
-	identifierRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,62}$`)
+	instanceNameRE     = regexp.MustCompile(`^[a-z][a-z0-9-]{1,38}[a-z0-9]$`)
+	identifierRE       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,62}$`)
+	postgresMinorTagRE = regexp.MustCompile(`^([0-9]{2})\.([0-9]{1,3})$`)
 )
 
 // Get returns the engine with id.
@@ -212,6 +213,15 @@ func (e *Engine) version(tag string) (Version, bool) {
 	for _, v := range e.Versions {
 		if v.Tag == tag {
 			return v, true
+		}
+	}
+	if e.ID == "postgresql" {
+		if match := postgresMinorTagRE.FindStringSubmatch(tag); match != nil {
+			for _, offered := range e.Versions {
+				if offered.Tag == match[1] {
+					return Version{Tag: tag, Label: tag, dataPath: offered.dataPath}, true
+				}
+			}
 		}
 	}
 	return Version{}, false

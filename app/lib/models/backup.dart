@@ -6,6 +6,8 @@ class Backup {
 
   /// manual or scheduled.
   final String origin;
+  final bool quiesced;
+  final String format;
   final int? sizeBytes;
   final DateTime createdAt;
   final DateTime? completedAt;
@@ -16,6 +18,8 @@ class Backup {
     required this.status,
     required this.message,
     this.origin = 'manual',
+    this.quiesced = false,
+    this.format = 'volumes',
     required this.sizeBytes,
     required this.createdAt,
     required this.completedAt,
@@ -30,6 +34,8 @@ class Backup {
       status: json['status'] as String,
       message: json['message'] as String? ?? '',
       origin: json['origin'] as String? ?? 'manual',
+      quiesced: json['quiesced'] as bool? ?? false,
+      format: json['format'] as String? ?? 'volumes',
       sizeBytes: json['sizeBytes'] as int?,
       createdAt: DateTime.parse(json['createdAt'] as String),
       completedAt: json['completedAt'] == null

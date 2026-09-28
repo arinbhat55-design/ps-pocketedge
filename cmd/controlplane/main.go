@@ -137,7 +137,7 @@ func main() {
 	}
 
 	scheduler := schedule.New(log, st, dispatcher, opWaiter)
-	databaseScheduler := schedule.NewDatabaseScheduler(log, st, dispatcher, databaseOps, blobs, *publicURL)
+	databaseScheduler := schedule.NewDatabaseScheduler(log, st, dispatcher, databaseOps, blobs, *publicURL, credentialVault)
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -151,7 +151,7 @@ func main() {
 	go pruneMetricsLoop(ctx, log, st)
 	go scheduler.Run(ctx)
 	go databaseScheduler.Run(ctx)
-	go api.RunGovernanceWorker(ctx, log, st, dispatcher, events, opWaiter)
+	go api.RunGovernanceWorker(ctx, log, st, dispatcher, events, opWaiter, *publicURL)
 
 	select {
 	case <-ctx.Done():
@@ -184,6 +184,9 @@ func pruneMetricsLoop(ctx context.Context, log *slog.Logger, st *store.Store) {
 			}
 			if err := st.PruneContainerMetricSamplesOlderThan(ctx, cutoff); err != nil {
 				log.Error("failed to prune old container metric samples", "error", err)
+			}
+			if err := st.PruneDatabaseMetricSamplesOlderThan(ctx, cutoff); err != nil {
+				log.Error("failed to prune old database metric samples", "error", err)
 			}
 		}
 	}

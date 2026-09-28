@@ -198,6 +198,27 @@ func (s *Store) UpdateDatabaseBackupPolicy(ctx context.Context, id string, p Bac
 	return err
 }
 
+// UpdateDatabaseConfiguration records the desired image and resource plan
+// after its Compose definition has been versioned for a redeploy.
+func (s *Store) UpdateDatabaseConfiguration(ctx context.Context, id, version string, memoryMB int, cpus float64, storageGB int) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE database_instances SET version=$2,memory_mb=$3,cpus=$4,storage_gb=$5 WHERE id=$1`, id, version, memoryMB, cpus, storageGB)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
+// DeleteDatabaseInstance removes the marketplace record and its vaulted
+// credentials after the underlying deployment has been removed. Deployment
+// history and backups are retained separately.
+func (s *Store) DeleteDatabaseInstance(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM database_instances WHERE id=$1`, id)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
 // DueDatabaseBackups returns instances whose scheduled backup is due.
 func (s *Store) DueDatabaseBackups(ctx context.Context, now time.Time) ([]DatabaseInstance, error) {
 	rows, err := s.pool.Query(ctx, databaseInstanceSelect+`

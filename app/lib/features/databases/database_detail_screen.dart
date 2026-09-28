@@ -13,8 +13,11 @@ import '../../widgets/notice_banner.dart';
 import '../../widgets/state_message.dart';
 import '../../widgets/status_pill.dart';
 import '../deployments/deployment_status_screen.dart';
+import '../deployments/deployment_widgets.dart' show runGatedAction;
 import 'database_widgets.dart';
 import 'secret_dialogs.dart';
+import 'postgres_admin_screen.dart';
+import 'database_wizard_screen.dart';
 
 /// One deployed database: status, how to connect, its vaulted
 /// credentials, and its backups.
@@ -203,10 +206,13 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
   Future<void> _share(DatabaseCredential c) =>
       showShareDialog(context, api: api, credential: c);
 
-  Future<void> _backupNow(DatabaseInstance d) => _withBusy('backup', () async {
-    await api.backupDatabase(d.id);
+  Future<void> _backupNow(
+    DatabaseInstance d, {
+    bool? consistent,
+  }) => _withBusy('backup', () async {
+    await api.backupDatabase(d.id, consistent: consistent);
     _snack(
-      d.backupConsistent
+      (consistent ?? d.backupConsistent)
           ? 'Backup started — the database pauses briefly for a consistent snapshot.'
           : 'Backup started.',
     );
@@ -234,21 +240,379 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
     );
   }
 
+  Future<void> _configure(DatabaseInstance d) async {
+    final version = TextEditingController(text: d.version);
+    final memory = TextEditingController(text: '${d.memoryMb}');
+    final cpus = TextEditingController(text: '${d.cpus}');
+    final storage = TextEditingController(text: '${d.storageGb}');
+    final apply = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Change ${d.engineName} configuration'),
+        content: SizedBox(
+          width: 400,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (d.engine == 'postgresql')
+                  TextField(
+                    controller: version,
+                    decoration: const InputDecoration(
+                      labelText: 'Image version (same major version)',
+                    ),
+                  ),
+                TextField(
+                  controller: memory,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Memory (MB)'),
+                ),
+                TextField(
+                  controller: cpus,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'CPUs'),
+                ),
+                TextField(
+                  controller: storage,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Storage planning amount (GB)',
+                  ),
+                ),
+                const SizedBox(height: Space.sm),
+                const Text(
+                  'PostgreSQL image changes require a recent consistent backup. Docker local volumes use server disk and have no enforced size limit.',
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Apply'),
+          ),
+        ],
+      ),
+    );
+    if (apply == true && mounted) {
+      final mb = int.tryParse(memory.text.trim());
+      final cpu = double.tryParse(cpus.text.trim());
+      final gb = int.tryParse(storage.text.trim());
+      if (mb == null || cpu == null || gb == null) {
+        _snack('Enter valid numeric resource values.');
+      } else {
+        await runGatedAction(
+          context,
+          (gate) => api.reconfigureDatabase(
+            d.id,
+            version: version.text.trim(),
+            memoryMb: mb,
+            cpus: cpu,
+            storageGb: gb,
+            gate: gate,
+          ),
+          failurePrefix: 'Could not change database configuration',
+        );
+        if (mounted) _refresh();
+      }
+    }
+    version.dispose();
+    memory.dispose();
+    cpus.dispose();
+    storage.dispose();
+  }
+
+  Future<void> _removeDatabase(DatabaseInstance d) async {
+    final ok = await confirm(
+      context,
+      title: 'Remove ${d.name}?',
+      message:
+          'This removes the database containers and releases its marketplace name and port. Its vaulted credentials are deleted; named volumes and backup history are retained.',
+      confirmLabel: 'Remove',
+      destructive: true,
+    );
+    if (!ok) return;
+    await _withBusy('remove', () async {
+      await api.removeDatabase(d.id);
+      if (mounted) Navigator.of(context).pop();
+    });
+  }
+
+  Future<void> _refreshFromBackup(DatabaseInstance target) async {
+    try {
+      final instances = await api.listDatabases();
+      final candidates = <({DatabaseInstance source, Backup backup})>[];
+      for (final source in instances) {
+        if (source.id == target.id ||
+            source.engine != 'postgresql' ||
+            source.version.split('.').first !=
+                target.version.split('.').first ||
+            source.adminUsername != target.adminUsername ||
+            source.databaseName != target.databaseName) {
+          continue;
+        }
+        final detail = await api.getDatabase(source.id);
+        if (!detail.canManage) continue;
+        for (final backup in detail.backups) {
+          if (backup.status == 'completed' && backup.quiesced) {
+            candidates.add((source: source, backup: backup));
+          }
+        }
+      }
+      if (!mounted) return;
+      if (candidates.isEmpty) {
+        _snack(
+          'No compatible consistent backup is available. On the source database, use More backup options ▸ Consistent backup, wait for it to complete, then try again.',
+        );
+        return;
+      }
+      final selected = await showDialog<({DatabaseInstance source, Backup backup})>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('Refresh from backup'),
+          children: [
+            for (final candidate in candidates)
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, candidate),
+                child: Text(
+                  '${candidate.source.name} · ${formatTimestamp(candidate.backup.createdAt)}',
+                ),
+              ),
+          ],
+        ),
+      );
+      if (selected == null || !mounted) return;
+      final confirmed = await confirm(
+        context,
+        title: 'Replace ${target.name} data?',
+        message:
+            'The target database will be stopped and replaced with the backup from ${selected.source.name}. Existing target data will be lost.',
+        confirmLabel: 'Refresh',
+        destructive: true,
+      );
+      if (!confirmed) return;
+      await _withBusy('refresh', () async {
+        await api.refreshDatabaseFromBackup(target.id, selected.backup.id);
+        _snack('Refresh started. Follow progress in the deployment timeline.');
+        _refresh();
+      });
+    } catch (e) {
+      _snack(_error(e));
+    }
+  }
+
+  Future<void> _createClone(DatabaseDetail detail) async {
+    final engine = detail.engine;
+    if (engine == null) {
+      _snack('Engine details unavailable.');
+      return;
+    }
+    final backups = detail.backups
+        .where(
+          (b) => b.status == 'completed' && b.quiesced && b.format == 'volumes',
+        )
+        .toList();
+    if (backups.isEmpty) {
+      _snack(
+        'Take a consistent backup first (More backup options ▸ Consistent backup), wait for it to complete, then create a clone.',
+      );
+      return;
+    }
+    final created = await Navigator.of(context).push<DatabaseInstance>(
+      MaterialPageRoute(
+        builder: (_) => DatabaseWizardScreen(
+          apiClient: api,
+          engine: engine,
+          cloneSource: detail.instance,
+          cloneBackupId: backups.first.id,
+        ),
+      ),
+    );
+    if (created != null && mounted) {
+      _snack(
+        'Clone scheduled. It will restore after the new instance is running.',
+      );
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => DatabaseDetailScreen(
+            apiClient: api,
+            databaseId: created.id,
+            isAdmin: widget.isAdmin,
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _exportForMigration(DatabaseInstance source) async {
+    await _withBusy('logical-backup', () async {
+      await api.createPostgresLogicalBackup(source.id);
+      _snack(
+        'Logical export started. Wait for it to complete before migrating.',
+      );
+      _refresh();
+    });
+  }
+
+  Future<void> _migrateFromBackup(DatabaseInstance target) async {
+    try {
+      final instances = await api.listDatabases();
+      final targetMajor = int.tryParse(target.version.split('.').first) ?? 0;
+      final candidates = <({DatabaseInstance source, Backup backup})>[];
+      for (final source in instances) {
+        final sourceMajor = int.tryParse(source.version.split('.').first) ?? 0;
+        if (source.engine != 'postgresql' || sourceMajor >= targetMajor) {
+          continue;
+        }
+        final detail = await api.getDatabase(source.id);
+        if (!detail.canManage) continue;
+        for (final backup in detail.backups) {
+          if (backup.status == 'completed' &&
+              backup.format == 'postgres_custom') {
+            candidates.add((source: source, backup: backup));
+          }
+        }
+      }
+      if (!mounted) return;
+      if (candidates.isEmpty) {
+        _snack(
+          'No completed logical backup from an older PostgreSQL version is available.',
+        );
+        return;
+      }
+      final selected = await showDialog<({DatabaseInstance source, Backup backup})>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('Migrate from logical backup'),
+          children: [
+            for (final candidate in candidates)
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, candidate),
+                child: Text(
+                  '${candidate.source.name} v${candidate.source.version} · ${formatTimestamp(candidate.backup.createdAt)}',
+                ),
+              ),
+          ],
+        ),
+      );
+      if (selected == null || !mounted) return;
+      final confirmed = await confirm(
+        context,
+        title: 'Migrate into ${target.name}?',
+        message:
+            'The primary database in ${target.name} will be replaced with data from ${selected.source.name}. Its database objects will be overwritten. The source remains available.',
+        confirmLabel: 'Migrate',
+        destructive: true,
+      );
+      if (!confirmed || !mounted) return;
+      await runGatedAction(
+        context,
+        (gate) => api.migratePostgresFromBackup(
+          target.id,
+          selected.backup.id,
+          gate: gate,
+        ),
+        failurePrefix: 'Could not start migration',
+      );
+      if (mounted) _refresh();
+    } catch (e) {
+      _snack(_error(e));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<DatabaseDetail>(
       future: _detailFuture,
       builder: (context, snapshot) {
         final detail = snapshot.data;
+        // Labelled actions don't fit a phone-width app bar alongside the
+        // menu and refresh; fall back to tooltipped icons there.
+        final compact = isCompactWidth(context);
+        Widget appBarAction(String label, IconData icon, VoidCallback onTap) =>
+            compact
+            ? IconButton(tooltip: label, onPressed: onTap, icon: Icon(icon))
+            : TextButton.icon(
+                onPressed: onTap,
+                icon: Icon(icon, size: 18),
+                label: Text(label),
+              );
         return Scaffold(
           appBar: AppBar(
             title: Text(detail?.instance.name ?? 'Database'),
             actions: [
               if (detail != null)
-                TextButton.icon(
-                  onPressed: () => _openDeployment(detail.instance),
-                  icon: const Icon(Icons.rocket_launch_outlined, size: 18),
-                  label: const Text('Deployment'),
+                appBarAction(
+                  'Deployment',
+                  Icons.rocket_launch_outlined,
+                  () => _openDeployment(detail.instance),
+                ),
+              if (detail?.instance.engine == 'postgresql')
+                appBarAction(
+                  'Admin & monitoring',
+                  Icons.tune,
+                  () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => PostgresAdminScreen(
+                        api: api,
+                        database: detail!.instance,
+                        canManage: detail.canManage,
+                      ),
+                    ),
+                  ),
+                ),
+              if (detail?.canManage == true)
+                PopupMenuButton<String>(
+                  tooltip: 'Database actions',
+                  onSelected: (value) {
+                    if (value == 'configure') _configure(detail!.instance);
+                    if (value == 'remove') _removeDatabase(detail!.instance);
+                    if (value == 'refresh') {
+                      _refreshFromBackup(detail!.instance);
+                    }
+                    if (value == 'clone') _createClone(detail!);
+                    if (value == 'logical-backup') {
+                      _exportForMigration(detail!.instance);
+                    }
+                    if (value == 'migrate') {
+                      _migrateFromBackup(detail!.instance);
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                      value: 'configure',
+                      child: Text('Version & resources'),
+                    ),
+                    if (detail!.instance.engine == 'postgresql')
+                      const PopupMenuItem(
+                        value: 'clone',
+                        child: Text('Create clone instance'),
+                      ),
+                    if (detail.instance.engine == 'postgresql')
+                      const PopupMenuItem(
+                        value: 'refresh',
+                        child: Text('Refresh from backup'),
+                      ),
+                    if (detail.instance.engine == 'postgresql')
+                      const PopupMenuItem(
+                        value: 'logical-backup',
+                        child: Text('Export for major migration'),
+                      ),
+                    if (detail.instance.engine == 'postgresql')
+                      const PopupMenuItem(
+                        value: 'migrate',
+                        child: Text('Migrate from older version'),
+                      ),
+                    const PopupMenuItem(
+                      value: 'remove',
+                      child: Text('Remove database'),
+                    ),
+                  ],
                 ),
               IconButton(
                 tooltip: 'Refresh',
@@ -321,6 +685,20 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                       onAction: () => _openDeployment(d),
                     ),
                   ],
+                  if (detail.cloneStatus != null &&
+                      detail.cloneStatus != 'completed') ...[
+                    const SizedBox(height: Space.md),
+                    NoticeBanner(
+                      tone: detail.cloneStatus == 'failed'
+                          ? StatusTone.failed
+                          : StatusTone.warning,
+                      icon: Icons.copy_all_outlined,
+                      title: 'Clone ${detail.cloneStatus}',
+                      message: detail.cloneMessage?.isNotEmpty == true
+                          ? detail.cloneMessage!
+                          : 'The selected source backup will be restored after deployment.',
+                    ),
+                  ],
                   const SizedBox(height: Space.lg),
                   _buildConnection(context, d),
                   const SizedBox(height: Space.lg),
@@ -375,6 +753,36 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                 },
               ),
             ),
+          if (d.engine == 'postgresql') ...[
+            const SizedBox(height: Space.md),
+            Text(
+              'Client connection details',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            KeyValueRow(
+              label: 'JDBC',
+              value: 'jdbc:postgresql://${d.host}:${d.port}/${d.databaseName}',
+              monospace: true,
+            ),
+            KeyValueRow(
+              label: 'ODBC',
+              value:
+                  'Driver={PostgreSQL Unicode};Server=${d.host};Port=${d.port};Database=${d.databaseName};Uid=${d.adminUsername};Pwd=<password>;',
+              monospace: true,
+            ),
+            KeyValueRow(
+              label: 'Python',
+              value:
+                  "psycopg.connect(host='${d.host}', port=${d.port}, dbname='${d.databaseName}', user='${d.adminUsername}', password='<password>')",
+              monospace: true,
+            ),
+            KeyValueRow(
+              label: 'Node.js',
+              value:
+                  "new Client({host: '${d.host}', port: ${d.port}, database: '${d.databaseName}', user: '${d.adminUsername}', password: process.env.DB_PASSWORD})",
+              monospace: true,
+            ),
+          ],
           KeyValueRow(
             label: 'Resources',
             value:
@@ -614,6 +1022,20 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
           icon: const Icon(Icons.backup, size: 18),
           label: const Text('Back up now'),
         ),
+        if (d.engine == 'postgresql')
+          PopupMenuButton<String>(
+            tooltip: 'More backup options',
+            enabled: !_busy.contains('backup'),
+            onSelected: (value) {
+              if (value == 'consistent') _backupNow(d, consistent: true);
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'consistent',
+                child: Text('Consistent backup for refresh or upgrade'),
+              ),
+            ],
+          ),
       ],
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -661,6 +1083,8 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                 subtitle: Text(
                   [
                     b.origin == 'scheduled' ? 'Scheduled' : 'Manual',
+                    if (b.format == 'postgres_custom') 'Logical export',
+                    if (b.quiesced) 'Consistent',
                     if (b.sizeBytes != null) formatBytes(b.sizeBytes!),
                     if (b.message.isNotEmpty) b.message,
                   ].join(' · '),

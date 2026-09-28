@@ -19,8 +19,9 @@ const maxCommandOutput = 64 << 10
 type CommandResult struct {
 	// Output is stdout and stderr combined (the agent runs exec sessions
 	// on a pty), truncated to maxCommandOutput.
-	Output   string
-	ExitCode int64
+	Output    string
+	ExitCode  int64
+	Truncated bool
 }
 
 // RunCommand runs argv to completion inside containerID (a container ID
@@ -29,8 +30,17 @@ type CommandResult struct {
 // error — callers decide what it means — but failing to start, the agent
 // being unreachable, and timing out are.
 func RunCommand(ctx context.Context, dispatcher *Dispatcher, relay *ExecStreamRelay, serverID, containerID string, argv []string, timeout time.Duration) (*CommandResult, error) {
+	return RunCommandWithLimit(ctx, dispatcher, relay, serverID, containerID, argv, timeout, maxCommandOutput)
+}
+
+// RunCommandWithLimit permits a larger bounded result for query downloads.
+// The caller must reject Truncated if it needs a complete result.
+func RunCommandWithLimit(ctx context.Context, dispatcher *Dispatcher, relay *ExecStreamRelay, serverID, containerID string, argv []string, timeout time.Duration, outputLimit int) (*CommandResult, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("empty command")
+	}
+	if outputLimit <= 0 || outputLimit > 8<<20 {
+		return nil, errors.New("output limit must be between 1 byte and 8 MB")
 	}
 	idBytes := make([]byte, 16)
 	if _, err := rand.Read(idBytes); err != nil {
@@ -61,23 +71,25 @@ func RunCommand(ctx context.Context, dispatcher *Dispatcher, relay *ExecStreamRe
 	}
 
 	var out bytes.Buffer
+	truncated := false
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	for {
 		select {
 		case chunk := <-ch:
-			if out.Len() < maxCommandOutput {
-				out.Write(chunk.GetData())
+			data := chunk.GetData()
+			remaining := outputLimit - out.Len()
+			if len(data) > remaining {
+				truncated = true
+				data = data[:remaining]
 			}
+			out.Write(data)
 			if chunk.GetDone() {
 				if msg := chunk.GetErrorMessage(); msg != "" && chunk.GetExitCode() == 0 {
 					return nil, fmt.Errorf("command failed to run: %s", msg)
 				}
 				text := out.String()
-				if len(text) > maxCommandOutput {
-					text = text[:maxCommandOutput]
-				}
-				return &CommandResult{Output: text, ExitCode: chunk.GetExitCode()}, nil
+				return &CommandResult{Output: text, ExitCode: chunk.GetExitCode(), Truncated: truncated}, nil
 			}
 		case <-deadline.C:
 			// Ask the agent to close the session so the process doesn't

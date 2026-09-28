@@ -319,6 +319,11 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 					s.events.Publish(rs.GetDeploymentId(), event)
 				}
 			}
+			if phase == "completed" || phase == "failed" {
+				if err := s.store.SetDatabaseCloneJobStatusByRestore(ctx, rs.GetDeploymentId(), rs.GetBackupId(), phase, rs.GetMessage()); err != nil {
+					s.log.Error("failed to update clone status", "deployment_id", rs.GetDeploymentId(), "error", err)
+				}
+			}
 			// COMPLETED needs no event here: the agent immediately follows
 			// up with a normal deploy pipeline run, whose DeployStatus
 			// events (handled above) take over the deployment's status

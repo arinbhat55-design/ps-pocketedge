@@ -654,6 +654,8 @@ func (d *deployer) runAutoRollbacks(ctx context.Context) {
 
 // RunGovernanceWorker is the exported entry point main uses to start the
 // background worker (see deployer.RunGovernanceWorker).
-func RunGovernanceWorker(ctx context.Context, log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, opWaiter *deploy.OpWaiter) {
-	newDeployer(log, st, dispatcher, events, opWaiter).RunGovernanceWorker(ctx)
+func RunGovernanceWorker(ctx context.Context, log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, opWaiter *deploy.OpWaiter, publicURL string) {
+	d := newDeployer(log, st, dispatcher, events, opWaiter)
+	d.publicURL = publicURL
+	d.RunGovernanceWorker(ctx)
 }

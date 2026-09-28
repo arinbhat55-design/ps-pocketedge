@@ -265,3 +265,53 @@ func TestExtraPortsShiftWithPrimary(t *testing.T) {
 		t.Error("accepted a primary port that pushes an extra port out of range")
 	}
 }
+
+// A pinned PostgreSQL minor tag (used by in-place version changes) inherits
+// its major's data path; unknown majors and malformed tags are refused.
+func TestPostgresMinorVersionTags(t *testing.T) {
+	pg, _ := Get("postgresql")
+	for tag, want := range map[string]string{"18.1": "pgdata:/var/lib/postgresql\n", "17.2": "pgdata:/var/lib/postgresql/data\n"} {
+		opts, err := pg.Normalize(Options{Name: "pg-one", Version: tag})
+		if err != nil {
+			t.Fatalf("%s: %v", tag, err)
+		}
+		if opts.Version != tag {
+			t.Errorf("%s normalized to %q", tag, opts.Version)
+		}
+		plan, err := pg.Render(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan.ComposeYAML, "postgres:"+tag) || !strings.Contains(plan.ComposeYAML, want) {
+			t.Errorf("%s: want image tag and %q in\n%s", tag, want, plan.ComposeYAML)
+		}
+	}
+	for _, tag := range []string{"9.6", "17.2.1", "17.x", "17-alpine", "170.1"} {
+		if _, err := pg.Normalize(Options{Name: "pg-one", Version: tag}); err == nil {
+			t.Errorf("%s accepted", tag)
+		}
+	}
+	// Minor tags are a PostgreSQL-only allowance.
+	my, _ := Get("mysql")
+	if _, err := my.Normalize(Options{Name: "my-one", Version: "8.4.1"}); err == nil {
+		t.Error("mysql accepted an unlisted version tag")
+	}
+}
+
+// Query insights rely on pg_stat_statements being preloaded by the template.
+func TestPostgresPreloadsQueryStatistics(t *testing.T) {
+	pg, _ := Get("postgresql")
+	opts, err := pg.Normalize(Options{Name: "pg-one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := pg.Render(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"shared_preload_libraries=pg_stat_statements", "pg_stat_statements.track=all", "track_io_timing=on"} {
+		if !strings.Contains(plan.ComposeYAML, flag) {
+			t.Errorf("rendered PostgreSQL command is missing %s", flag)
+		}
+	}
+}

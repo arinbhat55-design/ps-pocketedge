@@ -1,0 +1,1 @@
+ALTER TABLE backups ADD COLUMN quiesced BOOLEAN NOT NULL DEFAULT false;
