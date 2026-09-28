@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../api/api_client.dart';
 import '../../models/container.dart';
 import '../../models/image.dart' show ImageRollbackEntry, formatBytes;
+import '../../models/resource_insights.dart' show ResourceLimits;
 import '../../models/server_metrics.dart';
 import 'clone_container_dialog.dart';
 import 'container_events_screen.dart';
@@ -333,6 +334,26 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
     }
   }
 
+  /// Opens the limits editor prefilled with the insights panel's
+  /// recommended limits, for the user to review before saving.
+  Future<bool> _reviewSuggestedLimits(ResourceLimits suggested) async {
+    final ok = await showResourceLimitsDialog(
+      context,
+      apiClient: widget.apiClient,
+      serverId: widget.serverId,
+      containerId: widget.container.containerId,
+      currentNanoCpus: suggested.nanoCpus,
+      currentMemoryLimitBytes: suggested.memoryLimitBytes,
+      currentMemoryReservationBytes: suggested.memoryReservationBytes,
+      currentPidsLimit: suggested.pidsLimit,
+    );
+    if (ok == true) {
+      _changed = true;
+      _refreshDetail();
+    }
+    return ok == true;
+  }
+
   Future<void> _restartPolicy(ContainerDetail detail) async {
     final ok = await showRestartPolicyDialog(
       context,
@@ -452,6 +473,8 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
               serverId: widget.serverId,
               containerId: c.containerId,
               containerState: c.state,
+              detailFuture: _detailFuture,
+              onReviewLimits: _reviewSuggestedLimits,
             ),
             ContainerLogsScreen(
               apiClient: widget.apiClient,

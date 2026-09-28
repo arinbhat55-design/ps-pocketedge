@@ -20,6 +20,7 @@ import (
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/dbops"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/grpcserver"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/insights"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/livestate"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/schedule"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
@@ -32,6 +33,10 @@ import (
 // kept. No downsampling/rollup in this MVP slice — old samples are pruned
 // outright by a periodic background sweep, not aggregated.
 const metricSampleRetention = 24 * time.Hour
+
+// resolvedAlertRetention bounds how long resolved container alerts are
+// kept as history; open alerts are never pruned.
+const resolvedAlertRetention = 30 * 24 * time.Hour
 
 func main() {
 	grpcAddr := flag.String("grpc-addr", ":8443", "address for the agent gRPC service to listen on")
@@ -151,6 +156,7 @@ func main() {
 	go pruneMetricsLoop(ctx, log, st)
 	go scheduler.Run(ctx)
 	go databaseScheduler.Run(ctx)
+	go insights.NewEvaluator(log, st).Run(ctx)
 	go api.RunGovernanceWorker(ctx, log, st, dispatcher, events, opWaiter, *publicURL)
 
 	select {
@@ -187,6 +193,9 @@ func pruneMetricsLoop(ctx context.Context, log *slog.Logger, st *store.Store) {
 			}
 			if err := st.PruneDatabaseMetricSamplesOlderThan(ctx, cutoff); err != nil {
 				log.Error("failed to prune old database metric samples", "error", err)
+			}
+			if err := st.PruneResolvedContainerAlertsOlderThan(ctx, time.Now().Add(-resolvedAlertRetention)); err != nil {
+				log.Error("failed to prune old resolved container alerts", "error", err)
 			}
 		}
 	}

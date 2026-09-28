@@ -18,6 +18,7 @@ import '../models/env_var_group.dart';
 import '../models/image.dart';
 import '../models/log_line.dart';
 import '../models/network.dart';
+import '../models/resource_insights.dart';
 import '../models/schedule.dart';
 import '../models/server.dart';
 import '../models/server_metrics.dart';
@@ -1603,6 +1604,106 @@ class ApiClient {
     return decoded
         .map((e) => ContainerResourceUsage.fromJson(e as Map<String, dynamic>))
         .toList();
+  }
+
+  /// Abnormal-usage findings and right-sizing recommendations for one
+  /// container, sized against [limits] (its current limits, from
+  /// [inspectContainer] — omit when unknown and every limit is treated as
+  /// unset). [since] is a Go duration string; the server defaults to 6h.
+  Future<ContainerInsights> getContainerInsights(
+    String serverId,
+    String containerId, {
+    ResourceLimits? limits,
+    String? since,
+  }) async {
+    final uri =
+        Uri.parse(
+          '$baseUrl/api/servers/$serverId/containers/$containerId/insights',
+        ).replace(
+          queryParameters: {
+            if (since != null) 'since': since,
+            if (limits != null) ...{
+              'nanoCpus': '${limits.nanoCpus}',
+              'memoryLimitBytes': '${limits.memoryLimitBytes}',
+              'memoryReservationBytes': '${limits.memoryReservationBytes}',
+              'pidsLimit': '${limits.pidsLimit}',
+            },
+          },
+        );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) throwApiError(response);
+    return ContainerInsights.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<List<ContainerAlertRule>> listContainerAlertRules() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/container-alert-rules'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => ContainerAlertRule.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Creates a rule from [rule] (its id is ignored) and returns the new id.
+  Future<String> createContainerAlertRule(ContainerAlertRule rule) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/container-alert-rules'),
+      headers: _headers,
+      body: jsonEncode(rule.toJson()),
+    );
+    if (response.statusCode != 201) throwApiError(response);
+    return (jsonDecode(response.body) as Map<String, dynamic>)['id'] as String;
+  }
+
+  Future<void> updateContainerAlertRule(ContainerAlertRule rule) async {
+    final response = await _http.put(
+      Uri.parse('$baseUrl/api/container-alert-rules/${rule.id}'),
+      headers: _headers,
+      body: jsonEncode(rule.toJson()),
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<void> deleteContainerAlertRule(String id) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/container-alert-rules/$id'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  /// Open alerts by default; [includeResolved] adds recent history.
+  Future<List<ContainerAlert>> listContainerAlerts({
+    bool includeResolved = false,
+    String? serverId,
+    String? containerId,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/container-alerts').replace(
+      queryParameters: {
+        'status': includeResolved ? 'all' : 'open',
+        if (serverId != null) 'serverId': serverId,
+        if (containerId != null) 'containerId': containerId,
+      },
+    );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) throwApiError(response);
+    final decoded = jsonDecode(response.body) as List<dynamic>;
+    return decoded
+        .map((e) => ContainerAlert.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> acknowledgeContainerAlert(String id) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/container-alerts/$id/acknowledge'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
   }
 
   /// Decodes an image pull/remove/prune command's response, same

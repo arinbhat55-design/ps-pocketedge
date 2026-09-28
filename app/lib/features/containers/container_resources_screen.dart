@@ -6,9 +6,12 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../api/api_client.dart';
+import '../../models/container.dart';
 import '../../models/image.dart' show formatBytes;
+import '../../models/resource_insights.dart' show ResourceLimits, formatCores;
 import '../../models/server_metrics.dart';
 import '../../theme/app_theme.dart';
+import 'container_insights_panel.dart';
 
 /// Real-time and historical CPU/memory/network/storage consumption for one
 /// container. Live values ride the same per-server WebSocket stream the
@@ -21,6 +24,9 @@ class ContainerResourcesScreen extends StatefulWidget {
   final String serverId;
   final String containerId;
   final String containerState;
+  // For the insights panel: current limits, and the limits editor.
+  final Future<ContainerDetail>? detailFuture;
+  final Future<bool> Function(ResourceLimits suggested)? onReviewLimits;
 
   const ContainerResourcesScreen({
     super.key,
@@ -28,6 +34,8 @@ class ContainerResourcesScreen extends StatefulWidget {
     required this.serverId,
     required this.containerId,
     required this.containerState,
+    this.detailFuture,
+    this.onReviewLimits,
   });
 
   @override
@@ -150,10 +158,7 @@ class _ContainerResourcesScreenState extends State<ContainerResourcesScreen> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _StatTile(
-                label: 'CPU',
-                value: '${latest.cpuPercent.toStringAsFixed(1)}%',
-              ),
+              _StatTile(label: 'CPU', value: formatCores(latest.cpuPercent)),
               _StatTile(
                 label: 'Memory',
                 value:
@@ -177,12 +182,27 @@ class _ContainerResourcesScreenState extends State<ContainerResourcesScreen> {
             ],
           ),
         const SizedBox(height: 24),
-        _MetricChart(label: 'CPU %', values: _cpuHistory, color: AppColors.chartLine),
+        _MetricChart(
+          label: 'CPU (cores)',
+          values: _cpuHistory,
+          color: AppColors.chartLine,
+          format: formatCores,
+          // Can exceed one core, so scale to the data (min. one core).
+          maxY: null,
+        ),
         const SizedBox(height: 16),
         _MetricChart(
           label: 'Memory %',
           values: _memHistory,
           color: AppColors.chartLine,
+        ),
+        const SizedBox(height: 24),
+        ContainerInsightsPanel(
+          apiClient: widget.apiClient,
+          serverId: widget.serverId,
+          containerId: widget.containerId,
+          detailFuture: widget.detailFuture,
+          onReviewLimits: widget.onReviewLimits,
         ),
       ],
     );
@@ -232,12 +252,19 @@ class _MetricChart extends StatelessWidget {
   final String label;
   final List<double> values;
   final Color color;
+  final String Function(double value) format;
+  // Fixed y-axis top; null scales to the data (never below 100).
+  final double? maxY;
 
   const _MetricChart({
     required this.label,
     required this.values,
     required this.color,
+    this.format = _formatPercent,
+    this.maxY = 100,
   });
+
+  static String _formatPercent(double v) => '${v.toStringAsFixed(0)}%';
 
   @override
   Widget build(BuildContext context) {
@@ -250,7 +277,7 @@ class _MetricChart extends StatelessWidget {
           children: [
             Text(label, style: Theme.of(context).textTheme.titleSmall),
             Text(
-              current == null ? '—' : '${current.toStringAsFixed(0)}%',
+              current == null ? '—' : format(current),
               style: Theme.of(
                 context,
               ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
@@ -270,7 +297,9 @@ class _MetricChart extends StatelessWidget {
               : LineChart(
                   LineChartData(
                     minY: 0,
-                    maxY: 100,
+                    maxY:
+                        maxY ??
+                        values.fold<double>(100, (m, v) => v > m ? v : m) * 1.1,
                     gridData: const FlGridData(show: false),
                     titlesData: const FlTitlesData(show: false),
                     borderData: FlBorderData(show: false),

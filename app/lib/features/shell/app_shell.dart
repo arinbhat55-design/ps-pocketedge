@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../api/api_client.dart';
 import '../../models/user.dart';
 import '../../widgets/state_message.dart';
+import '../alerts/alerts_screen.dart';
 import '../containers/container_list_screen.dart';
 import '../compose/docker_compose_screen.dart';
 import '../databases/database_marketplace_screen.dart';
@@ -72,6 +73,12 @@ class _AppShellState extends State<AppShell> {
             label: 'Container Management',
             shortLabel: 'Containers',
             builder: (_) => ContainerListScreen(apiClient: widget.apiClient),
+          ),
+          _ModuleDestination(
+            icon: Icons.notifications_outlined,
+            selectedIcon: Icons.notifications,
+            label: 'Alerts',
+            builder: (_) => AlertsScreen(apiClient: widget.apiClient),
           ),
           _ModuleDestination(
             icon: Icons.inventory_2_outlined,

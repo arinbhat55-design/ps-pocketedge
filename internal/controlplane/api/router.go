@@ -180,6 +180,13 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("PATCH /api/servers/{id}/containers/{containerId}/restart-policy", authMgr.RequireAuth(handleUpdateRestartPolicy(log, dispatcher, opWaiter)))
 	mux.Handle("PATCH /api/servers/{id}/containers/{containerId}/resources", authMgr.RequireAuth(handleUpdateResourceLimits(log, dispatcher, opWaiter)))
 	mux.Handle("GET /api/servers/{id}/containers/{containerId}/metrics", authMgr.RequireAuth(handleGetContainerMetrics(log, st)))
+	mux.Handle("GET /api/servers/{id}/containers/{containerId}/insights", authMgr.RequireAuth(handleContainerInsights(log, st)))
+	mux.Handle("GET /api/container-alert-rules", authMgr.RequireAuth(handleListContainerAlertRules(log, st)))
+	mux.Handle("POST /api/container-alert-rules", authMgr.RequireAuth(handleCreateContainerAlertRule(log, st)))
+	mux.Handle("PUT /api/container-alert-rules/{id}", authMgr.RequireAuth(handleUpdateContainerAlertRule(log, st)))
+	mux.Handle("DELETE /api/container-alert-rules/{id}", authMgr.RequireAuth(handleDeleteContainerAlertRule(log, st)))
+	mux.Handle("GET /api/container-alerts", authMgr.RequireAuth(handleListContainerAlerts(log, st)))
+	mux.Handle("POST /api/container-alerts/{id}/acknowledge", authMgr.RequireAuth(handleAcknowledgeContainerAlert(log, st)))
 	mux.Handle("GET /api/servers/{id}/containers/{containerId}/rollback-history", authMgr.RequireAuth(handleListImageRollbackHistory(log, st)))
 	mux.Handle("POST /api/servers/{id}/containers/{containerId}/rollback", authMgr.RequireAuth(handleRollbackContainer(log, st, dispatcher, inspectWaiter, opWaiter)))
 
