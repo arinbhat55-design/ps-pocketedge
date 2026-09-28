@@ -3,7 +3,8 @@
 #
 # Usage:
 #   curl -sSL https://<control-plane>/install.sh | sh -s -- \
-#     --server=<control-plane-host>:8443 --token=<enrollment-token>
+#     --server=<control-plane-host>:8443 --token=<enrollment-token> \
+#     [--ca-file=/path/to/private-ca.pem]
 #
 # The --token=<value> form is the quick-start default but leaves the token
 # visible in shell history and `ps` output on this machine. Prefer setting
@@ -21,6 +22,7 @@ REPO="ankitapaul1586-cmd/pspocketedge"
 SERVER=""
 TOKEN="${PE_ENROLL_TOKEN:-}"
 LOCAL_BINARY=""
+CA_FILE=""
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/pspocketedge"
 
@@ -30,6 +32,7 @@ for arg in "$@"; do
     --token=*) TOKEN="${arg#*=}" ;;
     --version=*) VERSION="${arg#*=}" ;;
     --local-binary=*) LOCAL_BINARY="${arg#*=}" ;;
+    --ca-file=*) CA_FILE="${arg#*=}" ;;
     *) echo "unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -78,11 +81,22 @@ fi
 echo "==> writing $CONFIG_DIR/agent.yaml"
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
+if [ -n "$CA_FILE" ]; then
+  if [ ! -r "$CA_FILE" ]; then
+    echo "error: CA file is not readable: $CA_FILE" >&2
+    exit 1
+  fi
+  install -m 0644 "$CA_FILE" "$CONFIG_DIR/control-plane-ca.pem"
+fi
 cat > "$CONFIG_DIR/agent.yaml" <<EOF
 server: "$SERVER"
 token: "$TOKEN"
 state_path: "$CONFIG_DIR/state.json"
+tls: true
 EOF
+if [ -n "$CA_FILE" ]; then
+  echo "tls_ca_file: \"$CONFIG_DIR/control-plane-ca.pem\"" >> "$CONFIG_DIR/agent.yaml"
+fi
 chmod 600 "$CONFIG_DIR/agent.yaml"
 
 echo "==> installing systemd unit"

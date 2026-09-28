@@ -63,6 +63,25 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 
 	mux.Handle("GET /api/stacks", authMgr.RequireAuth(handleListStacks(log, st)))
 
+	// Kubernetes is a separate target type from a Docker agent/server.
+	k8s := &kubernetesAPI{log: log, st: st, vault: v}
+	mux.Handle("GET /api/kubernetes/clusters", authMgr.RequireAuth(http.HandlerFunc(k8s.listClusters)))
+	mux.Handle("POST /api/kubernetes/clusters", authMgr.RequireAdmin(http.HandlerFunc(k8s.createCluster)))
+	mux.Handle("DELETE /api/kubernetes/clusters/{id}", authMgr.RequireAdmin(http.HandlerFunc(k8s.deleteCluster)))
+	mux.Handle("GET /api/kubernetes/clusters/{id}/overview", authMgr.RequireAuth(http.HandlerFunc(k8s.overview)))
+	mux.Handle("GET /api/kubernetes/clusters/{id}/pods/{namespace}/{pod}/logs", authMgr.RequireAuth(http.HandlerFunc(k8s.podLogs)))
+	mux.Handle("POST /api/kubernetes/clusters/{id}/workloads", authMgr.RequireAdmin(http.HandlerFunc(k8s.workload)))
+	mux.Handle("PUT /api/kubernetes/clusters/{id}/workloads/{namespace}/{name}", authMgr.RequireAdmin(http.HandlerFunc(k8s.workload)))
+	mux.Handle("GET /api/kubernetes/clusters/{id}/workloads/{namespace}/{name}/revisions", authMgr.RequireAuth(http.HandlerFunc(k8s.revisions)))
+	mux.Handle("POST /api/kubernetes/clusters/{id}/workloads/{namespace}/{name}/rollback", authMgr.RequireAdmin(http.HandlerFunc(k8s.rollbackWorkload)))
+	mux.Handle("DELETE /api/kubernetes/clusters/{id}/workloads/{namespace}/{name}", authMgr.RequireAdmin(http.HandlerFunc(k8s.deleteWorkload)))
+	mux.Handle("POST /api/kubernetes/clusters/{id}/ai/ollama", authMgr.RequireAdmin(http.HandlerFunc(k8s.deployOllama)))
+	mux.Handle("GET /api/kubernetes/clusters/{id}/helm", authMgr.RequireAuth(http.HandlerFunc(k8s.listHelm)))
+	mux.Handle("POST /api/kubernetes/clusters/{id}/helm", authMgr.RequireAdmin(http.HandlerFunc(k8s.helmInstallOrUpgrade)))
+	mux.Handle("GET /api/kubernetes/clusters/{id}/helm/{namespace}/{name}/history", authMgr.RequireAuth(http.HandlerFunc(k8s.helmHistory)))
+	mux.Handle("POST /api/kubernetes/clusters/{id}/helm/{namespace}/{name}/rollback", authMgr.RequireAdmin(http.HandlerFunc(k8s.helmRollback)))
+	mux.Handle("DELETE /api/kubernetes/clusters/{id}/helm/{namespace}/{name}", authMgr.RequireAdmin(http.HandlerFunc(k8s.helmUninstall)))
+
 	// Deployment Management > Docker Compose: user-authored Compose files,
 	// distinct from the /api/stacks catalog above.
 	mux.Handle("GET /api/compose-files", authMgr.RequireAuth(handleListComposeFiles(log, st)))

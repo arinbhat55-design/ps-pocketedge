@@ -125,6 +125,238 @@ class ApiClient {
     if (authToken != null) 'Authorization': 'Bearer $authToken',
   };
 
+  Future<List<Map<String, dynamic>>> listKubernetesClusters() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/kubernetes/clusters'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+  }
+
+  Future<void> addKubernetesCluster(String name, String kubeconfig) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/kubernetes/clusters'),
+      headers: _headers,
+      body: jsonEncode({'name': name, 'kubeconfig': kubeconfig}),
+    );
+    if (response.statusCode != 201) throwApiError(response);
+  }
+
+  Future<void> removeKubernetesCluster(String id) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<Map<String, dynamic>> kubernetesOverview(
+    String id, {
+    String? namespace,
+  }) async {
+    final uri =
+        Uri.parse(
+          '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/overview',
+        ).replace(
+          queryParameters: namespace == null ? null : {'namespace': namespace},
+        );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<String> kubernetesPodLogs(
+    String id,
+    String namespace,
+    String pod,
+  ) async {
+    final response = await _http.get(
+      Uri.parse(
+        '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/pods/'
+        '${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(pod)}/logs',
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return response.body;
+  }
+
+  Future<Map<String, dynamic>> deployKubernetesWorkload(
+    String id,
+    Map<String, dynamic> spec, {
+    bool dryRun = false,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/workloads',
+    ).replace(queryParameters: dryRun ? {'dryRun': 'true'} : null);
+    final response = await _http.post(
+      uri,
+      headers: _headers,
+      body: jsonEncode(spec),
+    );
+    if (response.statusCode != (dryRun ? 200 : 201)) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> updateKubernetesWorkload(
+    String id,
+    String namespace,
+    String name,
+    Map<String, dynamic> spec, {
+    bool dryRun = false,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/workloads/'
+      '${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(name)}',
+    ).replace(queryParameters: dryRun ? {'dryRun': 'true'} : null);
+    final response = await _http.put(
+      uri,
+      headers: _headers,
+      body: jsonEncode(spec),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> deployKubernetesOllama(
+    String id,
+    Map<String, dynamic> spec, {
+    bool dryRun = false,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/ai/ollama',
+    ).replace(queryParameters: dryRun ? {'dryRun': 'true'} : null);
+    final response = await _http.post(
+      uri,
+      headers: _headers,
+      body: jsonEncode(spec),
+    );
+    if (response.statusCode != (dryRun ? 200 : 201)) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<List<Map<String, dynamic>>> kubernetesRevisions(
+    String id,
+    String namespace,
+    String name,
+  ) async {
+    final path =
+        '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/workloads/'
+        '${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(name)}/revisions';
+    final response = await _http.get(Uri.parse(path), headers: _headers);
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+  }
+
+  Future<void> rollbackKubernetesWorkload(
+    String id,
+    String namespace,
+    String name,
+    int revision, {
+    bool dryRun = false,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/workloads/'
+      '${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(name)}/rollback',
+    ).replace(queryParameters: dryRun ? {'dryRun': 'true'} : null);
+    final response = await _http.post(
+      uri,
+      headers: _headers,
+      body: jsonEncode({'revision': revision}),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+  }
+
+  Future<void> deleteKubernetesWorkload(
+    String id,
+    String namespace,
+    String name,
+  ) async {
+    final response = await _http.delete(
+      Uri.parse(
+        '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/workloads/'
+        '${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(name)}',
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<List<Map<String, dynamic>>> kubernetesHelmReleases(
+    String id,
+    String namespace,
+  ) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/helm',
+    ).replace(queryParameters: {'namespace': namespace});
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+  }
+
+  Future<Map<String, dynamic>> applyKubernetesHelmChart(
+    String id,
+    Map<String, dynamic> spec, {
+    bool dryRun = false,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/helm',
+    ).replace(queryParameters: dryRun ? {'dryRun': 'true'} : null);
+    final response = await _http.post(
+      uri,
+      headers: _headers,
+      body: jsonEncode(spec),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<List<Map<String, dynamic>>> kubernetesHelmHistory(
+    String id,
+    String namespace,
+    String name,
+  ) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/helm/'
+      '${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(name)}/history',
+    );
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+  }
+
+  Future<void> rollbackKubernetesHelm(
+    String id,
+    String namespace,
+    String name,
+    int revision,
+  ) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/helm/'
+      '${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(name)}/rollback',
+    );
+    final response = await _http.post(
+      uri,
+      headers: _headers,
+      body: jsonEncode({'revision': revision}),
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<void> uninstallKubernetesHelm(
+    String id,
+    String namespace,
+    String name,
+  ) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/kubernetes/clusters/${Uri.encodeComponent(id)}/helm/'
+      '${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(name)}',
+    );
+    final response = await _http.delete(uri, headers: _headers);
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
   Future<String> login(String email, String password) async {
     final response = await _http.post(
       Uri.parse('$baseUrl/api/auth/login'),

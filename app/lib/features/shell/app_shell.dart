@@ -7,6 +7,7 @@ import '../alerts/alerts_screen.dart';
 import '../containers/container_list_screen.dart';
 import '../compose/docker_compose_screen.dart';
 import '../databases/database_marketplace_screen.dart';
+import '../kubernetes/kubernetes_screen.dart';
 import '../images/image_list_screen.dart';
 import '../networks/network_list_screen.dart';
 import '../servers/server_list_screen.dart';
@@ -117,6 +118,13 @@ class _AppShellState extends State<AppShell> {
               apiClient: widget.apiClient,
               isAdmin: isAdmin,
             ),
+          ),
+          _ModuleDestination(
+            icon: Icons.hub_outlined,
+            selectedIcon: Icons.hub,
+            label: 'Kubernetes',
+            builder: (_) =>
+                KubernetesScreen(apiClient: widget.apiClient, isAdmin: isAdmin),
           ),
           if (isAdmin)
             _ModuleDestination(

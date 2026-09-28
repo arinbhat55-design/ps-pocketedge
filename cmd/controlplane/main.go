@@ -3,7 +3,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/api"
 	authpkg "github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
@@ -39,8 +42,10 @@ const metricSampleRetention = 24 * time.Hour
 const resolvedAlertRetention = 30 * 24 * time.Hour
 
 func main() {
-	grpcAddr := flag.String("grpc-addr", ":8443", "address for the agent gRPC service to listen on")
-	httpAddr := flag.String("http-addr", ":8080", "address for the REST API to listen on")
+	grpcAddr := flag.String("grpc-addr", "127.0.0.1:8443", "address for the agent gRPC service to listen on")
+	httpAddr := flag.String("http-addr", "127.0.0.1:8080", "address for the REST API to listen on")
+	tlsCert := flag.String("tls-cert", envOr("TLS_CERT_FILE", ""), "PEM certificate for HTTPS and agent gRPC (env TLS_CERT_FILE)")
+	tlsKey := flag.String("tls-key", envOr("TLS_KEY_FILE", ""), "PEM private key for HTTPS and agent gRPC (env TLS_KEY_FILE)")
 	databaseURL := flag.String("database-url", "postgres://pspocketedge:pspocketedge@localhost:55432/pspocketedge?sslmode=disable", "Postgres connection string")
 	jwtSecret := flag.String("jwt-secret", os.Getenv("JWT_SECRET"), "secret used to sign admin session JWTs (env JWT_SECRET); a random one is generated per-process if unset, which invalidates sessions on restart")
 	adminEmail := flag.String("admin-email", os.Getenv("ADMIN_EMAIL"), "email for the seeded admin user, only used if no users exist yet (env ADMIN_EMAIL)")
@@ -49,6 +54,10 @@ func main() {
 	backupDir := flag.String("backup-dir", envOr("BACKUP_DIR", "./data/backups"), "local directory to store backup blobs in (env BACKUP_DIR)")
 	vaultKeyFile := flag.String("vault-key-file", envOr("VAULT_KEY_FILE", "./data/vault.key"), "file holding the key that encrypts stored database credentials, generated on first start if missing (env VAULT_KEY_FILE); ignored when VAULT_KEY is set. Back it up: without it, stored credentials cannot be decrypted")
 	flag.Parse()
+	if err := validateListeners(*grpcAddr, *httpAddr, *tlsCert, *tlsKey); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	log.Info("starting pspocketedge-controlplane", "version", version.String())
@@ -133,7 +142,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcOptions := []grpc.ServerOption{}
+	if *tlsCert != "" {
+		pair, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			log.Error("failed to load TLS certificate", "error", err)
+			os.Exit(1)
+		}
+		grpcOptions = append(grpcOptions, grpc.Creds(credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})))
+	}
+	grpcServer := grpc.NewServer(grpcOptions...)
 	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter))
 
 	httpServer := &http.Server{
@@ -151,7 +169,11 @@ func main() {
 	}()
 	go func() {
 		log.Info("REST API listening", "addr", *httpAddr)
-		errCh <- httpServer.ListenAndServe()
+		if *tlsCert != "" {
+			errCh <- httpServer.ListenAndServeTLS(*tlsCert, *tlsKey)
+		} else {
+			errCh <- httpServer.ListenAndServe()
+		}
 	}()
 	go pruneMetricsLoop(ctx, log, st)
 	go scheduler.Run(ctx)

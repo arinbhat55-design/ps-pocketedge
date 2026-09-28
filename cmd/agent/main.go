@@ -20,12 +20,15 @@ func main() {
 	controlPlaneAddr := flag.String("server", "localhost:8443", "control-plane gRPC address")
 	token := flag.String("token", "", "enrollment token (single-use; only needed on first run)")
 	statePath := flag.String("state-path", "", "where to persist the agent's identity across restarts (empty = re-enroll every run, for local dev)")
+	tlsEnabled := flag.Bool("tls", false, "use TLS even for a loopback control-plane address (remote addresses always require TLS)")
+	tlsCAFile := flag.String("tls-ca-file", "", "optional PEM CA certificate for the control-plane gRPC server")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	log.Info("starting pspocketedge-agent", "version", version.String())
 
 	serverAddr, enrollToken, statePathValue := *controlPlaneAddr, *token, *statePath
+	useTLS, caFile := *tlsEnabled, *tlsCAFile
 	if *configPath != "" {
 		cfg, err := config.Load(*configPath)
 		if err != nil {
@@ -41,6 +44,10 @@ func main() {
 		if cfg.StatePath != "" {
 			statePathValue = cfg.StatePath
 		}
+		useTLS = useTLS || cfg.TLS
+		if caFile == "" {
+			caFile = cfg.TLSCAFile
+		}
 	}
 
 	hostname, err := os.Hostname()
@@ -52,6 +59,8 @@ func main() {
 	defer stop()
 
 	runner := stream.New(log, serverAddr, enrollToken, hostname, runtime.GOOS, runtime.GOARCH, version.Version, statePathValue)
+	runner.TLS = useTLS
+	runner.TLSCAFile = caFile
 	if err := runner.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Error("agent stopped", "error", err)
 		os.Exit(1)

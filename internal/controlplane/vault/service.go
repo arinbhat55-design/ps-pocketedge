@@ -20,6 +20,12 @@ func New(st *store.Store, cipher *Cipher) *Vault {
 	return &Vault{st: st, cipher: cipher}
 }
 
+// Seal and OpenValue protect credentials stored outside the secrets table,
+// such as a cluster's kubeconfig. Callers must never return ciphertext or
+// plaintext through list/detail API responses.
+func (v *Vault) Seal(value string) ([]byte, error)           { return v.cipher.Seal(value) }
+func (v *Vault) OpenValue(ciphertext []byte) (string, error) { return v.cipher.Open(ciphertext) }
+
 // NewSecret describes a secret to store; Value is sealed before it
 // reaches the database.
 type NewSecret struct {

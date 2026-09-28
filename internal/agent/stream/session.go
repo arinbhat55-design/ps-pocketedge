@@ -17,7 +17,6 @@ import (
 
 	dockerclient "github.com/docker/docker/client"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -63,6 +62,9 @@ type Runner struct {
 	Arch         string
 	AgentVersion string
 	StatePath    string
+	TLS          bool
+	TLSCAFile    string
+	backupClient *http.Client
 
 	log *slog.Logger
 
@@ -134,7 +136,15 @@ func (r *Runner) detectTier(ctx context.Context) {
 // Run blocks, enrolling once (or reusing a persisted identity) and then
 // looping the Session stream with reconnect/backoff until ctx is cancelled.
 func (r *Runner) Run(ctx context.Context) error {
-	conn, err := grpc.NewClient(r.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	transport, err := transportCredentials(r.Addr, r.TLS, r.TLSCAFile)
+	if err != nil {
+		return err
+	}
+	r.backupClient, err = backupHTTPClient(r.TLSCAFile)
+	if err != nil {
+		return err
+	}
+	conn, err := grpc.NewClient(r.Addr, grpc.WithTransportCredentials(transport))
 	if err != nil {
 		return err
 	}
@@ -535,7 +545,7 @@ func (r *Runner) handleBackup(ctx context.Context, dockerCli *dockerclient.Clien
 	}
 	defer reader.Close()
 
-	if err := uploadBlob(ctx, cmd.GetUploadUrl(), credential, reader); err != nil {
+	if err := uploadBlob(ctx, r.backupClient, cmd.GetUploadUrl(), credential, reader); err != nil {
 		r.log.Error("backup upload failed", "backup_id", cmd.GetBackupId(), "error", err)
 		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "failed to upload backup: "+err.Error())
 		return
@@ -568,7 +578,7 @@ func (r *Runner) handleRestore(ctx context.Context, dockerCli *dockerclient.Clie
 
 	report(agentv1.TaskPhase_TASK_PHASE_RUNNING, "downloading and extracting backup")
 
-	body, err := downloadBlob(ctx, cmd.GetDownloadUrl(), credential)
+	body, err := downloadBlob(ctx, r.backupClient, cmd.GetDownloadUrl(), credential)
 	if err != nil {
 		r.log.Error("restore download failed", "backup_id", cmd.GetBackupId(), "error", err)
 		report(agentv1.TaskPhase_TASK_PHASE_FAILED, "failed to download backup: "+err.Error())
@@ -856,7 +866,10 @@ func containerConfigFromProto(cfg *agentv1.ContainerConfig) docker.ContainerConf
 	}
 }
 
-func uploadBlob(ctx context.Context, url, credential string, body io.Reader) error {
+func uploadBlob(ctx context.Context, client *http.Client, url, credential string, body io.Reader) error {
+	if err := validateBackupURL(url); err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return err
@@ -864,7 +877,7 @@ func uploadBlob(ctx context.Context, url, credential string, body io.Reader) err
 	req.Header.Set("Authorization", "Bearer "+credential)
 	req.Header.Set("Content-Type", "application/x-tar")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -877,14 +890,17 @@ func uploadBlob(ctx context.Context, url, credential string, body io.Reader) err
 	return nil
 }
 
-func downloadBlob(ctx context.Context, url, credential string) (io.ReadCloser, error) {
+func downloadBlob(ctx context.Context, client *http.Client, url, credential string) (io.ReadCloser, error) {
+	if err := validateBackupURL(url); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+credential)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

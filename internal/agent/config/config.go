@@ -13,6 +13,8 @@ type Config struct {
 	Server    string `yaml:"server"`
 	Token     string `yaml:"token"`
 	StatePath string `yaml:"state_path"`
+	TLS       bool   `yaml:"tls"`
+	TLSCAFile string `yaml:"tls_ca_file"`
 }
 
 func Load(path string) (*Config, error) {
