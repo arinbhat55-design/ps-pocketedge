@@ -186,6 +186,19 @@ func (api *kubernetesAPI) listClusters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *kubernetesAPI) deleteCluster(w http.ResponseWriter, r *http.Request) {
+	cluster, _, err := api.st.GetKubernetesClusterConfig(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "cluster not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		api.error(w, err)
+		return
+	}
+	if cluster.LocalKindName != "" {
+		http.Error(w, "use the local-cluster delete action to remove the kind cluster and its record", http.StatusConflict)
+		return
+	}
 	deleted, err := api.st.DeleteKubernetesCluster(r.Context(), r.PathValue("id"))
 	if err != nil {
 		api.error(w, err)

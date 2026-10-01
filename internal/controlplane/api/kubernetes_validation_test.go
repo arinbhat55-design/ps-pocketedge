@@ -28,6 +28,7 @@ func kubernetesTestMux(k8s *kubernetesAPI) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/kubernetes/clusters", k8s.listClusters)
 	mux.HandleFunc("POST /api/kubernetes/clusters", k8s.createCluster)
+	mux.HandleFunc("POST /api/kubernetes/local-clusters", k8s.createLocalCluster)
 	mux.HandleFunc("DELETE /api/kubernetes/clusters/{id}", k8s.deleteCluster)
 	mux.HandleFunc("GET /api/kubernetes/clusters/{id}/overview", k8s.overview)
 	mux.HandleFunc("GET /api/kubernetes/clusters/{id}/pods/{namespace}/{pod}/logs", k8s.podLogs)
@@ -89,6 +90,7 @@ func TestKubernetesHandlersRejectInvalidInputBeforeContactingCluster(t *testing.
 		"cluster: blank name":           {"POST", "/api/kubernetes/clusters", `{"name":"  ","kubeconfig":"x"}`},
 		"cluster: long name":            {"POST", "/api/kubernetes/clusters", `{"name":"` + strings.Repeat("a", 101) + `","kubeconfig":"x"}`},
 		"cluster: invalid kubeconfig":   {"POST", "/api/kubernetes/clusters", `{"name":"lab","kubeconfig":"not: [yaml"}`},
+		"local cluster: blank name":     {"POST", "/api/kubernetes/local-clusters", `{"name":" "}`},
 		"workload: malformed json":      {"POST", base + "/workloads", `nope`},
 		"workload: zero replicas":       {"POST", base + "/workloads", strings.Replace(validWorkload, `"replicas":1`, `"replicas":0`, 1)},
 		"workload: uppercase name":      {"POST", base + "/workloads", strings.Replace(validWorkload, `"web"`, `"Web"`, 1)},

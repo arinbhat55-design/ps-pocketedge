@@ -28,6 +28,7 @@ class DeploymentHistoryScreen extends StatefulWidget {
 class _DeploymentHistoryScreenState extends State<DeploymentHistoryScreen> {
   static const _phases = [
     'running',
+    'building',
     'failed',
     'awaiting_approval',
     'scheduled',

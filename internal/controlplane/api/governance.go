@@ -454,13 +454,13 @@ func handleDeploymentDrift(d *deployer) http.HandlerFunc {
 				v := file.Version
 				report.Config.CurrentVersion = &v
 				tracksOwnRef := file.GitRepositoryID != nil && dep.GitRef != "" && dep.GitRef != file.GitRef
-				if !tracksOwnRef && file.Content != rev.ComposeContent {
+				if !tracksOwnRef && file.Content != rev.SourceOf() {
 					report.Config.Drifted = true
 					report.Config.Reason = "the Compose file has changed since this revision was deployed"
 					if rev.ComposeVersion != nil {
 						report.Config.Reason = fmt.Sprintf("the Compose file is at version %d; revision %d deployed version %d", file.Version, rev.Revision, *rev.ComposeVersion)
 					}
-					report.Config.DeployedContent, report.Config.CurrentContent = rev.ComposeContent, file.Content
+					report.Config.DeployedContent, report.Config.CurrentContent = rev.SourceOf(), file.Content
 				}
 			}
 		} else if dep.StackID != nil {
@@ -654,8 +654,8 @@ func (d *deployer) runAutoRollbacks(ctx context.Context) {
 
 // RunGovernanceWorker is the exported entry point main uses to start the
 // background worker (see deployer.RunGovernanceWorker).
-func RunGovernanceWorker(ctx context.Context, log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, opWaiter *deploy.OpWaiter, publicURL string) {
-	d := newDeployer(log, st, dispatcher, events, opWaiter)
+func RunGovernanceWorker(ctx context.Context, log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, opWaiter *deploy.OpWaiter, buildBus *deploy.BuildBus, publicURL string) {
+	d := newDeployer(log, st, dispatcher, events, opWaiter, buildBus)
 	d.publicURL = publicURL
 	d.RunGovernanceWorker(ctx)
 }

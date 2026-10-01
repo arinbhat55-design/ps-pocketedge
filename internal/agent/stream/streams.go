@@ -53,6 +53,12 @@ func (s *activeStreams) registerExec(requestID string, stop func()) (input chan 
 	return input, func() { s.remove(requestID) }
 }
 
+// registerTask tracks a long-running one-shot task (an image build) under
+// requestID so a StopStreamCommand can cancel it; call done when it ends.
+func (s *activeStreams) registerTask(requestID string, cancel func()) (done func()) {
+	return s.registerLog(requestID, cancel)
+}
+
 func (s *activeStreams) remove(requestID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

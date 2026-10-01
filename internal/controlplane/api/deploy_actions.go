@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/compose-spec/compose-go/v2/types"
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/compose"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/deploy"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/gitsource"
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/store"
@@ -103,7 +105,7 @@ func writeActionError(w http.ResponseWriter, log *slog.Logger, err error) {
 // actionOutcome is what running (or queueing) an action produced.
 type actionOutcome struct {
 	DeploymentID string     `json:"deploymentId"`
-	Status       string     `json:"status"` // dispatched, completed, pending_approval, scheduled
+	Status       string     `json:"status"` // dispatched, building, completed, pending_approval, scheduled
 	RequestID    string     `json:"requestId,omitempty"`
 	ScheduledFor *time.Time `json:"scheduledFor,omitempty"`
 	Revision     int        `json:"revision,omitempty"`
@@ -147,12 +149,13 @@ type deployer struct {
 	dispatcher *deploy.Dispatcher
 	events     *deploy.EventBus
 	opWaiter   *deploy.OpWaiter
+	builds     *deploy.BuildBus
 	publicURL  string
 	now        func() time.Time
 }
 
-func newDeployer(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, opWaiter *deploy.OpWaiter) *deployer {
-	return &deployer{log: log, st: st, dispatcher: dispatcher, events: events, opWaiter: opWaiter, now: time.Now}
+func newDeployer(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, opWaiter *deploy.OpWaiter, builds *deploy.BuildBus) *deployer {
+	return &deployer{log: log, st: st, dispatcher: dispatcher, events: events, opWaiter: opWaiter, builds: builds, now: time.Now}
 }
 
 func (d *deployer) event(ctx context.Context, deploymentID, phase, message, actorID string) {
@@ -332,6 +335,9 @@ type rollout struct {
 	composeVersion *int
 	gitRef         string
 	gitCommit      string
+	// sourceContent is content as written, when content had its build:
+	// sections replaced by built image tags (see planBuilds).
+	sourceContent string
 }
 
 // gitRepoFor returns the gitsource.Repo a Git-linked Compose file came from.
@@ -365,7 +371,7 @@ func (d *deployer) resolveRollout(ctx context.Context, dep *store.Deployment, ac
 				return nil, err
 			}
 			ro.name, ro.content, ro.env, ro.scales = name, rev.ComposeContent, rev.Env, rev.Scales
-			ro.composeVersion, ro.gitRef, ro.gitCommit = rev.ComposeVersion, rev.GitRef, rev.GitCommit
+			ro.composeVersion, ro.gitRef, ro.gitCommit, ro.sourceContent = rev.ComposeVersion, rev.GitRef, rev.GitCommit, rev.SourceContent
 			return ro, nil
 		case p.VersionID != "":
 			if dep.ComposeFileID == nil {
@@ -397,7 +403,18 @@ func (d *deployer) resolveRollout(ctx context.Context, dep *store.Deployment, ac
 			if ref == "" {
 				ref = file.GitRef
 			}
-			content, commit, err := gitsource.FetchFileAtCommit(ctx, repo, ref, p.GitCommit, file.GitPath)
+			var content, commit string
+			if file.GitPath == "" {
+				content = file.Content
+				// Verify the commit belongs to this repository before building it.
+				specs, specErr := compose.BuildSpecs(content, ".", ro.env)
+				if specErr != nil || len(specs) == 0 {
+					return nil, newActionError(http.StatusBadRequest, "generated Compose file has no valid build")
+				}
+				_, commit, err = gitsource.FetchFileAtCommit(ctx, repo, ref, p.GitCommit, path.Join(specs[0].Context, specs[0].Dockerfile))
+			} else {
+				content, commit, err = gitsource.FetchFileAtCommit(ctx, repo, ref, p.GitCommit, file.GitPath)
+			}
 			if err != nil {
 				return nil, newActionError(http.StatusBadGateway, "%v", err)
 			}
@@ -417,6 +434,7 @@ func (d *deployer) resolveRollout(ctx context.Context, dep *store.Deployment, ac
 			return nil, err
 		}
 		ro.name, ro.content, ro.composeVersion, ro.gitRef, ro.gitCommit = name, rev.ComposeContent, rev.ComposeVersion, rev.GitRef, rev.GitCommit
+		ro.sourceContent = rev.SourceContent
 		if len(ro.scales) == 0 {
 			ro.scales = rev.Scales
 		}
@@ -439,6 +457,23 @@ func (d *deployer) resolveRollout(ctx context.Context, dep *store.Deployment, ac
 		return nil, err
 	}
 	ro.name = file.Name
+	if file.GitRepositoryID != nil && file.GitPath == "" {
+		_, repo, err := d.gitRepoFor(ctx, file)
+		if err != nil {
+			return nil, err
+		}
+		ref := dep.GitRef
+		if ref == "" {
+			ref = file.GitRef
+		}
+		commit, err := gitsource.ResolveRef(ctx, repo, ref)
+		if err != nil {
+			return nil, newActionError(http.StatusBadGateway, "%v", err)
+		}
+		v := file.Version
+		ro.content, ro.composeVersion, ro.gitRef, ro.gitCommit = file.Content, &v, ref, commit
+		return ro, nil
+	}
 	// A Git-linked deployment that tracks its own branch/tag (not the
 	// file's) deploys that ref's latest commit, fetched fresh.
 	if file.GitRepositoryID != nil && dep.GitRef != "" && dep.GitRef != file.GitRef {
@@ -446,7 +481,13 @@ func (d *deployer) resolveRollout(ctx context.Context, dep *store.Deployment, ac
 		if err != nil {
 			return nil, err
 		}
-		content, commit, err := gitsource.FetchFile(ctx, repo, dep.GitRef, file.GitPath)
+		var content, commit string
+		if file.GitPath == "" {
+			content = file.Content
+			commit, err = gitsource.ResolveRef(ctx, repo, dep.GitRef)
+		} else {
+			content, commit, err = gitsource.FetchFile(ctx, repo, dep.GitRef, file.GitPath)
+		}
 		if err != nil {
 			return nil, newActionError(http.StatusBadGateway, "%v", err)
 		}
@@ -480,11 +521,23 @@ func (d *deployer) executeRollout(ctx context.Context, dep *store.Deployment, ac
 	if err != nil {
 		return nil, err
 	}
+	jobs, err := d.planBuilds(ctx, dep, ro)
+	if err != nil {
+		return nil, err
+	}
+	if len(jobs) > 0 && a.ID != "" && !a.IsAdmin {
+		return nil, newActionError(http.StatusForbidden, "only admins can deploy services with build:")
+	}
 	if images, err := composeImages(ctx, ro.content, ro.env); err == nil {
-		if err := enforceImagePolicy(ctx, d.st, images); err != nil {
+		trustedTags := make([]string, 0, len(jobs))
+		for _, job := range jobs {
+			trustedTags = append(trustedTags, job.tag)
+		}
+		if err := enforceImagePolicy(ctx, d.st, images, trustedTags...); err != nil {
 			return nil, newActionError(http.StatusForbidden, "%v", err)
 		}
 	}
+	changes := d.describeChanges(ctx, dep, ro)
 	revision, err := d.st.RecordRevision(ctx, store.NewRevision{
 		DeploymentID:   dep.ID,
 		Action:         action,
@@ -494,13 +547,19 @@ func (d *deployer) executeRollout(ctx context.Context, dep *store.Deployment, ac
 		ComposeVersion: ro.composeVersion,
 		GitRef:         ro.gitRef,
 		GitCommit:      ro.gitCommit,
+		SourceContent:  ro.sourceContent,
+		ChangeSummary:  changes,
 		Strategy:       dep.UpdateStrategy,
 		CreatedBy:      a.ID,
 	})
 	if err != nil {
 		return nil, err
 	}
-	_ = d.st.UpdateDeploymentPhase(ctx, dep.ID, "pending")
+	phase := "pending"
+	if len(jobs) > 0 {
+		phase = "building"
+	}
+	_ = d.st.UpdateDeploymentPhase(ctx, dep.ID, phase)
 
 	summary := describeAction(action, p)
 	message := fmt.Sprintf("%s — revision %d", summary, revision)
@@ -513,10 +572,22 @@ func (d *deployer) executeRollout(ctx context.Context, dep *store.Deployment, ac
 	if p.Reason != "" {
 		message += " — " + p.Reason
 	}
-	d.event(ctx, dep.ID, "pending", message, a.ID)
+	if changes != "" {
+		message += " — changes: " + changes
+	}
+	d.event(ctx, dep.ID, phase, message, a.ID)
 	d.audit(ctx, a, "deployment."+action, "deployment", dep.ID, message, map[string]any{
 		"revision": revision, "gitCommit": ro.gitCommit, "composeVersion": ro.composeVersion, "params": p,
 	})
+	d.supersedeBuilds(ctx, dep.ID, revision)
+
+	if len(jobs) > 0 {
+		// Building takes minutes; the deploy follows once the images are
+		// ready, reported on the deployment's event stream like any other
+		// progress.
+		go d.buildThenDeploy(dep, ro, jobs, revision, a)
+		return &actionOutcome{DeploymentID: dep.ID, Status: "building", Revision: revision, Message: message}, nil
+	}
 
 	if err := dispatchDeploy(ctx, d.log, d.st, d.dispatcher, d.events, dep.ID, dep.ServerID, ro.name, ro.content, ro.env, ro.scales, dep.UpdateStrategy, revision); err != nil {
 		// Nothing reached the server, so whatever revision was running

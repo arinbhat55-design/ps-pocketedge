@@ -45,6 +45,32 @@ func TestSendResolvesEnvWithoutMutatingCaller(t *testing.T) {
 	if got := (<-ch).GetDeployService().GetEnv()["P"]; got != "plaintext" {
 		t.Errorf("deploy service env = %q", got)
 	}
+	// So do an image build's build args.
+	_ = d.Send("srv", &agentv1.ControlMessage{Payload: &agentv1.ControlMessage_BuildImage{BuildImage: &agentv1.BuildImageCommand{BuildArgs: map[string]string{"TOKEN": "vault:abc"}}}})
+	if got := (<-ch).GetBuildImage().GetBuildArgs()["TOKEN"]; got != "plaintext" {
+		t.Errorf("build args = %q", got)
+	}
+}
+
+func TestConnectionGenerationChangesOnReconnect(t *testing.T) {
+	d := NewDispatcher()
+	if _, connected := d.Connection("srv"); connected {
+		t.Fatal("unregistered server reported connected")
+	}
+	_, unregister := d.Register("srv")
+	first, connected := d.Connection("srv")
+	if !connected {
+		t.Fatal("registered server reported disconnected")
+	}
+	unregister()
+	if _, connected := d.Connection("srv"); connected {
+		t.Fatal("unregistered server still connected")
+	}
+	_, unregister = d.Register("srv")
+	defer unregister()
+	if second, _ := d.Connection("srv"); second == first {
+		t.Fatal("a reconnect must change the generation")
+	}
 }
 
 func TestSendRefusesWhenResolutionFails(t *testing.T) {

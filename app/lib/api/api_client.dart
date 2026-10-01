@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/audit_event.dart';
 import '../models/backup.dart';
+import '../models/build.dart';
 import '../models/compose_file.dart';
 import '../models/container.dart';
 import '../models/database.dart';
@@ -141,6 +142,25 @@ class ApiClient {
       body: jsonEncode({'name': name, 'kubeconfig': kubeconfig}),
     );
     if (response.statusCode != 201) throwApiError(response);
+  }
+
+  Future<void> createLocalKubernetesCluster(String name) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/kubernetes/local-clusters'),
+      headers: _headers,
+      body: jsonEncode({'name': name}),
+    );
+    if (response.statusCode != 201) throwApiError(response);
+  }
+
+  Future<void> deleteLocalKubernetesCluster(String id) async {
+    final response = await _http.delete(
+      Uri.parse(
+        '$baseUrl/api/kubernetes/local-clusters/${Uri.encodeComponent(id)}',
+      ),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
   }
 
   Future<void> removeKubernetesCluster(String id) async {
@@ -1639,6 +1659,60 @@ class ApiClient {
     );
   }
 
+  Future<List<ImageBuild>> listDeploymentBuilds(String deploymentId) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/deployments/$deploymentId/builds'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((item) => ImageBuild.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<ImageBuild> getBuild(String buildId) async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/builds/$buildId'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return ImageBuild.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> cancelBuild(String buildId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/builds/$buildId/cancel'),
+      headers: _headers,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<String> pushBuild(
+    String buildId, {
+    required String registryId,
+    required String repository,
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/builds/$buildId/push'),
+      headers: _headers,
+      body: jsonEncode({'registryId': registryId, 'repository': repository}),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as Map<String, dynamic>)['imageRef']
+        as String;
+  }
+
+  Uri buildStreamUri(String buildId) {
+    final httpUri = Uri.parse(baseUrl);
+    return httpUri.replace(
+      scheme: httpUri.scheme == 'https' ? 'wss' : 'ws',
+      path: '/api/builds/$buildId/stream',
+      queryParameters: {'token': ?authToken},
+    );
+  }
+
   /// Decodes a container lifecycle command's response. A completed round
   /// trip to the agent (whether the operation itself succeeded or failed)
   /// always carries a `success` field; its absence means the command never
@@ -1671,7 +1745,7 @@ class ApiClient {
       headers: _headers,
       body: jsonEncode({
         'action': action,
-        if (timeoutSeconds != null) 'timeoutSeconds': timeoutSeconds,
+        'timeoutSeconds': ?timeoutSeconds,
         if (force) 'force': force,
       }),
     );
@@ -1693,7 +1767,7 @@ class ApiClient {
       body: jsonEncode({
         'targets': targets.map((t) => t.toJson()).toList(),
         'action': action,
-        if (timeoutSeconds != null) 'timeoutSeconds': timeoutSeconds,
+        'timeoutSeconds': ?timeoutSeconds,
         if (force) 'force': force,
       }),
     );
@@ -1853,7 +1927,7 @@ class ApiClient {
           '$baseUrl/api/servers/$serverId/containers/$containerId/insights',
         ).replace(
           queryParameters: {
-            if (since != null) 'since': since,
+            'since': ?since,
             if (limits != null) ...{
               'nanoCpus': '${limits.nanoCpus}',
               'memoryLimitBytes': '${limits.memoryLimitBytes}',
@@ -1918,8 +1992,8 @@ class ApiClient {
     final uri = Uri.parse('$baseUrl/api/container-alerts').replace(
       queryParameters: {
         'status': includeResolved ? 'all' : 'open',
-        if (serverId != null) 'serverId': serverId,
-        if (containerId != null) 'containerId': containerId,
+        'serverId': ?serverId,
+        'containerId': ?containerId,
       },
     );
     final response = await _http.get(uri, headers: _headers);
@@ -2196,6 +2270,68 @@ class ApiClient {
     return VolumeSummary.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
     );
+  }
+
+  Uri _volumeFilesUri(
+    String serverId,
+    String name,
+    String suffix,
+    String path,
+  ) => Uri.parse(
+    '$baseUrl/api/servers/${Uri.encodeComponent(serverId)}/volumes/${Uri.encodeComponent(name)}/files$suffix',
+  ).replace(queryParameters: {'path': path});
+
+  Future<List<VolumeFileEntry>> listVolumeFiles(
+    String serverId,
+    String name, {
+    String path = '',
+  }) async {
+    final response = await _http.get(
+      _volumeFilesUri(serverId, name, '', path),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as List<dynamic>)
+        .map((e) => VolumeFileEntry.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<int>> readVolumeFile(
+    String serverId,
+    String name,
+    String path,
+  ) async {
+    final response = await _http.get(
+      _volumeFilesUri(serverId, name, '/content', path),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return response.bodyBytes;
+  }
+
+  Future<void> writeVolumeFile(
+    String serverId,
+    String name,
+    String path,
+    List<int> content,
+  ) async {
+    final response = await _http.put(
+      _volumeFilesUri(serverId, name, '/content', path),
+      headers: {..._headers, 'Content-Type': 'application/octet-stream'},
+      body: content,
+    );
+    if (response.statusCode != 204) throwApiError(response);
+  }
+
+  Future<void> cloneVolume(String serverId, String name, String target) async {
+    final response = await _http.post(
+      Uri.parse(
+        '$baseUrl/api/servers/${Uri.encodeComponent(serverId)}/volumes/${Uri.encodeComponent(name)}/clone',
+      ),
+      headers: _headers,
+      body: jsonEncode({'target': target}),
+    );
+    if (response.statusCode != 201) throwApiError(response);
   }
 
   /// Creates a new named volume on [serverId].
@@ -2492,10 +2628,7 @@ class ApiClient {
     String? containerId,
   }) async {
     final uri = Uri.parse('$baseUrl/api/schedules').replace(
-      queryParameters: {
-        if (serverId != null) 'serverId': serverId,
-        if (containerId != null) 'containerId': containerId,
-      },
+      queryParameters: {'serverId': ?serverId, 'containerId': ?containerId},
     );
     final response = await _http.get(uri, headers: _headers);
     if (response.statusCode != 200) {
@@ -2529,7 +2662,7 @@ class ApiClient {
         'containerName': containerName,
         'action': action,
         'scheduleType': scheduleType,
-        if (cronExpr != null) 'cronExpr': cronExpr,
+        'cronExpr': ?cronExpr,
         if (runOnceAt != null) 'runOnceAt': runOnceAt.toUtc().toIso8601String(),
       }),
     );
@@ -2580,9 +2713,9 @@ class ApiClient {
       Uri.parse('$baseUrl/api/deployments/preview'),
       headers: _headers,
       body: jsonEncode({
-        if (stackId != null) 'stackId': stackId,
-        if (composeFileId != null) 'composeFileId': composeFileId,
-        if (serverId != null) 'serverId': serverId,
+        'stackId': ?stackId,
+        'composeFileId': ?composeFileId,
+        'serverId': ?serverId,
         'env': env,
       }),
     );
@@ -2994,6 +3127,33 @@ class ApiClient {
       Uri.parse('$baseUrl/api/git-repositories/$repositoryId/import'),
       headers: _headers,
       body: jsonEncode({'name': name, 'ref': ref, 'path': path}),
+    );
+    if (response.statusCode != 201) throwApiError(response);
+    return ComposeFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<ComposeFile> generateGitComposeFile(
+    String repositoryId, {
+    required String name,
+    required String ref,
+    required String contextPath,
+    required String dockerfile,
+    required int port,
+    List<String> envKeys = const [],
+  }) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/git-repositories/$repositoryId/generate-compose'),
+      headers: _headers,
+      body: jsonEncode({
+        'name': name,
+        'ref': ref,
+        'contextPath': contextPath,
+        'dockerfile': dockerfile,
+        'port': port,
+        'envKeys': envKeys,
+      }),
     );
     if (response.statusCode != 201) throwApiError(response);
     return ComposeFile.fromJson(

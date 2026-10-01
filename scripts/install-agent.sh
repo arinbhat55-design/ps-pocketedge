@@ -4,7 +4,10 @@
 # Usage:
 #   curl -sSL https://<control-plane>/install.sh | sh -s -- \
 #     --server=<control-plane-host>:8443 --token=<enrollment-token> \
-#     [--ca-file=/path/to/private-ca.pem]
+#     [--ca-file=/path/to/private-ca.pem] [--allow-builds]
+#
+# --allow-builds lets the control plane build images from Git on this
+# server (Dockerfile RUN steps execute here with Docker's privileges).
 #
 # The --token=<value> form is the quick-start default but leaves the token
 # visible in shell history and `ps` output on this machine. Prefer setting
@@ -23,6 +26,7 @@ SERVER=""
 TOKEN="${PE_ENROLL_TOKEN:-}"
 LOCAL_BINARY=""
 CA_FILE=""
+ALLOW_BUILDS="false"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/pspocketedge"
 
@@ -33,6 +37,7 @@ for arg in "$@"; do
     --version=*) VERSION="${arg#*=}" ;;
     --local-binary=*) LOCAL_BINARY="${arg#*=}" ;;
     --ca-file=*) CA_FILE="${arg#*=}" ;;
+    --allow-builds) ALLOW_BUILDS="true" ;;
     *) echo "unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -68,7 +73,12 @@ echo "==> installing pe-agent binary"
 if [ -n "$LOCAL_BINARY" ]; then
   install -m 0755 "$LOCAL_BINARY" "$INSTALL_DIR/pe-agent"
 else
-  ASSET="pe-agent_${VERSION}_linux_${ARCH}.tar.gz"
+  if [ "$VERSION" = "latest" ]; then
+    RELEASE_URL="$(curl -fLsS -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
+    VERSION="${RELEASE_URL##*/}"
+  fi
+  ASSET_VERSION="${VERSION#v}"
+  ASSET="pe-agent_${ASSET_VERSION}_linux_${ARCH}.tar.gz"
   URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
@@ -93,6 +103,7 @@ server: "$SERVER"
 token: "$TOKEN"
 state_path: "$CONFIG_DIR/state.json"
 tls: true
+allow_builds: $ALLOW_BUILDS
 EOF
 if [ -n "$CA_FILE" ]; then
   echo "tls_ca_file: \"$CONFIG_DIR/control-plane-ca.pem\"" >> "$CONFIG_DIR/agent.yaml"

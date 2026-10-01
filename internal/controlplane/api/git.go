@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -377,6 +379,117 @@ func handleImportGitComposeFile(log *slog.Logger, st *store.Store) http.HandlerF
 	}
 }
 
+// handleGenerateGitComposeFile creates a Git-linked Compose file for a
+// repository that has a Dockerfile but no Compose file. An empty GitPath
+// denotes generated content: syncing advances the commit while keeping the
+// user's generated service settings.
+func handleGenerateGitComposeFile(log *slog.Logger, st *store.Store) http.HandlerFunc {
+	type request struct {
+		Name        string   `json:"name"`
+		Ref         string   `json:"ref"`
+		ContextPath string   `json:"contextPath"`
+		Dockerfile  string   `json:"dockerfile"`
+		Port        int      `json:"port"`
+		EnvKeys     []string `json:"envKeys"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		g, ok := loadGitRepo(w, r, log, st)
+		if !ok {
+			return
+		}
+		var req request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		req.Name = strings.TrimSpace(req.Name)
+		if req.Name == "" || len(req.Name) > 100 || req.Port < 1 || req.Port > 65535 {
+			http.Error(w, "name and a port from 1 to 65535 are required", http.StatusBadRequest)
+			return
+		}
+		if req.Ref == "" {
+			req.Ref = g.DefaultBranch
+		}
+		if req.ContextPath == "" {
+			req.ContextPath = "."
+		}
+		if req.Dockerfile == "" {
+			req.Dockerfile = "Dockerfile"
+		}
+		content, dockerfilePath, err := generatedGitCompose(req.ContextPath, req.Dockerfile, req.Port, req.EnvKeys)
+		if err != nil {
+			http.Error(w, "invalid build context or Dockerfile path", http.StatusBadRequest)
+			return
+		}
+		_, commit, err := gitsource.FetchFile(r.Context(), toGitRepo(g), req.Ref, dockerfilePath)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Dockerfile check failed: " + err.Error()})
+			return
+		}
+		if result := compose.Parse(content); !result.Valid {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"errors": result.Errors})
+			return
+		}
+		id, err := st.CreateComposeFile(r.Context(), req.Name, content, actorFromRequest(r).ID)
+		if errors.Is(err, store.ErrDuplicateComposeFileName) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if err != nil {
+			writeActionError(w, log, err)
+			return
+		}
+		if err := st.SetComposeFileGitLink(r.Context(), id, &g.ID, req.Ref, ""); err != nil {
+			_ = st.DeleteComposeFile(r.Context(), id)
+			writeActionError(w, log, err)
+			return
+		}
+		if err := st.UpdateComposeFileFromGit(r.Context(), id, content, commit); err != nil {
+			_ = st.DeleteComposeFile(r.Context(), id)
+			writeActionError(w, log, err)
+			return
+		}
+		file, err := st.GetComposeFile(r.Context(), id)
+		if err != nil {
+			writeActionError(w, log, err)
+			return
+		}
+		recordAudit(r, log, st, "compose_file.generate_git", "compose_file", id,
+			fmt.Sprintf("Compose file %s generated from %s @ %s", req.Name, g.Name, shortCommit(commit)),
+			map[string]any{"repositoryId": g.ID, "ref": req.Ref, "commit": commit})
+		writeJSON(w, http.StatusCreated, toComposeFileResponse(*file))
+	}
+}
+
+var composeEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func generatedGitCompose(contextPath, dockerfile string, port int, envKeys []string) (content, dockerfilePath string, err error) {
+	if port < 1 || port > 65535 {
+		return "", "", errors.New("port out of range")
+	}
+	if len(envKeys) > 100 {
+		return "", "", errors.New("too many environment variables")
+	}
+	content = fmt.Sprintf("services:\n  app:\n    build:\n      context: %s\n      dockerfile: %s\n    ports:\n      - %s\n",
+		strconv.Quote(contextPath), strconv.Quote(dockerfile), strconv.Quote(fmt.Sprintf("%d:%d", port, port)))
+	if len(envKeys) > 0 {
+		content += "    environment:\n"
+		seen := map[string]bool{}
+		for _, key := range envKeys {
+			if !composeEnvName.MatchString(key) || seen[key] {
+				return "", "", errors.New("invalid or duplicate environment variable name")
+			}
+			seen[key] = true
+			content += fmt.Sprintf("      %s: %s\n", key, strconv.Quote("${"+key+"}"))
+		}
+	}
+	specs, err := compose.BuildSpecs(content, ".", nil)
+	if err != nil || len(specs) != 1 {
+		return "", "", errors.New("invalid build settings")
+	}
+	return content, path.Join(specs[0].Context, specs[0].Dockerfile), nil
+}
+
 // syncResult is the outcome of re-syncing a Git-linked Compose file.
 type syncResult struct {
 	Changed bool                `json:"changed"`
@@ -394,7 +507,13 @@ func syncComposeFile(ctx context.Context, st *store.Store, file *store.ComposeFi
 	if err != nil {
 		return nil, err
 	}
-	content, commit, err := gitsource.FetchFile(ctx, toGitRepo(g), file.GitRef, file.GitPath)
+	var content, commit string
+	if file.GitPath == "" {
+		content = file.Content
+		commit, err = gitsource.ResolveRef(ctx, toGitRepo(g), file.GitRef)
+	} else {
+		content, commit, err = gitsource.FetchFile(ctx, toGitRepo(g), file.GitRef, file.GitPath)
+	}
 	if err != nil {
 		return nil, newActionError(http.StatusBadGateway, "%v", err)
 	}

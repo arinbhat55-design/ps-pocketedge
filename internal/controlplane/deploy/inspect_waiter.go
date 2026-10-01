@@ -120,3 +120,7 @@ func NewVolumeDetailWaiter() *VolumeDetailWaiter { return NewWaiter[*agentv1.Vol
 type VolumeOpWaiter = Waiter[*agentv1.VolumeOpResult]
 
 func NewVolumeOpWaiter() *VolumeOpWaiter { return NewWaiter[*agentv1.VolumeOpResult]() }
+
+type VolumeFileWaiter = Waiter[*agentv1.VolumeFileResult]
+
+func NewVolumeFileWaiter() *VolumeFileWaiter { return NewWaiter[*agentv1.VolumeFileResult]() }

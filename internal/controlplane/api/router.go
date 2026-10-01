@@ -37,7 +37,7 @@ const enrollmentTokenTTL = 1 * time.Hour
 // this API from its dev server origin during local development; this
 // should be tightened together with publicURL before any non-local
 // deployment.
-func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter, v *vault.Vault, ops *dbops.Ops) http.Handler {
+func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter, volumeFileWaiter *deploy.VolumeFileWaiter, v *vault.Vault, ops *dbops.Ops, buildBus *deploy.BuildBus) http.Handler {
 	aiClient := ai.New()
 	secrets := vaultSecretSource(log, v)
 	mux := http.NewServeMux()
@@ -67,6 +67,8 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	k8s := &kubernetesAPI{log: log, st: st, vault: v}
 	mux.Handle("GET /api/kubernetes/clusters", authMgr.RequireAuth(http.HandlerFunc(k8s.listClusters)))
 	mux.Handle("POST /api/kubernetes/clusters", authMgr.RequireAdmin(http.HandlerFunc(k8s.createCluster)))
+	mux.Handle("POST /api/kubernetes/local-clusters", authMgr.RequireAdmin(http.HandlerFunc(k8s.createLocalCluster)))
+	mux.Handle("DELETE /api/kubernetes/local-clusters/{id}", authMgr.RequireAdmin(http.HandlerFunc(k8s.deleteLocalCluster)))
 	mux.Handle("DELETE /api/kubernetes/clusters/{id}", authMgr.RequireAdmin(http.HandlerFunc(k8s.deleteCluster)))
 	mux.Handle("GET /api/kubernetes/clusters/{id}/overview", authMgr.RequireAuth(http.HandlerFunc(k8s.overview)))
 	mux.Handle("GET /api/kubernetes/clusters/{id}/pods/{namespace}/{pod}/logs", authMgr.RequireAuth(http.HandlerFunc(k8s.podLogs)))
@@ -103,7 +105,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("PATCH /api/env-var-groups/{id}", authMgr.RequireAuth(handleUpdateEnvVarGroup(log, st)))
 	mux.Handle("DELETE /api/env-var-groups/{id}", authMgr.RequireAuth(handleDeleteEnvVarGroup(log, st)))
 
-	d := newDeployer(log, st, dispatcher, events, opWaiter)
+	d := newDeployer(log, st, dispatcher, events, opWaiter, buildBus)
 	d.publicURL = publicURL
 	mux.Handle("POST /api/deployments/preview", authMgr.RequireAuth(handlePreviewDeployment(log, st)))
 	mux.Handle("GET /api/deployments", authMgr.RequireAuth(handleListDeployments(d)))
@@ -119,6 +121,13 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("GET /api/deployments/{id}/revisions", authMgr.RequireAuth(handleListDeploymentRevisions(d)))
 	mux.Handle("GET /api/deployments/{id}/revisions/{revision}", authMgr.RequireAuth(handleGetDeploymentRevision(d)))
 	mux.Handle("GET /api/deployments/{id}/drift", authMgr.RequireAuth(handleDeploymentDrift(d)))
+	// Images built from Git for a deployment's build: services. Auth via
+	// ?token= on the WS stream, like the deployment stream.
+	mux.Handle("GET /api/deployments/{id}/builds", authMgr.RequireAuth(handleListDeploymentBuilds(d)))
+	mux.Handle("GET /api/builds/{id}", authMgr.RequireAuth(handleGetBuild(d)))
+	mux.Handle("POST /api/builds/{id}/cancel", authMgr.RequireAdmin(handleCancelBuild(d)))
+	mux.Handle("POST /api/builds/{id}/push", authMgr.RequireAdmin(handlePushBuild(log, st, dispatcher, imageOpWaiter)))
+	mux.HandleFunc("GET /api/builds/{id}/stream", handleBuildStream(log, st, authMgr, buildBus))
 
 	// Governance: approval workflow, environment policies (approval,
 	// maintenance windows, required metadata), and the audit trail.
@@ -180,9 +189,10 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("POST /api/git-repositories/{id}/webhook/rotate", authMgr.RequireAdmin(handleRotateGitWebhookSecret(log, st, publicURL)))
 	mux.Handle("GET /api/git-repositories/{id}/refs", authMgr.RequireAuth(handleListGitRefs(log, st)))
 	mux.Handle("GET /api/git-repositories/{id}/file", authMgr.RequireAuth(handlePreviewGitFile(log, st)))
-	mux.Handle("POST /api/git-repositories/{id}/import", authMgr.RequireAuth(handleImportGitComposeFile(log, st)))
-	mux.Handle("POST /api/compose-files/{id}/git/sync", authMgr.RequireAuth(handleSyncComposeFile(log, st)))
-	mux.Handle("PUT /api/compose-files/{id}/git", authMgr.RequireAuth(handleSetComposeFileGitLink(log, st)))
+	mux.Handle("POST /api/git-repositories/{id}/import", authMgr.RequireAdmin(handleImportGitComposeFile(log, st)))
+	mux.Handle("POST /api/git-repositories/{id}/generate-compose", authMgr.RequireAdmin(handleGenerateGitComposeFile(log, st)))
+	mux.Handle("POST /api/compose-files/{id}/git/sync", authMgr.RequireAdmin(handleSyncComposeFile(log, st)))
+	mux.Handle("PUT /api/compose-files/{id}/git", authMgr.RequireAdmin(handleSetComposeFileGitLink(log, st)))
 	mux.Handle("GET /api/compose-files/{id}/git/commits", authMgr.RequireAuth(handleListComposeFileCommits(log, st)))
 	// Unauthenticated: verified by the repository's webhook secret.
 	mux.HandleFunc("POST /api/webhooks/git/{repoId}", handleGitWebhook(d))
@@ -239,6 +249,10 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("POST /api/servers/{id}/volumes", authMgr.RequireAuth(handleCreateVolume(log, dispatcher, volumeOpWaiter)))
 	mux.Handle("GET /api/servers/{id}/volumes/{name}", authMgr.RequireAuth(handleInspectVolume(log, dispatcher, volumeDetailWaiter)))
 	mux.Handle("DELETE /api/servers/{id}/volumes/{name}", authMgr.RequireAuth(handleRemoveVolume(log, dispatcher, volumeOpWaiter)))
+	mux.Handle("GET /api/servers/{id}/volumes/{name}/files", authMgr.RequireAuth(handleListVolumeFiles(log, dispatcher, volumeFileWaiter)))
+	mux.Handle("GET /api/servers/{id}/volumes/{name}/files/content", authMgr.RequireAuth(handleReadVolumeFile(log, dispatcher, volumeFileWaiter)))
+	mux.Handle("PUT /api/servers/{id}/volumes/{name}/files/content", authMgr.RequireAdmin(handleWriteVolumeFile(log, st, dispatcher, volumeFileWaiter)))
+	mux.Handle("POST /api/servers/{id}/volumes/{name}/clone", authMgr.RequireAdmin(handleCloneVolume(log, st, dispatcher, volumeFileWaiter)))
 	mux.Handle("GET /api/servers/{id}/ports/check", authMgr.RequireAuth(handleCheckPortConflict(log, st)))
 
 	mux.Handle("GET /api/registries", authMgr.RequireAdmin(handleListRegistries(log, st)))
@@ -443,7 +457,7 @@ func handleCreateEnrollmentToken(log *slog.Logger, st *store.Store) http.Handler
 		writeJSON(w, http.StatusOK, response{
 			Token:       token,
 			ExpiresAt:   expiresAt,
-			InstallHint: "curl -sSL https://<control-plane>/install.sh | sh -s -- --token=" + token,
+			InstallHint: "curl -fsSL https://raw.githubusercontent.com/ankitapaul1586-cmd/pspocketedge/master/scripts/install-agent.sh | sudo sh -s -- --server=<control-plane-host>:8443 --token=" + token,
 		})
 	}
 }

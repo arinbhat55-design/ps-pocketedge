@@ -28,8 +28,10 @@ type ComposeFile struct {
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	// Git link: set when the file was imported from (and is kept in sync
-	// with) GitPath at GitRef in a Git repository. GitCommit is the commit
-	// the current content came from.
+	// with) GitPath at GitRef in a Git repository. An empty GitPath means
+	// the Compose content was generated from a Dockerfile and is retained
+	// while the linked Git commit advances. GitCommit is the last synced
+	// commit.
 	GitRepositoryID *string    `json:"gitRepositoryId,omitempty"`
 	GitRef          string     `json:"gitRef,omitempty"`
 	GitPath         string     `json:"gitPath,omitempty"`

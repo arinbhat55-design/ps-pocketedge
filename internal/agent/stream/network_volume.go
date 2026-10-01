@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"errors"
+	"time"
 
 	dockerclient "github.com/docker/docker/client"
 
@@ -141,6 +142,47 @@ func (r *Runner) replyVolumeOp(ctx context.Context, outbound chan<- *agentv1.Age
 	select {
 	case outbound <- volumeOpResultMessage(requestID, name, err):
 	case <-ctx.Done():
+	}
+}
+
+func (r *Runner) handleVolumeFile(sessionCtx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.VolumeFileCommand, outbound chan<- *agentv1.AgentMessage) {
+	result := &agentv1.VolumeFileResult{RequestId: cmd.GetRequestId()}
+	defer func() {
+		select {
+		case outbound <- &agentv1.AgentMessage{Payload: &agentv1.AgentMessage_VolumeFileResult{VolumeFileResult: result}}:
+		case <-sessionCtx.Done():
+		}
+	}()
+	if dockerCli == nil {
+		result.ErrorMessage = "docker client unavailable on this agent"
+		return
+	}
+	timeout := 2 * time.Minute
+	if cmd.GetOperation() == "clone" {
+		timeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(sessionCtx, timeout)
+	defer cancel()
+	var err error
+	switch cmd.GetOperation() {
+	case "list":
+		var entries []docker.VolumeFileEntry
+		entries, err = docker.ListVolumeFiles(ctx, dockerCli, cmd.GetVolumeName(), cmd.GetPath())
+		for _, entry := range entries {
+			result.Entries = append(result.Entries, &agentv1.VolumeFileEntry{Name: entry.Name, IsDirectory: entry.IsDirectory, IsSymlink: entry.IsSymlink, SizeBytes: entry.SizeBytes})
+		}
+	case "read":
+		result.Content, err = docker.ReadVolumeFile(ctx, dockerCli, cmd.GetVolumeName(), cmd.GetPath())
+	case "write":
+		err = docker.WriteVolumeFile(ctx, dockerCli, cmd.GetVolumeName(), cmd.GetPath(), cmd.GetContent())
+	case "clone":
+		err = docker.CloneVolume(ctx, dockerCli, cmd.GetVolumeName(), cmd.GetTargetVolume())
+	default:
+		err = errors.New("unknown volume file operation")
+	}
+	result.Success = err == nil
+	if err != nil {
+		result.ErrorMessage = err.Error()
 	}
 }
 

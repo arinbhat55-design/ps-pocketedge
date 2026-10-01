@@ -64,6 +64,13 @@ type Runner struct {
 	StatePath    string
 	TLS          bool
 	TLSCAFile    string
+	// AllowBuilds lets the control plane build images from Git on this
+	// server's Docker daemon. Off by default: a Dockerfile's RUN steps
+	// execute on this host with the daemon's privileges.
+	AllowBuilds bool
+	// BuildDir is where builds clone repositories; empty uses a directory
+	// under the system temp dir.
+	BuildDir     string
 	backupClient *http.Client
 
 	log *slog.Logger
@@ -83,6 +90,10 @@ type Runner struct {
 	// deployment — two overlapping rollouts would otherwise fight over the
 	// same deterministic container names.
 	deploymentLocks sync.Map
+
+	// buildSlot admits one image build at a time — builds are CPU-,
+	// memory- and disk-heavy, and a small edge device can't run several.
+	buildSlot chan struct{}
 }
 
 // lockDeployment serializes work on one deployment; call the returned
@@ -104,6 +115,7 @@ func New(log *slog.Logger, addr, token, hostname, osName, arch, agentVersion, st
 		AgentVersion: agentVersion,
 		StatePath:    statePath,
 		log:          log,
+		buildSlot:    make(chan struct{}, 1),
 	}
 }
 
@@ -338,12 +350,16 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 				go r.handleUndeploy(sessionCtx, dockerCli, msg.GetUndeploy(), outbound)
 			case msg.GetDeployService() != nil:
 				go r.handleDeployService(sessionCtx, dockerCli, msg.GetDeployService(), outbound)
+			case msg.GetBuildImage() != nil:
+				go r.handleBuildImage(sessionCtx, dockerCli, msg.GetBuildImage(), outbound, streams)
 			case msg.GetListImages() != nil:
 				go r.handleListImages(sessionCtx, dockerCli, msg.GetListImages(), outbound)
 			case msg.GetInspectImage() != nil:
 				go r.handleInspectImage(sessionCtx, dockerCli, msg.GetInspectImage(), outbound)
 			case msg.GetPullImage() != nil:
 				go r.handlePullImage(sessionCtx, dockerCli, msg.GetPullImage(), outbound)
+			case msg.GetPushImage() != nil:
+				go r.handlePushImage(sessionCtx, dockerCli, msg.GetPushImage(), outbound)
 			case msg.GetRemoveImage() != nil:
 				go r.handleRemoveImage(sessionCtx, dockerCli, msg.GetRemoveImage(), outbound)
 			case msg.GetPruneImages() != nil:
@@ -372,6 +388,8 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 				go r.handleRemoveVolume(sessionCtx, dockerCli, msg.GetRemoveVolume(), outbound)
 			case msg.GetInspectVolume() != nil:
 				go r.handleInspectVolume(sessionCtx, dockerCli, msg.GetInspectVolume(), outbound)
+			case msg.GetVolumeFile() != nil:
+				go r.handleVolumeFile(sessionCtx, dockerCli, msg.GetVolumeFile(), outbound)
 			}
 		}
 	}()
@@ -798,6 +816,25 @@ func (r *Runner) handlePullImage(ctx context.Context, dockerCli *dockerclient.Cl
 	}
 	err := docker.PullImage(ctx, dockerCli, cmd.GetImageRef(), auth)
 	r.replyImageOp(ctx, outbound, cmd.GetRequestId(), cmd.GetImageRef(), 0, err)
+}
+
+func (r *Runner) handlePushImage(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.PushImageCommand, outbound chan<- *agentv1.AgentMessage) {
+	if !r.AllowBuilds {
+		r.replyImageOp(ctx, outbound, cmd.GetRequestId(), "", 0, errors.New("image builds and pushes are disabled on this server"))
+		return
+	}
+	if dockerCli == nil {
+		r.replyImageOp(ctx, outbound, cmd.GetRequestId(), "", 0, errors.New("docker client unavailable on this agent"))
+		return
+	}
+	var auth *docker.RegistryAuth
+	if a := cmd.GetAuth(); a != nil && (a.GetUsername() != "" || a.GetPassword() != "") {
+		auth = &docker.RegistryAuth{Username: a.GetUsername(), Password: a.GetPassword()}
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	err := docker.PushImage(pushCtx, dockerCli, cmd.GetSourceTag(), cmd.GetTargetRef(), auth)
+	r.replyImageOp(ctx, outbound, cmd.GetRequestId(), cmd.GetTargetRef(), 0, err)
 }
 
 func (r *Runner) handleRemoveImage(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.RemoveImageCommand, outbound chan<- *agentv1.AgentMessage) {

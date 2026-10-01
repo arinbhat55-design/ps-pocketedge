@@ -63,18 +63,23 @@ func (r Repo) auth() transport.AuthMethod {
 	if r.Token == "" {
 		return nil
 	}
-	user := r.Username
-	if user == "" {
-		switch r.Provider {
-		case ProviderGitLab:
-			user = "oauth2"
-		case ProviderBitbucket:
-			user = "x-token-auth"
-		default:
-			user = "git"
-		}
+	return &githttp.BasicAuth{Username: r.AuthUsername(), Password: r.Token}
+}
+
+// AuthUsername is the HTTP username sent with Token: the configured one,
+// or the one the provider expects with an access token.
+func (r Repo) AuthUsername() string {
+	if r.Username != "" {
+		return r.Username
 	}
-	return &githttp.BasicAuth{Username: user, Password: r.Token}
+	switch r.Provider {
+	case ProviderGitLab:
+		return "oauth2"
+	case ProviderBitbucket:
+		return "x-token-auth"
+	default:
+		return "git"
+	}
 }
 
 // Ref is one branch or tag on the remote.
@@ -309,7 +314,11 @@ func ListCommits(ctx context.Context, repo Repo, ref, path string, limit int) ([
 		return nil, err
 	}
 	target := strings.TrimPrefix(path, "/")
-	iter, err := r.Log(&git.LogOptions{From: head.Hash(), PathFilter: func(p string) bool { return p == target }})
+	options := &git.LogOptions{From: head.Hash()}
+	if target != "" {
+		options.PathFilter = func(p string) bool { return p == target }
+	}
+	iter, err := r.Log(options)
 	if err != nil {
 		return nil, err
 	}
@@ -323,8 +332,10 @@ func ListCommits(ctx context.Context, repo Repo, ref, path string, limit int) ([
 		if err != nil {
 			return nil, err
 		}
-		if _, err := c.File(target); err != nil {
-			continue
+		if target != "" {
+			if _, err := c.File(target); err != nil {
+				continue
+			}
 		}
 		msg := strings.TrimSpace(c.Message)
 		if i := strings.IndexByte(msg, '\n'); i >= 0 {

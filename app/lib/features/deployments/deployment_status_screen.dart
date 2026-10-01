@@ -6,6 +6,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../api/api_client.dart';
 import '../../models/compose_file.dart';
+import '../../models/build.dart';
 import '../../models/deployment.dart';
 import '../../models/deployment_event.dart';
 import '../../models/deployment_request.dart';
@@ -16,6 +17,7 @@ import '../../models/git_repository.dart';
 import '../../models/server.dart';
 import '../backups/backups_screen.dart';
 import 'deployment_widgets.dart';
+import 'build_logs_screen.dart';
 import '../../theme/app_theme.dart';
 
 /// One deployment's live status and everything you can do to it: the
@@ -623,7 +625,7 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
     final actionsEnabled = !_busy && !inProgress && detail != null;
 
     return DefaultTabController(
-      length: 4,
+      length: 5,
       child: Scaffold(
         appBar: AppBar(
           title: Text(
@@ -666,6 +668,7 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
             tabs: [
               Tab(text: 'Timeline'),
               Tab(text: 'Services'),
+              Tab(text: 'Builds'),
               Tab(text: 'Revisions'),
               Tab(text: 'Drift'),
             ],
@@ -727,6 +730,12 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
                     onScale: _scaleService,
                     onRedeploy: _redeployService,
                   ),
+                  _BuildsTab(
+                    key: ValueKey('builds-$_revisionsGeneration'),
+                    apiClient: _api,
+                    deploymentId: widget.deploymentId,
+                    isAdmin: widget.isAdmin,
+                  ),
                   _RevisionsTab(
                     key: ValueKey(_revisionsGeneration),
                     apiClient: _api,
@@ -744,6 +753,83 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
       ),
     );
   }
+}
+
+class _BuildsTab extends StatefulWidget {
+  final ApiClient apiClient;
+  final String deploymentId;
+  final bool isAdmin;
+
+  const _BuildsTab({
+    super.key,
+    required this.apiClient,
+    required this.deploymentId,
+    required this.isAdmin,
+  });
+
+  @override
+  State<_BuildsTab> createState() => _BuildsTabState();
+}
+
+class _BuildsTabState extends State<_BuildsTab> {
+  late Future<List<ImageBuild>> _future = _load();
+
+  Future<List<ImageBuild>> _load() =>
+      widget.apiClient.listDeploymentBuilds(widget.deploymentId);
+
+  void _refresh() => setState(() => _future = _load());
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<List<ImageBuild>>(
+    future: _future,
+    builder: (context, snapshot) {
+      if (snapshot.hasError) {
+        return Center(child: Text('Could not load builds: ${snapshot.error}'));
+      }
+      if (!snapshot.hasData) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      final builds = snapshot.data!;
+      if (builds.isEmpty) {
+        return const Center(
+          child: Text('No image builds for this deployment.'),
+        );
+      }
+      return RefreshIndicator(
+        onRefresh: () async => _refresh(),
+        child: ListView.builder(
+          itemCount: builds.length,
+          itemBuilder: (context, index) {
+            final build = builds[index];
+            return ListTile(
+              leading: Icon(
+                Icons.build_outlined,
+                color: phaseColor(build.status),
+              ),
+              title: Text('${build.service} · ${humanizePhase(build.status)}'),
+              subtitle: Text(
+                'Revision ${build.revision} · ${build.imageTag}'
+                '${build.reused ? ' · reused' : ''}',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => BuildLogsScreen(
+                      apiClient: widget.apiClient,
+                      initialBuild: build,
+                      isAdmin: widget.isAdmin,
+                    ),
+                  ),
+                );
+                if (mounted) _refresh();
+              },
+            );
+          },
+        ),
+      );
+    },
+  );
 }
 
 class _Header extends StatelessWidget {

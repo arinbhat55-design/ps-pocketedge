@@ -1,6 +1,51 @@
 package docker
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/docker/docker/client"
+)
+
+func TestPushImageChecksRegistryStream(t *testing.T) {
+	for _, tc := range []struct {
+		name, pushBody string
+		wantError      bool
+	}{
+		{"success", `{"status":"Pushed"}`, false},
+		{"registry denied", `{"error":"denied"}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tagged, pushed bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/images/") && strings.HasSuffix(r.URL.Path, "/json"):
+					_, _ = w.Write([]byte(`{"Id":"sha256:abc","RepoTags":["local:test"]}`))
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tag"):
+					tagged = true
+					w.WriteHeader(http.StatusCreated)
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/push"):
+					pushed = true
+					_, _ = w.Write([]byte(tc.pushBody + "\n"))
+				default:
+					http.Error(w, r.URL.Path, http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			cli, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithVersion("1.46"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = PushImage(context.Background(), cli, "local:test", "registry.example.com/team/app:test", nil)
+			if (err != nil) != tc.wantError || !tagged || !pushed {
+				t.Fatalf("PushImage error=%v, tagged=%v, pushed=%v", err, tagged, pushed)
+			}
+		})
+	}
+}
 
 func TestCleanRepoList(t *testing.T) {
 	cases := []struct {

@@ -276,6 +276,22 @@ func (s *Store) ResolveDeploymentSource(ctx context.Context, d *Deployment) (nam
 		if err != nil {
 			return "", "", err
 		}
+		// A Compose file with build: sections can't be sent to an agent as
+		// written; what's deployable is the current revision's content,
+		// with those sections replaced by the images built for it.
+		if d.CurrentRevision > 0 {
+			var pinned string
+			err := s.pool.QueryRow(ctx, `
+				SELECT compose_content FROM deployment_revisions
+				WHERE deployment_id = $1 AND revision = $2 AND source_content <> ''
+			`, d.ID, d.CurrentRevision).Scan(&pinned)
+			if err == nil {
+				return file.Name, pinned, nil
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return "", "", err
+			}
+		}
 		return file.Name, file.Content, nil
 	}
 	return "", "", errors.New("deployment has no source (neither stack_id nor compose_file_id is set)")

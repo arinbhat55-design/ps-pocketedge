@@ -98,7 +98,8 @@ class _AppShellState extends State<AppShell> {
             icon: Icons.storage_outlined,
             selectedIcon: Icons.storage,
             label: 'Volumes',
-            builder: (_) => VolumeListScreen(apiClient: widget.apiClient),
+            builder: (_) =>
+                VolumeListScreen(apiClient: widget.apiClient, isAdmin: isAdmin),
           ),
           _ModuleDestination(
             icon: Icons.rocket_launch_outlined,

@@ -164,7 +164,7 @@ void main() {
 
       expect(find.text('lab'), findsOneWidget);
       expect(find.text('https://k8s.lab:6443'), findsOneWidget);
-      expect(find.byTooltip('Connect cluster'), findsOneWidget);
+      expect(find.byTooltip('Add cluster'), findsOneWidget);
       expect(find.byTooltip('Disconnect'), findsOneWidget);
     });
 
@@ -177,7 +177,7 @@ void main() {
       );
 
       expect(find.text('lab'), findsOneWidget);
-      expect(find.byTooltip('Connect cluster'), findsNothing);
+      expect(find.byTooltip('Add cluster'), findsNothing);
       expect(find.byTooltip('Disconnect'), findsNothing);
     });
 
@@ -210,7 +210,9 @@ void main() {
             : (200, jsonEncode([_cluster])),
       );
 
-      await tester.tap(find.byTooltip('Connect cluster'));
+      await tester.tap(find.byTooltip('Add cluster'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Connect existing cluster'));
       await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextField, 'Cluster name'),
@@ -234,6 +236,54 @@ void main() {
       );
       // A failed refresh would surface here as an error SnackBar.
       expect(find.byType(SnackBar), findsNothing);
+    });
+
+    testWidgets('local cluster create and delete use managed routes', (
+      tester,
+    ) async {
+      const local = {
+        'id': 'c2',
+        'name': 'local',
+        'apiServer': 'https://127.0.0.1:12345',
+        'localKindName': 'pspe-test',
+      };
+      var created = false;
+      final fake = await _pump(
+        tester,
+        (api) => KubernetesScreen(apiClient: api, isAdmin: true),
+        routes: (req) {
+          if (req.url.path == '/api/kubernetes/local-clusters' &&
+              req.method == 'POST') {
+            created = true;
+            return (201, jsonEncode(local));
+          }
+          if (req.url.path == '/api/kubernetes/local-clusters/c2' &&
+              req.method == 'DELETE') {
+            created = false;
+            return (204, '');
+          }
+          return (200, jsonEncode(created ? [local] : []));
+        },
+      );
+
+      await tester.tap(find.byTooltip('Add cluster'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Create local cluster'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Cluster name'),
+        'local',
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+      await tester.pumpAndSettle();
+      expect(fake.calls, contains('POST /api/kubernetes/local-clusters?'));
+      expect(find.text('local'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Delete local cluster'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Delete cluster'));
+      await tester.pumpAndSettle();
+      expect(fake.calls, contains('DELETE /api/kubernetes/local-clusters/c2?'));
     });
 
     testWidgets('disconnect asks for confirmation before deleting', (

@@ -22,6 +22,8 @@ func main() {
 	statePath := flag.String("state-path", "", "where to persist the agent's identity across restarts (empty = re-enroll every run, for local dev)")
 	tlsEnabled := flag.Bool("tls", false, "use TLS even for a loopback control-plane address (remote addresses always require TLS)")
 	tlsCAFile := flag.String("tls-ca-file", "", "optional PEM CA certificate for the control-plane gRPC server")
+	allowBuilds := flag.Bool("allow-builds", false, "let the control plane build images from Git on this server's Docker daemon")
+	buildDir := flag.String("build-dir", "", "where image builds clone repositories (default: a directory under the system temp dir)")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -29,6 +31,7 @@ func main() {
 
 	serverAddr, enrollToken, statePathValue := *controlPlaneAddr, *token, *statePath
 	useTLS, caFile := *tlsEnabled, *tlsCAFile
+	builds, buildDirValue := *allowBuilds, *buildDir
 	if *configPath != "" {
 		cfg, err := config.Load(*configPath)
 		if err != nil {
@@ -48,6 +51,10 @@ func main() {
 		if caFile == "" {
 			caFile = cfg.TLSCAFile
 		}
+		builds = builds || cfg.AllowBuilds
+		if buildDirValue == "" {
+			buildDirValue = cfg.BuildDir
+		}
 	}
 
 	hostname, err := os.Hostname()
@@ -61,6 +68,11 @@ func main() {
 	runner := stream.New(log, serverAddr, enrollToken, hostname, runtime.GOOS, runtime.GOARCH, version.Version, statePathValue)
 	runner.TLS = useTLS
 	runner.TLSCAFile = caFile
+	runner.AllowBuilds = builds
+	runner.BuildDir = buildDirValue
+	if builds {
+		log.Info("image builds enabled on this server")
+	}
 	if err := runner.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Error("agent stopped", "error", err)
 		os.Exit(1)

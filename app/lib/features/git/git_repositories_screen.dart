@@ -6,6 +6,7 @@ import '../../models/compose_file.dart';
 import '../../models/deployment.dart';
 import '../../models/git_repository.dart';
 import '../../theme/app_theme.dart';
+import 'deploy_from_repository_dialog.dart';
 
 /// Git-based deployment: repositories Compose files can be imported from,
 /// their push-webhook setup, and the Compose files linked to each (with
@@ -138,6 +139,18 @@ class _GitRepositoriesScreenState extends State<GitRepositoriesScreen> {
     }
   }
 
+  Future<void> _deployFromRepository(GitRepository repo) async {
+    final deploymentId = await showDialog<String>(
+      context: context,
+      builder: (_) =>
+          DeployFromRepositoryDialog(apiClient: _api, repository: repo),
+    );
+    if (deploymentId == null) return;
+    _snack('Deployment $deploymentId created. Build progress is in its logs.');
+    _refresh();
+    widget.onComposeFilesChanged?.call();
+  }
+
   Future<void> _sync(ComposeFile file) async {
     setState(() => _busy = true);
     try {
@@ -204,10 +217,11 @@ class _GitRepositoriesScreenState extends State<GitRepositoriesScreen> {
                   ],
                   isAdmin: widget.isAdmin,
                   onImport: () => _import(repo),
+                  onDeploy: () => _deployFromRepository(repo),
                   onEdit: () => _addOrEdit(repo),
                   onDelete: () => _delete(repo),
                   onWebhook: () => _showWebhook(repo),
-                  onSync: _busy ? null : _sync,
+                  onSync: widget.isAdmin && !_busy ? _sync : null,
                 ),
             ],
           );
@@ -222,6 +236,7 @@ class _RepositoryCard extends StatelessWidget {
   final List<ComposeFile> linkedFiles;
   final bool isAdmin;
   final VoidCallback onImport;
+  final VoidCallback onDeploy;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onWebhook;
@@ -232,6 +247,7 @@ class _RepositoryCard extends StatelessWidget {
     required this.linkedFiles,
     required this.isAdmin,
     required this.onImport,
+    required this.onDeploy,
     required this.onEdit,
     required this.onDelete,
     required this.onWebhook,
@@ -259,11 +275,18 @@ class _RepositoryCard extends StatelessWidget {
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  TextButton.icon(
-                    onPressed: onImport,
-                    icon: const Icon(Icons.download_outlined),
-                    label: const Text('Import Compose file'),
-                  ),
+                  if (isAdmin)
+                    TextButton.icon(
+                      onPressed: onImport,
+                      icon: const Icon(Icons.download_outlined),
+                      label: const Text('Import Compose file'),
+                    ),
+                  if (isAdmin)
+                    TextButton.icon(
+                      onPressed: onDeploy,
+                      icon: const Icon(Icons.rocket_launch_outlined),
+                      label: const Text('Deploy from repository'),
+                    ),
                   if (isAdmin)
                     PopupMenuButton<String>(
                       onSelected: (v) {
@@ -304,7 +327,7 @@ class _RepositoryCard extends StatelessWidget {
                 leading: const Icon(Icons.layers_outlined, size: 18),
                 title: Text(f.name),
                 subtitle: Text(
-                  '${f.gitPath} @ ${f.gitRef} • ${shortCommit(f.gitCommit)}'
+                  '${f.gitPath.isEmpty ? 'Generated from Dockerfile' : f.gitPath} @ ${f.gitRef} • ${shortCommit(f.gitCommit)}'
                   '${f.gitSyncedAt == null ? '' : ' • synced ${formatTimestamp(f.gitSyncedAt!)}'}',
                 ),
                 trailing: IconButton(
@@ -725,13 +748,18 @@ class _ImportFromGitDialogState extends State<ImportFromGitDialog> {
                   '${preview.parse.valid ? 'valid Compose file' : 'invalid'}'
                   '${preview.parse.serviceNames.isEmpty ? '' : ' • services: ${preview.parse.serviceNames.join(', ')}'}',
                   style: TextStyle(
-                    color: preview.parse.valid ? AppColors.healthy : AppColors.failed,
+                    color: preview.parse.valid
+                        ? AppColors.healthy
+                        : AppColors.failed,
                   ),
                 ),
                 for (final e in preview.parse.errors)
                   Text('• $e', style: const TextStyle(color: AppColors.failed)),
                 for (final w in preview.parse.warnings)
-                  Text('• $w', style: const TextStyle(color: AppColors.warning)),
+                  Text(
+                    '• $w',
+                    style: const TextStyle(color: AppColors.warning),
+                  ),
                 const SizedBox(height: 8),
                 Container(
                   height: 220,

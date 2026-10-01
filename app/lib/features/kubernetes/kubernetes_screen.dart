@@ -21,6 +21,7 @@ class KubernetesScreen extends StatefulWidget {
 class _KubernetesScreenState extends State<KubernetesScreen> {
   late Future<List<Map<String, dynamic>>> _clusters = widget.apiClient
       .listKubernetesClusters();
+  bool _creatingLocal = false;
 
   void _refresh() => setState(() {
     _clusters = widget.apiClient.listKubernetesClusters();
@@ -86,13 +87,27 @@ class _KubernetesScreenState extends State<KubernetesScreen> {
     }
   }
 
-  Future<void> _remove(Map<String, dynamic> cluster) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Disconnect cluster?'),
-        content: Text(
-          'Remove ${cluster['name']} from PSpocketEdge? Kubernetes workloads will keep running.',
+  Future<void> _createLocal() async {
+    final name = TextEditingController(text: 'Local Kubernetes');
+    final submitted = await showDialogDisposing<bool>(
+      context,
+      [name],
+      (context) => AlertDialog(
+        title: const Text('Create local Kubernetes cluster'),
+        content: SizedBox(
+          width: 480,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Creates a kind cluster on the control plane machine. That machine needs kind, Docker CLI, and a running Docker Engine. Creation can take several minutes.',
+              ),
+              TextField(
+                controller: name,
+                decoration: const InputDecoration(labelText: 'Cluster name'),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -101,14 +116,59 @@ class _KubernetesScreenState extends State<KubernetesScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Disconnect'),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    if (submitted != true || name.text.trim().isEmpty) return;
+    setState(() => _creatingLocal = true);
+    try {
+      await widget.apiClient.createLocalKubernetesCluster(name.text.trim());
+      _refresh();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _creatingLocal = false);
+    }
+  }
+
+  Future<void> _remove(Map<String, dynamic> cluster) async {
+    final local = (cluster['localKindName'] as String? ?? '').isNotEmpty;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(local ? 'Delete local cluster?' : 'Disconnect cluster?'),
+        content: Text(
+          local
+              ? 'Delete ${cluster['name']} and all workloads inside it? This removes its kind containers and data.'
+              : 'Remove ${cluster['name']} from PSpocketEdge? Kubernetes workloads will keep running.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(local ? 'Delete cluster' : 'Disconnect'),
           ),
         ],
       ),
     );
     if (confirmed != true) return;
     try {
-      await widget.apiClient.removeKubernetesCluster(cluster['id'] as String);
+      if (local) {
+        await widget.apiClient.deleteLocalKubernetesCluster(
+          cluster['id'] as String,
+        );
+      } else {
+        await widget.apiClient.removeKubernetesCluster(cluster['id'] as String);
+      }
       _refresh();
     } catch (error) {
       if (mounted) {
@@ -129,11 +189,37 @@ class _KubernetesScreenState extends State<KubernetesScreen> {
           icon: const Icon(Icons.refresh),
           tooltip: 'Refresh',
         ),
+        if (_creatingLocal)
+          const Padding(
+            padding: EdgeInsets.all(12),
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
         if (widget.isAdmin)
-          IconButton(
-            onPressed: _add,
+          PopupMenuButton<String>(
+            enabled: !_creatingLocal,
             icon: const Icon(Icons.add),
-            tooltip: 'Connect cluster',
+            tooltip: 'Add cluster',
+            onSelected: (value) {
+              if (value == 'local') {
+                _createLocal();
+              } else {
+                _add();
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'local',
+                child: Text('Create local cluster'),
+              ),
+              PopupMenuItem(
+                value: 'connect',
+                child: Text('Connect existing cluster'),
+              ),
+            ],
           ),
       ],
     ),
@@ -158,12 +244,19 @@ class _KubernetesScreenState extends State<KubernetesScreen> {
             return ListTile(
               leading: const Icon(Icons.hub_outlined),
               title: Text('${cluster['name']}'),
-              subtitle: Text('${cluster['apiServer']}'),
+              subtitle: Text(
+                (cluster['localKindName'] as String? ?? '').isNotEmpty
+                    ? 'Local kind • ${cluster['apiServer']}'
+                    : '${cluster['apiServer']}',
+              ),
               trailing: widget.isAdmin
                   ? IconButton(
                       onPressed: () => _remove(cluster),
                       icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Disconnect',
+                      tooltip:
+                          (cluster['localKindName'] as String? ?? '').isNotEmpty
+                          ? 'Delete local cluster'
+                          : 'Disconnect',
                     )
                   : null,
               onTap: () => Navigator.push(

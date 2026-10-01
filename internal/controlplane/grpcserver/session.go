@@ -43,16 +43,19 @@ type Server struct {
 	volumeListWaiter   *deploy.VolumeListWaiter
 	volumeDetailWaiter *deploy.VolumeDetailWaiter
 	volumeOpWaiter     *deploy.VolumeOpWaiter
+	volumeFileWaiter   *deploy.VolumeFileWaiter
+	buildBus           *deploy.BuildBus
 }
 
-func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter) *Server {
+func New(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter, volumeFileWaiter *deploy.VolumeFileWaiter, buildBus *deploy.BuildBus) *Server {
 	return &Server{
 		log: log, store: st, dispatcher: dispatcher, events: events, serverEvents: serverEvents,
 		inspectWaiter: inspectWaiter, opWaiter: opWaiter,
 		imageListWaiter: imageListWaiter, imageDetailWaiter: imageDetailWaiter, imageOpWaiter: imageOpWaiter,
 		logStreamRelay: logStreamRelay, eventListWaiter: eventListWaiter, execStreamRelay: execStreamRelay,
 		networkListWaiter: networkListWaiter, networkOpWaiter: networkOpWaiter,
-		volumeListWaiter: volumeListWaiter, volumeDetailWaiter: volumeDetailWaiter, volumeOpWaiter: volumeOpWaiter,
+		volumeListWaiter: volumeListWaiter, volumeDetailWaiter: volumeDetailWaiter, volumeOpWaiter: volumeOpWaiter, volumeFileWaiter: volumeFileWaiter,
+		buildBus: buildBus,
 	}
 }
 
@@ -384,6 +387,11 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 			result := payload.VolumeOpResult
 			s.log.Info("volume op result received", "server_id", serverID, "name", result.GetName(), "success", result.GetSuccess())
 			s.volumeOpWaiter.Deliver(result.GetRequestId(), result)
+		case *agentv1.AgentMessage_VolumeFileResult:
+			result := payload.VolumeFileResult
+			s.volumeFileWaiter.Deliver(result.GetRequestId(), result)
+		case *agentv1.AgentMessage_BuildStatus:
+			s.recordBuildStatus(ctx, serverID, payload.BuildStatus)
 		default:
 			s.log.Warn("unknown agent message payload", "server_id", serverID)
 		}
@@ -505,6 +513,43 @@ func (s *Server) recordDeployStatus(ctx context.Context, deploymentID string, re
 		return
 	}
 	s.events.Publish(deploymentID, event)
+}
+
+// recordBuildStatus stores a build's progress and output, then passes it on
+// to whoever is following the build (the rollout waiting to deploy it, and
+// any dashboards streaming its output). Stored first, so a follower that
+// reloads the build on this notification sees it.
+func (s *Server) recordBuildStatus(ctx context.Context, serverID string, bs *agentv1.BuildStatus) {
+	status := buildPhaseToString(bs.GetPhase())
+	if bs.GetLog() == "" {
+		s.log.Info("build status received", "server_id", serverID, "build_id", bs.GetBuildId(), "status", status, "message", bs.GetMessage())
+	}
+	if err := s.store.UpdateImageBuild(ctx, bs.GetBuildId(), store.BuildUpdate{
+		Status: status, Message: bs.GetMessage(), Log: bs.GetLog(), LogSeq: bs.GetLogSeq(),
+		ImageID: bs.GetImageId(), Reused: bs.GetReused(),
+	}); err != nil {
+		s.log.Error("failed to record build status", "build_id", bs.GetBuildId(), "error", err)
+	}
+	s.buildBus.Publish(bs)
+}
+
+func buildPhaseToString(phase agentv1.BuildPhase) string {
+	switch phase {
+	case agentv1.BuildPhase_BUILD_PHASE_QUEUED:
+		return store.BuildQueued
+	case agentv1.BuildPhase_BUILD_PHASE_CLONING:
+		return store.BuildCloning
+	case agentv1.BuildPhase_BUILD_PHASE_BUILDING:
+		return store.BuildBuilding
+	case agentv1.BuildPhase_BUILD_PHASE_SUCCEEDED:
+		return store.BuildSucceeded
+	case agentv1.BuildPhase_BUILD_PHASE_FAILED:
+		return store.BuildFailed
+	case agentv1.BuildPhase_BUILD_PHASE_CANCELLED:
+		return store.BuildCancelled
+	default:
+		return ""
+	}
 }
 
 func deployPhaseToString(phase agentv1.DeployPhase) string {

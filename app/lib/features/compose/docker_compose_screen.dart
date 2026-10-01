@@ -360,7 +360,7 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
           TextButton(
             onPressed: () async {
               await Clipboard.setData(ClipboardData(text: file.content));
-              if (context.mounted) {
+              if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Copied to clipboard.')),
                 );
@@ -477,7 +477,7 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
                                 ? 'No services'
                                 : 'Services: ${f.serviceNames.join(', ')}',
                             if (f.isGitLinked)
-                              'Git: ${f.gitPath} @ ${f.gitRef} (${shortCommit(f.gitCommit)})',
+                              'Git: ${f.gitPath.isEmpty ? 'Generated from Dockerfile' : f.gitPath} @ ${f.gitRef} (${shortCommit(f.gitCommit)})',
                           ].join('\n'),
                         ),
                         trailing: Row(

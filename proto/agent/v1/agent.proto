@@ -52,6 +52,8 @@ message AgentMessage {
     VolumeListResult volume_list_result = 15;
     VolumeOpResult volume_op_result = 16;
     VolumeDetail volume_detail = 17;
+    BuildStatus build_status = 18;
+    VolumeFileResult volume_file_result = 19;
   }
 }
 
@@ -90,6 +92,9 @@ message ControlMessage {
     InspectVolumeCommand inspect_volume = 31;
     UndeployCommand undeploy = 32;
     DeployServiceCommand deploy_service = 33;
+    BuildImageCommand build_image = 34;
+    PushImageCommand push_image = 35;
+    VolumeFileCommand volume_file = 36;
   }
 }
 
@@ -588,6 +593,17 @@ message PullImageCommand {
   RegistryAuth auth = 4;
 }
 
+// Pushes an image already built on this server to a selected registry.
+// The control plane chooses target_ref from its configured registry, so
+// credentials cannot be redirected to a caller-supplied host.
+message PushImageCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string source_tag = 3;
+  string target_ref = 4;
+  RegistryAuth auth = 5;
+}
+
 message RemoveImageCommand {
   string request_id = 1;
   string server_id = 2;
@@ -604,8 +620,8 @@ message PruneImagesCommand {
   bool all = 3;
 }
 
-// ImageOpResult answers PullImageCommand, RemoveImageCommand, and
-// PruneImagesCommand alike, correlated via request_id — same one-request/
+// ImageOpResult answers PullImageCommand, PushImageCommand,
+// RemoveImageCommand, and PruneImagesCommand alike, correlated via request_id — same one-request/
 // one-reply pattern ContainerOpResult already uses for container ops.
 // reclaimed_bytes is only meaningful for PruneImagesCommand.
 message ImageOpResult {
@@ -754,6 +770,34 @@ message VolumeOpResult {
   string name = 4;
 }
 
+// VolumeFileCommand operates inside a named volume through a temporary
+// helper container. Paths are relative to the volume root. Content reads
+// and writes are bounded to 1 MiB; clone streams between Docker containers.
+message VolumeFileCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string volume_name = 3;
+  string operation = 4; // list, read, write, clone
+  string path = 5;
+  bytes content = 6;
+  string target_volume = 7; // clone only, must not exist
+}
+
+message VolumeFileEntry {
+  string name = 1;
+  bool is_directory = 2;
+  bool is_symlink = 3;
+  int64 size_bytes = 4;
+}
+
+message VolumeFileResult {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  repeated VolumeFileEntry entries = 4;
+  bytes content = 5;
+}
+
 // StreamLogsCommand asks the agent to tail container_id's logs, replying
 // with a sequence of LogChunk messages sharing request_id, terminated by
 // a final chunk with done=true. If follow is true the agent keeps
@@ -855,4 +899,69 @@ message ExecOutputChunk {
   bool done = 3;
   int64 exit_code = 4;
   string error_message = 5;
+}
+
+// BuildImageCommand builds a Docker image from a Git repository on the
+// agent's own Docker daemon, so the result can be deployed on this server
+// without a registry. The agent clones repo_url at git_commit (reached via
+// git_ref), sends context_path to the daemon as the build context (honoring
+// its .dockerignore), and tags the result image_tag. If image_tag already
+// exists locally and no_cache is false, nothing is built: tags are derived
+// from the commit and the build settings, so an existing tag is already
+// exactly this build (see also settings_key). A StopStreamCommand carrying
+// build_id cancels it.
+message BuildImageCommand {
+  string build_id = 1;
+  string deployment_id = 2;
+  string image_tag = 3;
+  string repo_url = 4;
+  // Branch or tag git_commit is reachable from.
+  string git_ref = 5;
+  string git_commit = 6;
+  // HTTPS credentials; empty for a public repository.
+  string git_username = 7;
+  string git_token = 8;
+  // Repository-relative directory ("." for the root), slash-separated.
+  string context_path = 9;
+  // Relative to context_path; empty means "Dockerfile".
+  string dockerfile = 10;
+  string target = 11;
+  map<string, string> build_args = 12;
+  map<string, string> labels = 13;
+  bool no_cache = 14;
+  // 0 uses the agent's default.
+  int32 timeout_seconds = 15;
+  // Identifies the build settings (context path, dockerfile, target, args,
+  // the service's own labels). Combined with the Git tree of the build
+  // context, it identifies everything the image is built from: an image
+  // already built from identical inputs — for an earlier commit that only
+  // changed files outside the context, such as the Compose file — is
+  // tagged image_tag and reused instead of rebuilt. Empty disables this.
+  string settings_key = 16;
+}
+
+enum BuildPhase {
+  BUILD_PHASE_UNSPECIFIED = 0;
+  // Received, waiting for another build on this server to finish.
+  BUILD_PHASE_QUEUED = 1;
+  BUILD_PHASE_CLONING = 2;
+  BUILD_PHASE_BUILDING = 3;
+  BUILD_PHASE_SUCCEEDED = 4;
+  BUILD_PHASE_FAILED = 5;
+  BUILD_PHASE_CANCELLED = 6;
+}
+
+// BuildStatus reports a build's progress. Build output arrives in batches
+// in log, numbered by log_seq (1, 2, ...) so a viewer that loaded earlier
+// output from the control plane's copy can skip batches it already has.
+message BuildStatus {
+  string build_id = 1;
+  BuildPhase phase = 2;
+  string message = 3;
+  string log = 4;
+  int64 log_seq = 5;
+  // Set on SUCCEEDED.
+  string image_id = 6;
+  // SUCCEEDED without building, because image_tag already existed.
+  bool reused = 7;
 }

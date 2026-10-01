@@ -116,6 +116,8 @@ func main() {
 	volumeListWaiter := deploy.NewVolumeListWaiter()
 	volumeDetailWaiter := deploy.NewVolumeDetailWaiter()
 	volumeOpWaiter := deploy.NewVolumeOpWaiter()
+	volumeFileWaiter := deploy.NewVolumeFileWaiter()
+	buildBus := deploy.NewBuildBus()
 
 	vaultKey, keyCreated, err := vaultpkg.LoadKey(os.Getenv("VAULT_KEY"), *vaultKeyFile)
 	if err != nil {
@@ -152,11 +154,11 @@ func main() {
 		grpcOptions = append(grpcOptions, grpc.Creds(credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})))
 	}
 	grpcServer := grpc.NewServer(grpcOptions...)
-	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter))
+	agentv1.RegisterAgentSessionServer(grpcServer, grpcserver.New(log, st, dispatcher, events, serverEvents, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter, volumeFileWaiter, buildBus))
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter, credentialVault, databaseOps),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter, volumeFileWaiter, credentialVault, databaseOps, buildBus),
 	}
 
 	scheduler := schedule.New(log, st, dispatcher, opWaiter)
@@ -179,7 +181,7 @@ func main() {
 	go scheduler.Run(ctx)
 	go databaseScheduler.Run(ctx)
 	go insights.NewEvaluator(log, st).Run(ctx)
-	go api.RunGovernanceWorker(ctx, log, st, dispatcher, events, opWaiter, *publicURL)
+	go api.RunGovernanceWorker(ctx, log, st, dispatcher, events, opWaiter, buildBus, *publicURL)
 
 	select {
 	case <-ctx.Done():

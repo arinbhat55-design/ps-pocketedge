@@ -188,12 +188,61 @@ func PullImage(ctx context.Context, cli *client.Client, ref string, auth *Regist
 		if msg.Error != nil {
 			return msg.Error
 		}
+		if msg.ErrorMessage != "" {
+			return errors.New(msg.ErrorMessage)
+		}
 	}
 
 	if _, err := cli.ImageInspect(ctx, ref); err != nil {
 		return errors.New("pull reported success but image is not present locally: " + err.Error())
 	}
 	return nil
+}
+
+// PushImage tags a locally built image for the selected registry and pushes
+// it. Docker reports registry errors in the streamed JSON response, so
+// draining and checking that stream is part of declaring success.
+func PushImage(ctx context.Context, cli *client.Client, sourceTag, targetRef string, auth *RegistryAuth) error {
+	if sourceTag == "" || targetRef == "" {
+		return errors.New("source tag and target reference are required")
+	}
+	if _, err := cli.ImageInspect(ctx, sourceTag); err != nil {
+		return err
+	}
+	if sourceTag != targetRef {
+		if err := cli.ImageTag(ctx, sourceTag, targetRef); err != nil {
+			return err
+		}
+	}
+	opts := image.PushOptions{}
+	if auth != nil && (auth.Username != "" || auth.Password != "") {
+		encoded, err := encodeRegistryAuth(*auth)
+		if err != nil {
+			return err
+		}
+		opts.RegistryAuth = encoded
+	}
+	reader, err := cli.ImagePush(ctx, targetRef, opts)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	decoder := json.NewDecoder(reader)
+	for {
+		var msg jsonmessage.JSONMessage
+		if err := decoder.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if msg.Error != nil {
+			return msg.Error
+		}
+		if msg.ErrorMessage != "" {
+			return errors.New(msg.ErrorMessage)
+		}
+	}
 }
 
 func encodeRegistryAuth(auth RegistryAuth) (string, error) {
@@ -223,6 +272,10 @@ func RemoveImage(ctx context.Context, cli *client.Client, idOrRef string, force 
 // returning the total bytes reclaimed.
 func PruneImages(ctx context.Context, cli *client.Client, all bool) (int64, error) {
 	args := filters.NewArgs()
+	// Docker's label!= filter excludes platform-built images even when they
+	// aren't attached to a container. Earlier revisions can need them for
+	// rollback, so the generic prune action must leave them alone.
+	args.Add("label!", "pspocketedge.build")
 	if !all {
 		args.Add("dangling", "true")
 	}

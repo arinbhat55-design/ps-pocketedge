@@ -83,6 +83,10 @@ func handleCreateComposeFile(log *slog.Logger, st *store.Store) http.HandlerFunc
 			writeJSON(w, http.StatusBadRequest, map[string]any{"errors": result.Errors})
 			return
 		}
+		if compose.HasBuild(req.Content) {
+			http.Error(w, "build: requires a Compose file imported from a Git repository", http.StatusBadRequest)
+			return
+		}
 
 		var createdBy string
 		if claims, ok := auth.ClaimsFromContext(r.Context()); ok {
@@ -150,6 +154,16 @@ func handleUpdateComposeFile(log *slog.Logger, st *store.Store) http.HandlerFunc
 		if !result.Valid {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"errors": result.Errors})
 			return
+		}
+		if compose.HasBuild(content) {
+			if existing.GitRepositoryID == nil {
+				http.Error(w, "build: requires a Compose file linked to a Git repository", http.StatusBadRequest)
+				return
+			}
+			if !actorFromRequest(r).IsAdmin {
+				http.Error(w, "only admins can edit services with build:", http.StatusForbidden)
+				return
+			}
 		}
 
 		if err := st.UpdateComposeFile(r.Context(), id, name, content); err != nil {
@@ -254,6 +268,21 @@ func handleRestoreComposeFileVersion(log *slog.Logger, st *store.Store) http.Han
 			log.Error("failed to load compose file version", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
+		}
+		if compose.HasBuild(version.Content) {
+			if !actorFromRequest(r).IsAdmin {
+				http.Error(w, "only admins can restore services with build:", http.StatusForbidden)
+				return
+			}
+			file, err := st.GetComposeFile(r.Context(), id)
+			if err != nil {
+				writeActionError(w, log, err)
+				return
+			}
+			if file.GitRepositoryID == nil {
+				http.Error(w, "build: requires a Compose file linked to a Git repository", http.StatusBadRequest)
+				return
+			}
 		}
 
 		if err := st.UpdateComposeFile(r.Context(), id, version.Name, version.Content); err != nil {

@@ -24,8 +24,17 @@ type DeploymentRevision struct {
 	ComposeVersion *int              `json:"composeVersion,omitempty"`
 	GitRef         string            `json:"gitRef,omitempty"`
 	GitCommit      string            `json:"gitCommit,omitempty"`
-	Strategy       string            `json:"strategy"`
-	// Status: dispatched, running, failed, healthy, unhealthy, rolled_back.
+	// SourceContent is the Compose content as written, with build:
+	// sections, when ComposeContent had them replaced by the image tags
+	// they were built as; empty when nothing was built.
+	SourceContent string `json:"sourceContent,omitempty"`
+	// ChangeSummary describes what this revision changed compared with
+	// the one before it (code, configuration, images).
+	ChangeSummary string `json:"changeSummary,omitempty"`
+	Strategy      string `json:"strategy"`
+	// Status: dispatched, running, failed, healthy, unhealthy, rolled_back,
+	// or superseded (a newer rollout replaced it while its images were
+	// still building, so it never reached the server).
 	Status                string    `json:"status"`
 	StatusMessage         string    `json:"statusMessage,omitempty"`
 	AutoRollbackAttempted bool      `json:"autoRollbackAttempted"`
@@ -45,6 +54,8 @@ type NewRevision struct {
 	ComposeVersion *int
 	GitRef         string
 	GitCommit      string
+	SourceContent  string
+	ChangeSummary  string
 	Strategy       string
 	CreatedBy      string
 }
@@ -94,9 +105,9 @@ func (s *Store) RecordRevision(ctx context.Context, n NewRevision) (int, error) 
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO deployment_revisions (deployment_id, revision, action, compose_content, env, scales, compose_version, git_ref, git_commit, strategy, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, n.DeploymentID, next, n.Action, n.ComposeContent, env, scales, n.ComposeVersion, n.GitRef, n.GitCommit, n.Strategy, createdBy); err != nil {
+		INSERT INTO deployment_revisions (deployment_id, revision, action, compose_content, env, scales, compose_version, git_ref, git_commit, source_content, change_summary, strategy, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, n.DeploymentID, next, n.Action, n.ComposeContent, env, scales, n.ComposeVersion, n.GitRef, n.GitCommit, n.SourceContent, n.ChangeSummary, n.Strategy, createdBy); err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -106,6 +117,16 @@ func (s *Store) RecordRevision(ctx context.Context, n NewRevision) (int, error) 
 		return 0, err
 	}
 	return next, tx.Commit(ctx)
+}
+
+// SourceOf is the Compose content a revision was deployed from, as
+// written: SourceContent when images were built for it, else
+// ComposeContent itself.
+func (r *DeploymentRevision) SourceOf() string {
+	if r.SourceContent != "" {
+		return r.SourceContent
+	}
+	return r.ComposeContent
 }
 
 // RevertToPreviousRevision points a deployment back at the most recent
@@ -167,13 +188,13 @@ func (s *Store) UpdateCurrentRevisionStatus(ctx context.Context, deploymentID, s
 }
 
 const revisionColumns = `r.id, r.deployment_id, r.revision, r.action, r.compose_content, r.env, r.scales, r.compose_version, r.git_ref, r.git_commit,
-	r.strategy, r.status, r.status_message, r.auto_rollback_attempted, r.created_by, u.email, r.created_at, r.updated_at`
+	r.source_content, r.change_summary, r.strategy, r.status, r.status_message, r.auto_rollback_attempted, r.created_by, u.email, r.created_at, r.updated_at`
 
 func scanRevision(row pgx.Row) (*DeploymentRevision, error) {
 	var r DeploymentRevision
 	var env, scales []byte
 	if err := row.Scan(&r.ID, &r.DeploymentID, &r.Revision, &r.Action, &r.ComposeContent, &env, &scales, &r.ComposeVersion, &r.GitRef, &r.GitCommit,
-		&r.Strategy, &r.Status, &r.StatusMessage, &r.AutoRollbackAttempted, &r.CreatedBy, &r.CreatedByEmail, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		&r.SourceContent, &r.ChangeSummary, &r.Strategy, &r.Status, &r.StatusMessage, &r.AutoRollbackAttempted, &r.CreatedBy, &r.CreatedByEmail, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(env, &r.Env); err != nil {
@@ -201,7 +222,7 @@ func (s *Store) ListDeploymentRevisions(ctx context.Context, deploymentID string
 		if err != nil {
 			return nil, err
 		}
-		r.ComposeContent = ""
+		r.ComposeContent, r.SourceContent = "", ""
 		r.Env = nil
 		out = append(out, *r)
 	}

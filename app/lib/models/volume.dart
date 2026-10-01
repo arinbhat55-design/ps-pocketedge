@@ -51,6 +51,28 @@ class VolumeSummary {
   }
 }
 
+class VolumeFileEntry {
+  final String name;
+  final bool isDirectory;
+  final bool isSymlink;
+  final int sizeBytes;
+
+  const VolumeFileEntry({
+    required this.name,
+    required this.isDirectory,
+    required this.isSymlink,
+    required this.sizeBytes,
+  });
+
+  factory VolumeFileEntry.fromJson(Map<String, dynamic> json) =>
+      VolumeFileEntry(
+        name: json['name'] as String,
+        isDirectory: json['isDirectory'] as bool? ?? false,
+        isSymlink: json['isSymlink'] as bool? ?? false,
+        sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+      );
+}
+
 /// Result of a volume create/remove command that completed its round trip
 /// to the agent. A remove blocked by the in-use guard (see
 /// internal/agent/docker/volumes.go's RemoveVolume) comes back as

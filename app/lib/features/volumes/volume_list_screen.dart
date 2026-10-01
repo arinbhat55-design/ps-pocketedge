@@ -16,8 +16,13 @@ import '../../theme/app_theme.dart';
 /// browsing.
 class VolumeListScreen extends StatefulWidget {
   final ApiClient apiClient;
+  final bool isAdmin;
 
-  const VolumeListScreen({super.key, required this.apiClient});
+  const VolumeListScreen({
+    super.key,
+    required this.apiClient,
+    this.isAdmin = false,
+  });
 
   @override
   State<VolumeListScreen> createState() => _VolumeListScreenState();
@@ -78,8 +83,11 @@ class _VolumeListScreenState extends State<VolumeListScreen> {
   Future<void> _openDetail(VolumeSummary volume) async {
     final changed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) =>
-            VolumeDetailScreen(apiClient: widget.apiClient, volume: volume),
+        builder: (_) => VolumeDetailScreen(
+          apiClient: widget.apiClient,
+          volume: volume,
+          isAdmin: widget.isAdmin,
+        ),
       ),
     );
     if (changed == true) _refresh();

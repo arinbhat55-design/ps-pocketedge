@@ -26,6 +26,8 @@ var deploySupportedServiceKeys = map[string]bool{
 	"depends_on":  true,
 	"networks":    true,
 	"scale":       true,
+	// Built from the linked Git repository when deployed (see BuildSpecs).
+	"build": true,
 }
 
 // deploySupportedTopLevelKeys likewise for top-level keys.
@@ -65,7 +67,9 @@ type publishedPort struct {
 //   - a service with more than one replica that publishes a fixed host port;
 //   - bind mounts (only named volumes are supported), named volumes or
 //     networks referenced but not declared at the top level;
-//   - a service with no image (build isn't supported);
+//   - a service with neither image nor build, or build settings that
+//     aren't applied (only context, dockerfile, target, args, labels and
+//     no_cache are);
 //   - keys the deploy engine ignores (container_name, network_mode,
 //     secrets, ...).
 func Validate(doc *yaml.Node) (errs []string, warnings []string) {
@@ -123,6 +127,18 @@ func Validate(doc *yaml.Node) (errs []string, warnings []string) {
 				hasImage = strings.TrimSpace(value.Value) != ""
 			case "build":
 				hasBuild = true
+				if value.Kind == yaml.MappingNode {
+					var unsupported []string
+					for _, k := range mappingKeys(value) {
+						if !supportedBuildKeys[k] {
+							unsupported = append(unsupported, k)
+						}
+					}
+					if len(unsupported) > 0 {
+						sort.Strings(unsupported)
+						warnings = append(warnings, fmt.Sprintf("service %q: build %s not supported and will be ignored", name, quoteList(unsupported)))
+					}
+				}
 			case "depends_on":
 				svc.dependsOn = sequenceOrMappingKeys(value)
 			case "networks":
@@ -143,12 +159,8 @@ func Validate(doc *yaml.Node) (errs []string, warnings []string) {
 				}
 			}
 		}
-		if !hasImage {
-			if hasBuild {
-				warnings = append(warnings, fmt.Sprintf("service %q uses build, which isn't supported — it needs a prebuilt image", name))
-			} else {
-				warnings = append(warnings, fmt.Sprintf("service %q has no image", name))
-			}
+		if !hasImage && !hasBuild {
+			warnings = append(warnings, fmt.Sprintf("service %q has no image", name))
 		}
 		if len(ignored) > 0 {
 			sort.Strings(ignored)

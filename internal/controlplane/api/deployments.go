@@ -48,8 +48,11 @@ func triggeredByFromContext(ctx context.Context) string {
 // MemoryLimitBytes are 0 when the service declares no deploy.resources
 // limit, i.e. an unbounded request the resource check below can't weigh.
 type deploymentPreviewService struct {
-	Name             string   `json:"name"`
-	Image            string   `json:"image"`
+	Name  string `json:"name"`
+	Image string `json:"image"`
+	// Build is set for a service built from the linked Git repository at
+	// deploy time; Image is empty then.
+	Build            bool     `json:"build,omitempty"`
 	Ports            []string `json:"ports,omitempty"`
 	Volumes          []string `json:"volumes,omitempty"`
 	EnvironmentCount int      `json:"environmentCount"`
@@ -219,7 +222,11 @@ func handlePreviewDeployment(log *slog.Logger, st *store.Store) http.HandlerFunc
 			preview := deploymentPreviewService{
 				Name:             svcName,
 				Image:            svc.Image,
+				Build:            svc.Build != nil,
 				EnvironmentCount: len(svc.Environment),
+			}
+			if preview.Build {
+				preview.Image = ""
 			}
 			for _, p := range svc.Ports {
 				protocol := p.Protocol
@@ -309,7 +316,9 @@ func checkImages(ctx context.Context, services []deploymentPreviewService, serve
 	}
 	distinct := map[string]bool{}
 	for _, s := range services {
-		distinct[s.Image] = true
+		if !s.Build {
+			distinct[s.Image] = true
+		}
 	}
 
 	results := make(map[string]lookup, len(distinct))
@@ -329,6 +338,10 @@ func checkImages(ctx context.Context, services []deploymentPreviewService, serve
 
 	checks := make([]deploymentImageCheck, 0, len(services))
 	for _, s := range services {
+		if s.Build {
+			// Built on the server itself, for its own architecture.
+			continue
+		}
 		r := results[s.Image]
 		check := deploymentImageCheck{Service: s.Name, Image: s.Image}
 		if r.err != nil {

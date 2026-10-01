@@ -16,6 +16,19 @@ class AddServerDialog extends StatefulWidget {
 class _AddServerDialogState extends State<AddServerDialog> {
   EnrollmentToken? _token;
   String? _error;
+  String _platform = 'Linux';
+
+  static const _scripts =
+      'https://raw.githubusercontent.com/ankitapaul1586-cmd/pspocketedge/master/scripts';
+
+  String _command(EnrollmentToken token) {
+    final script = _platform == 'macOS'
+        ? 'install-agent-macos.sh'
+        : 'install-agent.sh';
+    final sudo = _platform == 'macOS' ? '' : 'sudo ';
+    return 'curl -fsSL $_scripts/$script | ${sudo}sh -s -- '
+        '--server=<control-plane-host>:8443 --token=${token.token}';
+  }
 
   @override
   void initState() {
@@ -41,7 +54,7 @@ class _AddServerDialogState extends State<AddServerDialog> {
     return AlertDialog(
       title: const Text('Add server'),
       content: SizedBox(
-        width: 480,
+        width: 560,
         child: _error != null
             ? Text(_error!, style: const TextStyle(color: AppColors.failed))
             : _token == null
@@ -56,11 +69,34 @@ class _AddServerDialogState extends State<AddServerDialog> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Run this on the target machine (Linux server, mini-PC, or Raspberry Pi). '
-                    'The token is single-use.',
+                    'Choose the machine running Docker. The token is single-use.',
                   ),
                   const SizedBox(height: 12),
-                  _CopyableCommand(command: _token!.installHint),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'Linux', label: Text('Linux')),
+                      ButtonSegment(value: 'macOS', label: Text('macOS')),
+                      ButtonSegment(value: 'Windows', label: Text('Windows')),
+                    ],
+                    selected: {_platform},
+                    onSelectionChanged: (value) =>
+                        setState(() => _platform = value.first),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(switch (_platform) {
+                    'macOS' =>
+                      'Install Docker CLI and Colima, then run colima start. Run the command below in Terminal without sudo. Builds are disabled until you add --allow-builds.',
+                    'Windows' =>
+                      'Run this command inside an Ubuntu WSL2 distribution with Docker Engine and systemd enabled. It does not install Docker Engine.',
+                    _ =>
+                      'Run this on a Linux machine with Docker Engine installed and running. Builds are disabled until you add --allow-builds.',
+                  }),
+                  const SizedBox(height: 12),
+                  _CopyableCommand(command: _command(_token!)),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Replace <control-plane-host> with the gRPC host reachable from this machine.',
+                  ),
                   const SizedBox(height: 8),
                   Text(
                     'Token expires: ${_token!.expiresAt.toLocal()}',

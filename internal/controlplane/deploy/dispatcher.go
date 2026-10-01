@@ -23,7 +23,11 @@ var ErrAgentNotConnected = errors.New("agent not connected")
 type Dispatcher struct {
 	mu       sync.Mutex
 	channels map[string]chan *agentv1.ControlMessage
-	resolve  EnvResolver
+	// generations counts registrations per server, so a caller can tell a
+	// reconnect (which ends whatever the agent was doing for the old
+	// stream) from a connection that never dropped.
+	generations map[string]uint64
+	resolve     EnvResolver
 }
 
 // EnvResolver replaces vault references in a deployment env with the
@@ -32,7 +36,7 @@ type Dispatcher struct {
 type EnvResolver func(env map[string]string) (map[string]string, error)
 
 // SetEnvResolver installs the resolver Send applies to every command that
-// carries a deployment env. Resolution happens here, at the last hop
+// carries a deployment env (or, for an image build, build args). Resolution happens here, at the last hop
 // before the agent, so the rest of the control plane — stored env,
 // revisions, API responses, logs — only ever handles references.
 func (d *Dispatcher) SetEnvResolver(r EnvResolver) {
@@ -42,7 +46,7 @@ func (d *Dispatcher) SetEnvResolver(r EnvResolver) {
 }
 
 func NewDispatcher() *Dispatcher {
-	return &Dispatcher{channels: make(map[string]chan *agentv1.ControlMessage)}
+	return &Dispatcher{channels: make(map[string]chan *agentv1.ControlMessage), generations: make(map[string]uint64)}
 }
 
 // Register creates the outbound channel for serverID's Session stream.
@@ -56,6 +60,7 @@ func (d *Dispatcher) Register(serverID string) (ch chan *agentv1.ControlMessage,
 
 	ch = make(chan *agentv1.ControlMessage, 8)
 	d.channels[serverID] = ch
+	d.generations[serverID]++
 
 	return ch, func() {
 		d.mu.Lock()
@@ -74,6 +79,15 @@ func (d *Dispatcher) IsConnected(serverID string) bool {
 	defer d.mu.Unlock()
 	_, ok := d.channels[serverID]
 	return ok
+}
+
+// Connection reports whether serverID is connected and which connection it
+// is: the generation changes every time the agent reconnects.
+func (d *Dispatcher) Connection(serverID string) (generation uint64, connected bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, connected = d.channels[serverID]
+	return d.generations[serverID], connected
 }
 
 // Send delivers msg to serverID's active Session stream. Returns
@@ -113,6 +127,8 @@ func resolveEnv(msg *agentv1.ControlMessage, resolve EnvResolver) (*agentv1.Cont
 		env = p.DeployService.GetEnv()
 	case *agentv1.ControlMessage_Restore:
 		env = p.Restore.GetEnv()
+	case *agentv1.ControlMessage_BuildImage:
+		env = p.BuildImage.GetBuildArgs()
 	default:
 		return msg, nil
 	}
@@ -131,6 +147,8 @@ func resolveEnv(msg *agentv1.ControlMessage, resolve EnvResolver) (*agentv1.Cont
 		p.DeployService.Env = resolved
 	case *agentv1.ControlMessage_Restore:
 		p.Restore.Env = resolved
+	case *agentv1.ControlMessage_BuildImage:
+		p.BuildImage.BuildArgs = resolved
 	}
 	return out, nil
 }

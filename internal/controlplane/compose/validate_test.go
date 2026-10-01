@@ -79,7 +79,9 @@ func TestValidateWarnsAboutConflictsAndUnsupportedSettings(t *testing.T) {
     volumes: ["./data:/data", "undeclared:/cache"]
     networks: [backend]
   b:
-    build: .
+    build:
+      context: .
+      ssh: [default]
     ports:
       - target: 81
         published: "8080"
@@ -97,7 +99,7 @@ secrets:
 		`bind mounts aren't supported`,
 		`volume "undeclared"`,
 		`network "backend"`,
-		`uses build`,
+		`service "b": build "ssh" not supported`,
 		`runs 3 replicas but publishes fixed host port 8080`,
 		`top-level "secrets"`,
 	} {

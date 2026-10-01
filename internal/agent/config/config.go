@@ -15,6 +15,11 @@ type Config struct {
 	StatePath string `yaml:"state_path"`
 	TLS       bool   `yaml:"tls"`
 	TLSCAFile string `yaml:"tls_ca_file"`
+	// AllowBuilds lets the control plane build images from Git on this
+	// server (see stream.Runner.AllowBuilds).
+	AllowBuilds bool `yaml:"allow_builds"`
+	// BuildDir is where builds clone repositories.
+	BuildDir string `yaml:"build_dir"`
 }
 
 func Load(path string) (*Config, error) {

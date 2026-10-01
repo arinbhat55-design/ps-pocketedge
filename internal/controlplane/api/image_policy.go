@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
@@ -108,7 +109,7 @@ var errImageNotApproved = errors.New("image not approved")
 // disabled. Called from handleCreateContainer/handleRecreateContainer
 // (containers.go) and handleCreateDeployment (deployments.go) before
 // dispatching to an agent.
-func enforceImagePolicy(ctx context.Context, st *store.Store, images []string) error {
+func enforceImagePolicy(ctx context.Context, st *store.Store, images []string, trustedBuildTags ...string) error {
 	enabled, err := st.GetImagePolicyEnabled(ctx)
 	if err != nil {
 		return err
@@ -117,6 +118,11 @@ func enforceImagePolicy(ctx context.Context, st *store.Store, images []string) e
 		return nil
 	}
 	for _, ref := range images {
+		// Only tags planned from a linked repository in this rollout are
+		// trusted. A matching name alone could point to a public image.
+		if slices.Contains(trustedBuildTags, ref) {
+			continue
+		}
 		approved, err := st.IsImageApproved(ctx, ref)
 		if err != nil {
 			return err

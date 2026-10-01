@@ -4,6 +4,7 @@ import '../../api/api_client.dart';
 import '../../models/image.dart' show formatBytes;
 import '../../models/volume.dart';
 import 'volume_delete_dialog.dart';
+import 'volume_files_screen.dart';
 import '../../theme/app_theme.dart';
 
 /// Full metadata for one volume — driver, mountpoint, labels, size, and
@@ -12,11 +13,13 @@ import '../../theme/app_theme.dart';
 class VolumeDetailScreen extends StatefulWidget {
   final ApiClient apiClient;
   final VolumeSummary volume;
+  final bool isAdmin;
 
   const VolumeDetailScreen({
     super.key,
     required this.apiClient,
     required this.volume,
+    this.isAdmin = false,
   });
 
   @override
@@ -42,6 +45,42 @@ class _VolumeDetailScreenState extends State<VolumeDetailScreen> {
       volume: volume,
     );
     if (deleted == true && mounted) Navigator.of(context).pop(true);
+  }
+
+  Future<void> _clone(VolumeSummary volume) async {
+    var newName = '${volume.name}-copy';
+    final target = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clone volume'),
+        content: TextFormField(
+          initialValue: newName,
+          onChanged: (value) => newName = value,
+          decoration: const InputDecoration(labelText: 'New volume name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, newName.trim()),
+            child: const Text('Clone'),
+          ),
+        ],
+      ),
+    );
+    if (target == null || target.isEmpty || !mounted) return;
+    try {
+      await widget.apiClient.cloneVolume(volume.serverId, volume.name, target);
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Clone failed: $error')));
+      }
+    }
   }
 
   @override
@@ -135,6 +174,28 @@ class _VolumeDetailScreenState extends State<VolumeDetailScreen> {
                 ),
               ),
               const SizedBox(height: 24),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => VolumeFilesScreen(
+                      apiClient: widget.apiClient,
+                      volume: volume,
+                      isAdmin: widget.isAdmin,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.folder_open_outlined),
+                label: const Text('Browse files'),
+              ),
+              if (widget.isAdmin && volume.orphaned) ...[
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () => _clone(volume),
+                  icon: const Icon(Icons.copy_all_outlined),
+                  label: const Text('Clone volume'),
+                ),
+              ],
+              const SizedBox(height: 8),
               OutlinedButton.icon(
                 onPressed: () => _delete(volume),
                 icon: const Icon(Icons.delete_outline, color: AppColors.failed),
