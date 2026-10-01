@@ -7,9 +7,13 @@
 # Local backup blob storage (see internal/controlplane/backup)
 /data/
 
-# Env / secrets
+# Env / secrets (.env.example is the committed template)
 .env
-*.env.local
+.env.*
+*.env
+!.env.example
+*.pem
+*.key
 
 # OS
 .DS_Store
