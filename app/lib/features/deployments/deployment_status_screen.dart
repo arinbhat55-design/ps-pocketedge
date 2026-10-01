@@ -17,6 +17,7 @@ import '../../models/git_repository.dart';
 import '../../models/server.dart';
 import '../backups/backups_screen.dart';
 import 'deployment_widgets.dart';
+import 'git_commit_widgets.dart';
 import 'build_logs_screen.dart';
 import '../../theme/app_theme.dart';
 
@@ -650,11 +651,12 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
               tooltip: 'Refresh',
               onPressed: _loadDetail,
             ),
-            IconButton(
-              icon: const Icon(Icons.edit_note_outlined),
-              tooltip: 'Environment, change request, rollout settings',
-              onPressed: detail == null ? null : _editMetadata,
-            ),
+            if (widget.isAdmin)
+              IconButton(
+                icon: const Icon(Icons.edit_note_outlined),
+                tooltip: 'Environment, change request, rollout settings',
+                onPressed: detail == null ? null : _editMetadata,
+              ),
             IconButton(
               icon: const Icon(Icons.backup),
               tooltip: 'Backups',
@@ -679,17 +681,18 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
           children: [
             if (detail != null) ...[
               _Header(detail: detail, inProgress: inProgress),
-              _ActionRow(
-                // Nothing to redeploy, roll back, or promote until the
-                // first rollout has run (e.g. while awaiting approval).
-                enabled:
-                    actionsEnabled && detail.deployment.currentRevision > 0,
-                rolling: detail.deployment.updateStrategy == 'rolling',
-                onRedeploy: _redeploy,
-                onRollback: _rollbackMenu,
-                onPromote: _promote,
-                onStackAction: _runStackAction,
-              ),
+              if (widget.isAdmin)
+                _ActionRow(
+                  // Nothing to redeploy, roll back, or promote until the
+                  // first rollout has run (e.g. while awaiting approval).
+                  enabled:
+                      actionsEnabled && detail.deployment.currentRevision > 0,
+                  rolling: detail.deployment.updateStrategy == 'rolling',
+                  onRedeploy: _redeploy,
+                  onRollback: _rollbackMenu,
+                  onPromote: _promote,
+                  onStackAction: _runStackAction,
+                ),
             ] else if (_detailError != null)
               Padding(
                 padding: const EdgeInsets.all(16),
@@ -707,7 +710,9 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
                   isAdmin: widget.isAdmin,
                   onApprove: _busy ? null : () => _approve(r),
                   onReject: _busy ? null : () => _reject(r),
-                  onCancel: _busy ? null : () => _cancelRequest(r),
+                  onCancel: !widget.isAdmin || _busy
+                      ? null
+                      : () => _cancelRequest(r),
                 ),
             if (_streamError != null)
               Padding(
@@ -726,7 +731,7 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
                     serviceNames: _serviceNames,
                     progress: latestServiceProgress(_events),
                     scales: detail?.deployment.scales ?? const {},
-                    enabled: actionsEnabled,
+                    enabled: widget.isAdmin && actionsEnabled,
                     onScale: _scaleService,
                     onRedeploy: _redeployService,
                   ),
@@ -741,7 +746,8 @@ class _DeploymentStatusScreenState extends State<DeploymentStatusScreen> {
                     apiClient: _api,
                     deploymentId: widget.deploymentId,
                     currentRevision: detail?.deployment.currentRevision ?? 0,
-                    enabled: actionsEnabled,
+                    isAdmin: widget.isAdmin,
+                    enabled: widget.isAdmin && actionsEnabled,
                     onRollback: _rollbackToRevision,
                   ),
                   _DriftTab(apiClient: _api, deploymentId: widget.deploymentId),
@@ -1048,7 +1054,8 @@ class _RequestBanner extends StatelessWidget {
         ],
       ),
       actions: [
-        TextButton(onPressed: onCancel, child: const Text('Cancel request')),
+        if (isAdmin)
+          TextButton(onPressed: onCancel, child: const Text('Cancel request')),
         if (pending && isAdmin) ...[
           TextButton(onPressed: onReject, child: const Text('Reject')),
           FilledButton(onPressed: onApprove, child: const Text('Approve')),
@@ -1182,6 +1189,7 @@ class _RevisionsTab extends StatefulWidget {
   final ApiClient apiClient;
   final String deploymentId;
   final int currentRevision;
+  final bool isAdmin;
   final bool enabled;
   final ValueChanged<int> onRollback;
 
@@ -1190,6 +1198,7 @@ class _RevisionsTab extends StatefulWidget {
     required this.apiClient,
     required this.deploymentId,
     required this.currentRevision,
+    required this.isAdmin,
     required this.enabled,
     required this.onRollback,
   });
@@ -1275,22 +1284,24 @@ class _RevisionsTabState extends State<_RevisionsTab> {
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    TextButton.icon(
-                      icon: const Icon(Icons.description_outlined, size: 18),
-                      label: const Text('View'),
-                      onPressed: () => _view(r),
-                    ),
-                    const SizedBox(width: 4),
-                    TextButton.icon(
-                      icon: const Icon(Icons.restore, size: 18),
-                      label: const Text('Roll back'),
-                      onPressed:
-                          widget.enabled &&
-                              r.revision != widget.currentRevision &&
-                              r.isRollbackCandidate
-                          ? () => widget.onRollback(r.revision)
-                          : null,
-                    ),
+                    if (widget.isAdmin)
+                      TextButton.icon(
+                        icon: const Icon(Icons.description_outlined, size: 18),
+                        label: const Text('View'),
+                        onPressed: () => _view(r),
+                      ),
+                    if (widget.isAdmin) const SizedBox(width: 4),
+                    if (widget.isAdmin)
+                      TextButton.icon(
+                        icon: const Icon(Icons.restore, size: 18),
+                        label: const Text('Roll back'),
+                        onPressed:
+                            widget.enabled &&
+                                r.revision != widget.currentRevision &&
+                                r.isRollbackCandidate
+                            ? () => widget.onRollback(r.revision)
+                            : null,
+                      ),
                   ],
                 ),
               ),
@@ -1367,6 +1378,25 @@ class _DriftReportView extends StatelessWidget {
 
   const _DriftReportView({required this.report});
 
+  static String _gitHeadline(GitDrift git) {
+    if (!git.drifted) {
+      return 'Deployed commit ${shortCommit(git.deployedCommit)} is the latest on ${git.ref}.';
+    }
+    if (git.detailError.isEmpty && git.deployedCommitInfo == null) {
+      return 'Deployed ${shortCommit(git.deployedCommit)}, which is no longer '
+          'in ${git.ref}\'s history (the branch may have been force-pushed). '
+          '${git.ref} is now at ${shortCommit(git.latestCommit)}.';
+    }
+    final n = git.commitsBehind.length;
+    if (n == 0) {
+      return 'Deployed ${shortCommit(git.deployedCommit)}, but ${git.ref} is '
+          'now at ${shortCommit(git.latestCommit)}.';
+    }
+    final count = git.moreCommitsBehind ? 'More than $n' : '$n';
+    return '$count new commit${n == 1 && !git.moreCommitsBehind ? '' : 's'} '
+        'on ${git.ref} ${n == 1 && !git.moreCommitsBehind ? 'isn\'t' : 'aren\'t'} deployed yet.';
+  }
+
   Widget _section(
     BuildContext context,
     String title,
@@ -1442,15 +1472,34 @@ class _DriftReportView extends StatelessWidget {
           _section(context, 'Git (${git.ref})', git.drifted, [
             if (git.error.isNotEmpty)
               Text('Couldn\'t check: ${git.error}')
-            else if (git.drifted)
-              Text(
-                'Deployed ${shortCommit(git.deployedCommit)}, but ${git.ref} is '
-                'now at ${shortCommit(git.latestCommit)}.',
-              )
-            else
-              Text(
-                'Deployed commit ${shortCommit(git.deployedCommit)} is the latest on ${git.ref}.',
+            else ...[
+              Text(_gitHeadline(git)),
+              const SizedBox(height: 6),
+              CommitSummaryLine(
+                label: 'Deployed',
+                commit: git.deployedCommit,
+                info: git.deployedCommitInfo,
+                deployedAt: git.deployedAt,
               ),
+              if (git.drifted)
+                CommitSummaryLine(
+                  label: 'Latest',
+                  commit: git.latestCommit,
+                  info: git.latestCommitInfo,
+                ),
+              if (git.commitsBehind.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                CommitsBehindList(
+                  commits: git.commitsBehind,
+                  more: git.moreCommitsBehind,
+                ),
+              ],
+              if (git.detailError.isNotEmpty)
+                Text(
+                  'Commit details unavailable: ${git.detailError}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+            ],
           ]),
         _section(context, 'Running containers', runtime.drifted, [
           if (!runtime.drifted)

@@ -149,7 +149,44 @@ void main() {
     });
     expect(r.config.reason, 'changed');
     expect(r.git!.ref, 'main');
+    expect(r.git!.commitsBehind, isEmpty);
     expect(r.runtime.missing, ['pe-d-web-2']);
+  });
+
+  test('GitDrift parses commit dates and the commits behind', () {
+    final g = GitDrift.fromJson({
+      'drifted': true,
+      'ref': 'main',
+      'deployedCommit': 'aaa',
+      'latestCommit': 'ccc',
+      'deployedAt': '2026-09-29T10:05:00Z',
+      'deployedCommitInfo': {
+        'hash': 'aaa',
+        'message': 'Fix login',
+        'author': 'Ankita',
+        'date': '2026-09-28T14:32:00Z',
+      },
+      'latestCommitInfo': {
+        'hash': 'ccc',
+        'message': 'Add caching',
+        'author': 'Ankita',
+        'date': '2026-10-01T09:15:00Z',
+      },
+      'commitsBehind': [
+        {
+          'hash': 'ccc',
+          'message': 'Add caching',
+          'date': '2026-10-01T09:15:00Z',
+        },
+        {'hash': 'bbb', 'message': 'Bump', 'date': '2026-09-30T18:40:00Z'},
+      ],
+      'moreCommitsBehind': true,
+    });
+    expect(g.deployedAt, DateTime.utc(2026, 9, 29, 10, 5));
+    expect(g.deployedCommitInfo!.message, 'Fix login');
+    expect(g.latestCommitInfo!.date, DateTime.utc(2026, 10, 1, 9, 15));
+    expect(g.commitsBehind.map((c) => c.hash), ['ccc', 'bbb']);
+    expect(g.moreCommitsBehind, isTrue);
   });
 
   test('DeploymentRequest summaries', () {

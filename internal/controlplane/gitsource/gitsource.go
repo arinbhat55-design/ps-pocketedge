@@ -337,11 +337,116 @@ func ListCommits(ctx context.Context, repo Repo, ref, path string, limit int) ([
 				continue
 			}
 		}
-		msg := strings.TrimSpace(c.Message)
-		if i := strings.IndexByte(msg, '\n'); i >= 0 {
-			msg = msg[:i]
+		out = append(out, toCommit(c))
+	}
+	return out, nil
+}
+
+// toCommit summarizes c: its hash, the first line of its message, and its
+// author and authored date.
+func toCommit(c *object.Commit) Commit {
+	msg := strings.TrimSpace(c.Message)
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		msg = msg[:i]
+	}
+	return Commit{Hash: c.Hash.String(), Message: msg, Author: c.Author.Name, Date: c.Author.When}
+}
+
+// Comparison is how a deployed commit relates to the tip of a branch/tag.
+type Comparison struct {
+	Latest Commit
+	// Deployed is nil when the deployed commit isn't in the ref's history
+	// (the branch was force-pushed or rebased since), or is too far back
+	// to look for.
+	Deployed *Commit
+	// Behind is the commits on the ref after Deployed, newest first, up to
+	// the limit; More is set when there are more than that. Both are empty
+	// when Deployed is nil, since the count is unknown then.
+	Behind []Commit
+	More   bool
+}
+
+// maxCompareWalk bounds how far back CompareCommits looks for the
+// deployed commits.
+const maxCompareWalk = 2000
+
+// CompareCommits describes the commits between deployed and ref's tip,
+// latest being what ResolveRef returned for ref.
+func CompareCommits(ctx context.Context, repo Repo, ref, latest, deployed string, limit int) (*Comparison, error) {
+	out, err := CompareCommitsMany(ctx, repo, ref, latest, []string{deployed}, limit)
+	if err != nil {
+		return nil, err
+	}
+	return out[deployed], nil
+}
+
+// CompareCommitsMany is CompareCommits for several deployed commits on the
+// same ref (e.g. one per deployment tracking it), with a single clone.
+// When every deployed commit is latest (or empty) only the tip is
+// fetched; otherwise ref's history is cloned.
+func CompareCommitsMany(ctx context.Context, repo Repo, ref, latest string, deployed []string, limit int) (map[string]*Comparison, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	wanted := map[string]bool{}
+	for _, c := range deployed {
+		if c != "" && c != latest {
+			wanted[c] = true
 		}
-		out = append(out, Commit{Hash: c.Hash.String(), Message: msg, Author: c.Author.Name, Date: c.Author.When})
+	}
+	depth := 0
+	if len(wanted) == 0 {
+		depth = 1
+	}
+	r, err := clone(ctx, repo, ref, depth)
+	if err != nil {
+		return nil, err
+	}
+	head, err := r.Head()
+	if err != nil {
+		return nil, err
+	}
+	iter, err := r.Log(&git.LogOptions{From: head.Hash()})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	// history is ref's commits newest first, as far back as needed to
+	// find every deployed commit; found maps each one to its position.
+	var history []Commit
+	found := map[string]int{}
+	remaining := len(wanted) + 1 // the deployed commits, plus the tip
+	for n := 0; n < maxCompareWalk && remaining > 0; n++ {
+		c, err := iter.Next()
+		// A shallow clone ends at the tip — reached only when ref moved
+		// after latest was resolved.
+		if errors.Is(err, io.EOF) || (err != nil && depth == 1 && n > 0) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		commit := toCommit(c)
+		history = append(history, commit)
+		if _, seen := found[commit.Hash]; !seen {
+			found[commit.Hash] = n
+			if n == 0 || wanted[commit.Hash] {
+				remaining--
+			}
+		}
+	}
+	if len(history) == 0 {
+		return nil, fmt.Errorf("%s has no commits", ref)
+	}
+	out := map[string]*Comparison{}
+	for _, d := range deployed {
+		cmp := &Comparison{Latest: history[0]}
+		if i, ok := found[d]; ok && d != "" {
+			cmp.Deployed = &history[i]
+			cmp.Behind = history[:min(i, limit)]
+			cmp.More = i > limit
+		}
+		out[d] = cmp
 	}
 	return out, nil
 }

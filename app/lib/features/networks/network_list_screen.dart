@@ -13,8 +13,13 @@ import '../../theme/app_theme.dart';
 /// create/remove and connecting/disconnecting containers.
 class NetworkListScreen extends StatefulWidget {
   final ApiClient apiClient;
+  final bool isAdmin;
 
-  const NetworkListScreen({super.key, required this.apiClient});
+  const NetworkListScreen({
+    super.key,
+    required this.apiClient,
+    this.isAdmin = true,
+  });
 
   @override
   State<NetworkListScreen> createState() => _NetworkListScreenState();
@@ -145,9 +150,9 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Networks'),
-        actions: [?create.appBarAction(context)],
+        actions: [if (widget.isAdmin) ?create.appBarAction(context)],
       ),
-      floatingActionButton: create.fab(context),
+      floatingActionButton: widget.isAdmin ? create.fab(context) : null,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -221,12 +226,15 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
                                   'Custom networks let containers reach each other '
                                   'by name. Docker\'s built-in networks appear once '
                                   'a server has reported in.',
-                              actionLabel: 'Create network',
-                              actionIcon: Icons.add,
-                              onAction: _openCreate,
+                              actionLabel: widget.isAdmin
+                                  ? 'Create network'
+                                  : null,
+                              actionIcon: widget.isAdmin ? Icons.add : null,
+                              onAction: widget.isAdmin ? _openCreate : null,
                             )
                           : _NetworkTable(
                               networks: all,
+                              readOnly: !widget.isAdmin,
                               onConnect: _openConnect,
                               onDisconnect: _disconnect,
                               onRemove: _removeNetwork,
@@ -252,12 +260,14 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
 /// unbounded.
 class _NetworkTable extends StatefulWidget {
   final List<NetworkSummary> networks;
+  final bool readOnly;
   final void Function(NetworkSummary) onConnect;
   final void Function(NetworkSummary, String) onDisconnect;
   final void Function(NetworkSummary) onRemove;
 
   const _NetworkTable({
     required this.networks,
+    this.readOnly = false,
     required this.onConnect,
     required this.onDisconnect,
     required this.onRemove,
@@ -360,19 +370,21 @@ class _NetworkTableState extends State<_NetworkTable> {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                IconButton(
-                  icon: const Icon(Icons.link, size: 18),
-                  tooltip: 'Connect container',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => widget.onConnect(network),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.delete_outline, size: 18),
-                  tooltip: 'Remove network',
-                  visualDensity: VisualDensity.compact,
-                  color: AppColors.failed,
-                  onPressed: () => widget.onRemove(network),
-                ),
+                if (!widget.readOnly)
+                  IconButton(
+                    icon: const Icon(Icons.link, size: 18),
+                    tooltip: 'Connect container',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => widget.onConnect(network),
+                  ),
+                if (!widget.readOnly)
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    tooltip: 'Remove network',
+                    visualDensity: VisualDensity.compact,
+                    color: AppColors.failed,
+                    onPressed: () => widget.onRemove(network),
+                  ),
               ],
             ),
           ),
@@ -411,12 +423,15 @@ class _NetworkTableState extends State<_NetworkTable> {
               const DataCell(SizedBox()),
               const DataCell(SizedBox()),
               DataCell(
-                IconButton(
-                  icon: const Icon(Icons.link_off, size: 18),
-                  tooltip: 'Disconnect',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => widget.onDisconnect(network, containerId),
-                ),
+                widget.readOnly
+                    ? const SizedBox.shrink()
+                    : IconButton(
+                        icon: const Icon(Icons.link_off, size: 18),
+                        tooltip: 'Disconnect',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () =>
+                            widget.onDisconnect(network, containerId),
+                      ),
               ),
             ],
           ),

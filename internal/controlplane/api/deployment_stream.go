@@ -34,8 +34,8 @@ var upgrader = websocket.Upgrader{
 // exception, not an oversight.
 func handleDeploymentStream(log *slog.Logger, st *store.Store, authMgr *auth.Manager, events *deploy.EventBus) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, err := authMgr.ParseToken(r.URL.Query().Get("token")); err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if _, err := authMgr.AuthenticateRequest(r, r.URL.Query().Get("token")); err != nil {
+			auth.WriteAuthError(w, err)
 			return
 		}
 

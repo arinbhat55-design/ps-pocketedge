@@ -14,6 +14,7 @@ import '../models/deployment_request.dart';
 import '../models/deployment_revision.dart';
 import '../models/drift_report.dart';
 import '../models/environment_policy.dart';
+import '../models/git_report.dart';
 import '../models/git_repository.dart';
 import '../models/env_var_group.dart';
 import '../models/image.dart';
@@ -113,13 +114,42 @@ class EnrollmentToken {
 /// [authToken] is attached as `Authorization: Bearer <token>` on every
 /// request once set; it's mutable (rather than passed per-call) so the app
 /// can update it in one place after login/logout.
+/// Reports a 401 on a request that carried a token, so the app can renew or
+/// end the session instead of every screen showing an error.
+class _UnauthorizedWatcher extends http.BaseClient {
+  final http.Client _inner;
+  final void Function() _onUnauthorized;
+
+  _UnauthorizedWatcher(this._inner, this._onUnauthorized);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final response = await _inner.send(request);
+    if (response.statusCode == 401 &&
+        request.headers.containsKey('Authorization')) {
+      _onUnauthorized();
+    }
+    return response;
+  }
+
+  @override
+  void close() => _inner.close();
+}
+
 class ApiClient {
   final String baseUrl;
-  final http.Client _http;
+  late final http.Client _http;
   String? authToken;
 
-  ApiClient({required this.baseUrl, http.Client? httpClient, this.authToken})
-    : _http = httpClient ?? http.Client();
+  /// Called when the server rejects [authToken] with 401.
+  void Function()? onUnauthorized;
+
+  ApiClient({required this.baseUrl, http.Client? httpClient, this.authToken}) {
+    _http = _UnauthorizedWatcher(
+      httpClient ?? http.Client(),
+      () => onUnauthorized?.call(),
+    );
+  }
 
   Map<String, String> get _headers => {
     'Content-Type': 'application/json',
@@ -390,6 +420,16 @@ class ApiClient {
     return decoded['token'] as String;
   }
 
+  /// Starts a session only when the control plane accepts local access.
+  Future<String> localSession() async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/auth/local-session'),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return (jsonDecode(response.body) as Map<String, dynamic>)['token']
+        as String;
+  }
+
   Future<AppUser> getMe() async {
     final response = await _http.get(
       Uri.parse('$baseUrl/api/auth/me'),
@@ -399,6 +439,31 @@ class ApiClient {
       throw ApiException(response.statusCode, response.body);
     }
     return AppUser.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<Map<String, dynamic>> getAccessSettings() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/settings/access'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> updateAccessSettings({
+    required bool requireLocalLogin,
+    String? password,
+  }) async {
+    final response = await _http.put(
+      Uri.parse('$baseUrl/api/settings/access'),
+      headers: _headers,
+      body: jsonEncode({
+        'requireLocalLogin': requireLocalLogin,
+        'password': ?password,
+      }),
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
   Future<void> changePassword({
@@ -828,6 +893,20 @@ class ApiClient {
     );
     if (response.statusCode != 200) throwApiError(response);
     return DriftReport.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Which Git-linked deployments have commits on their branch that
+  /// aren't deployed yet. Reaches out to every repository, so it can take
+  /// a few seconds.
+  Future<GitReport> getDeploymentGitReport() async {
+    final response = await _http.get(
+      Uri.parse('$baseUrl/api/deployments/git-report'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) throwApiError(response);
+    return GitReport.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
     );
   }

@@ -188,6 +188,8 @@ void main() {
         routes: (_) => (200, '[]'),
       );
       expect(find.text('No Kubernetes clusters connected.'), findsOneWidget);
+      expect(find.text('Create local cluster'), findsOneWidget);
+      expect(find.text('Connect existing cluster'), findsOneWidget);
     });
 
     testWidgets('load failure renders the server error', (tester) async {
@@ -266,9 +268,9 @@ void main() {
         },
       );
 
-      await tester.tap(find.byTooltip('Add cluster'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Create local cluster'));
+      await tester.tap(
+        find.widgetWithText(FilledButton, 'Create local cluster'),
+      );
       await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextField, 'Cluster name'),

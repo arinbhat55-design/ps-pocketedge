@@ -37,7 +37,8 @@ type kubernetesAPI struct {
 }
 
 func (api *kubernetesAPI) audit(r *http.Request, action, entityType, entityID, summary string) {
-	if err := api.st.RecordAudit(r.Context(), actorFromRequest(r).ID, action, entityType, entityID, summary, nil); err != nil {
+	a := actorFromRequest(r)
+	if err := api.st.RecordAudit(r.Context(), a.ID, a.Local, action, entityType, entityID, summary, nil); err != nil {
 		api.log.Error("failed to record Kubernetes audit event", "action", action, "error", err)
 	}
 }

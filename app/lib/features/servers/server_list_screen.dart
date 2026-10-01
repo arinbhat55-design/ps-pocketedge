@@ -130,9 +130,9 @@ class _ServerListScreenState extends State<ServerListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Servers'),
-        actions: [?addServer.appBarAction(context)],
+        actions: [if (widget.isAdmin) ?addServer.appBarAction(context)],
       ),
-      floatingActionButton: addServer.fab(context),
+      floatingActionButton: widget.isAdmin ? addServer.fab(context) : null,
       body: FutureBuilder<List<Server>>(
         future: _serversFuture,
         builder: (context, snapshot) {

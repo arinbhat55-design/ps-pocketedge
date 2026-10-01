@@ -25,3 +25,12 @@ func validateListeners(grpcAddr, httpAddr, certFile, keyFile string) error {
 	}
 	return nil
 }
+
+func isLoopbackListener(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
+}

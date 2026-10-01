@@ -234,11 +234,11 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
       appBar: AppBar(
         title: Text(widget.serverName),
         actions: [
-          ?deploy.appBarAction(context),
+          if (widget.isAdmin) ?deploy.appBarAction(context),
           if (widget.isAdmin) _buildMenu(context),
         ],
       ),
-      floatingActionButton: deploy.fab(context),
+      floatingActionButton: widget.isAdmin ? deploy.fab(context) : null,
       body: FutureBuilder<ServerDetail>(
         future: _detailFuture,
         builder: (context, snapshot) {
@@ -403,6 +403,7 @@ class _ServerDetailScreenState extends State<ServerDetailScreen> {
                     serverId: widget.serverId,
                     serverName: widget.serverName,
                     container: _containers[i],
+                    isAdmin: widget.isAdmin,
                   ),
                 ),
               ),

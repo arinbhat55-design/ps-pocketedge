@@ -4,6 +4,9 @@
 class AuditEvent {
   final int id;
   final String? actorEmail;
+
+  /// Made through the no-login local session, which borrows an admin account.
+  final bool localSession;
   final String action;
   final String entityType;
   final String entityId;
@@ -14,6 +17,7 @@ class AuditEvent {
   const AuditEvent({
     required this.id,
     this.actorEmail,
+    this.localSession = false,
     required this.action,
     required this.entityType,
     this.entityId = '',
@@ -23,12 +27,17 @@ class AuditEvent {
   });
 
   /// Who did it — "system" for webhooks, the scheduler, and auto-rollback.
-  String get actor => actorEmail ?? 'system';
+  String get actor => actorEmail == null
+      ? 'system'
+      : localSession
+      ? '$actorEmail (local session)'
+      : actorEmail!;
 
   factory AuditEvent.fromJson(Map<String, dynamic> json) {
     return AuditEvent(
       id: (json['id'] as num).toInt(),
       actorEmail: json['actorEmail'] as String?,
+      localSession: json['localSession'] as bool? ?? false,
       action: json['action'] as String,
       entityType: json['entityType'] as String,
       entityId: json['entityId'] as String? ?? '',

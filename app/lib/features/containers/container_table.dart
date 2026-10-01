@@ -41,6 +41,7 @@ enum ContainerRowAction {
 /// it.
 class ContainerTable extends StatefulWidget {
   final List<ContainerGroup> groups;
+  final bool readOnly;
   final Set<String> selectedKeys;
   final String Function(FleetContainer) keyOf;
   final ContainerRowView Function(FleetContainer) viewOf;
@@ -52,6 +53,7 @@ class ContainerTable extends StatefulWidget {
   const ContainerTable({
     super.key,
     required this.groups,
+    this.readOnly = false,
     required this.selectedKeys,
     required this.keyOf,
     required this.viewOf,
@@ -141,6 +143,7 @@ class _ContainerTableState extends State<ContainerTable> {
           children: [
             _HeaderRow(
               cols: cols,
+              readOnly: widget.readOnly,
               selection: _selectionState(all),
               onSelectAll: (v) => widget.onSetSelected(all, v),
             ),
@@ -157,6 +160,7 @@ class _ContainerTableState extends State<ContainerTable> {
                     key: ValueKey('group:${group.name}'),
                     group: group,
                     cols: cols,
+                    readOnly: widget.readOnly,
                     expanded: !_collapsed.contains(group.name),
                     selection: _selectionState(group.containers),
                     viewOf: widget.viewOf,
@@ -171,6 +175,7 @@ class _ContainerTableState extends State<ContainerTable> {
                     key: ValueKey(widget.keyOf(container)),
                     container: container,
                     cols: cols,
+                    readOnly: widget.readOnly,
                     indented: indented,
                     selected: widget.selectedKeys.contains(
                       widget.keyOf(container),
@@ -276,11 +281,13 @@ class _Cells extends StatelessWidget {
 
 class _HeaderRow extends StatelessWidget {
   final _Columns cols;
+  final bool readOnly;
   final bool? selection;
   final ValueChanged<bool> onSelectAll;
 
   const _HeaderRow({
     required this.cols,
+    required this.readOnly,
     required this.selection,
     required this.onSelectAll,
   });
@@ -300,11 +307,13 @@ class _HeaderRow extends StatelessWidget {
       child: _Cells(
         cols: cols,
         height: 44,
-        checkbox: Checkbox(
-          tristate: true,
-          value: selection,
-          onChanged: (_) => onSelectAll(selection != true),
-        ),
+        checkbox: readOnly
+            ? const SizedBox.shrink()
+            : Checkbox(
+                tristate: true,
+                value: selection,
+                onChanged: (_) => onSelectAll(selection != true),
+              ),
         name: h('NAME'),
         status: h('STATUS'),
         image: h('IMAGE'),
@@ -320,6 +329,7 @@ class _HeaderRow extends StatelessWidget {
 class _GroupRow extends StatelessWidget {
   final ContainerGroup group;
   final _Columns cols;
+  final bool readOnly;
   final bool expanded;
   final bool? selection;
   final ContainerRowView Function(FleetContainer) viewOf;
@@ -330,6 +340,7 @@ class _GroupRow extends StatelessWidget {
     super.key,
     required this.group,
     required this.cols,
+    required this.readOnly,
     required this.expanded,
     required this.selection,
     required this.viewOf,
@@ -355,11 +366,13 @@ class _GroupRow extends StatelessWidget {
       child: _Cells(
         cols: cols,
         height: 48,
-        checkbox: Checkbox(
-          tristate: true,
-          value: selection,
-          onChanged: (_) => onSelect(selection != true),
-        ),
+        checkbox: readOnly
+            ? const SizedBox.shrink()
+            : Checkbox(
+                tristate: true,
+                value: selection,
+                onChanged: (_) => onSelect(selection != true),
+              ),
         name: Row(
           children: [
             Icon(
@@ -393,6 +406,7 @@ class _GroupRow extends StatelessWidget {
 class _DataRow extends StatelessWidget {
   final FleetContainer container;
   final _Columns cols;
+  final bool readOnly;
   final bool indented;
   final bool selected;
   final ContainerRowView view;
@@ -404,6 +418,7 @@ class _DataRow extends StatelessWidget {
     super.key,
     required this.container,
     required this.cols,
+    required this.readOnly,
     required this.indented,
     required this.selected,
     required this.view,
@@ -434,10 +449,9 @@ class _DataRow extends StatelessWidget {
         child: _Cells(
           cols: cols,
           height: 56,
-          checkbox: Checkbox(
-            value: selected,
-            onChanged: (_) => onToggleSelected(),
-          ),
+          checkbox: readOnly
+              ? const SizedBox.shrink()
+              : Checkbox(value: selected, onChanged: (_) => onToggleSelected()),
           name: Padding(
             padding: EdgeInsets.only(left: indented ? _groupIndent : 0),
             child: Column(
@@ -478,6 +492,7 @@ class _DataRow extends StatelessWidget {
           actions: _Actions(
             state: info.state,
             enabled: view.reachable,
+            readOnly: readOnly,
             onAction: onAction,
           ),
         ),
@@ -552,11 +567,13 @@ class _PortsCell extends StatelessWidget {
 class _Actions extends StatelessWidget {
   final String state;
   final bool enabled;
+  final bool readOnly;
   final ValueChanged<ContainerRowAction> onAction;
 
   const _Actions({
     required this.state,
     required this.enabled,
+    required this.readOnly,
     required this.onAction,
   });
 
@@ -570,84 +587,97 @@ class _Actions extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Start/Stop reflects whether the container is up at all (a paused
-        // container is still up); Pause/Resume sits next to it.
-        running || paused
-            ? _ActionButton(
-                icon: Icons.stop_rounded,
-                color: AppColors.teal,
-                filled: true,
-                tooltip: 'Stop',
-                onPressed: on(ContainerRowAction.stop),
-              )
-            : _ActionButton(
-                icon: Icons.play_arrow_rounded,
-                color: AppColors.teal,
-                tooltip: 'Start',
-                onPressed: on(ContainerRowAction.start),
-              ),
-        _ActionButton(
-          icon: paused ? Icons.play_circle_outline : Icons.pause_rounded,
-          color: AppColors.warning,
-          tooltip: paused ? 'Resume' : 'Pause',
-          onPressed: on(
-            paused ? ContainerRowAction.resume : ContainerRowAction.pause,
-            when: running || paused,
+        if (readOnly) ...[
+          IconButton(
+            tooltip: 'Details',
+            onPressed: () => onAction(ContainerRowAction.details),
+            icon: const Icon(Icons.info_outline),
           ),
-        ),
-        _ActionButton(
-          icon: Icons.restart_alt_rounded,
-          color: AppColors.info,
-          tooltip: 'Restart',
-          onPressed: on(ContainerRowAction.restart, when: running),
-        ),
-        SizedBox.square(
-          dimension: _actionSize,
-          child: PopupMenuButton<ContainerRowAction>(
-            tooltip: 'More actions',
-            icon: const Icon(Icons.more_vert, size: 20),
-            padding: EdgeInsets.zero,
-            onSelected: onAction,
-            itemBuilder: (context) => const [
-              PopupMenuItem(
-                value: ContainerRowAction.details,
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.info_outline),
-                  title: Text('Details'),
-                ),
-              ),
-              PopupMenuItem(
-                value: ContainerRowAction.logs,
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.article_outlined),
-                  title: Text('Logs'),
-                ),
-              ),
-              PopupMenuItem(
-                value: ContainerRowAction.terminal,
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.terminal),
-                  title: Text('Terminal'),
-                ),
-              ),
-            ],
+          IconButton(
+            tooltip: 'Logs',
+            onPressed: () => onAction(ContainerRowAction.logs),
+            icon: const Icon(Icons.article_outlined),
           ),
-        ),
-        Container(
-          width: 1,
-          height: 20,
-          margin: const EdgeInsets.symmetric(horizontal: Space.xs),
-          color: Theme.of(context).colorScheme.outlineVariant,
-        ),
-        _ActionButton(
-          icon: Icons.delete_outline_rounded,
-          color: AppColors.failed,
-          tooltip: 'Remove',
-          onPressed: on(ContainerRowAction.remove),
-        ),
+        ] else ...[
+          // Start/Stop reflects whether the container is up at all (a paused
+          // container is still up); Pause/Resume sits next to it.
+          running || paused
+              ? _ActionButton(
+                  icon: Icons.stop_rounded,
+                  color: AppColors.teal,
+                  filled: true,
+                  tooltip: 'Stop',
+                  onPressed: on(ContainerRowAction.stop),
+                )
+              : _ActionButton(
+                  icon: Icons.play_arrow_rounded,
+                  color: AppColors.teal,
+                  tooltip: 'Start',
+                  onPressed: on(ContainerRowAction.start),
+                ),
+          _ActionButton(
+            icon: paused ? Icons.play_circle_outline : Icons.pause_rounded,
+            color: AppColors.warning,
+            tooltip: paused ? 'Resume' : 'Pause',
+            onPressed: on(
+              paused ? ContainerRowAction.resume : ContainerRowAction.pause,
+              when: running || paused,
+            ),
+          ),
+          _ActionButton(
+            icon: Icons.restart_alt_rounded,
+            color: AppColors.info,
+            tooltip: 'Restart',
+            onPressed: on(ContainerRowAction.restart, when: running),
+          ),
+          SizedBox.square(
+            dimension: _actionSize,
+            child: PopupMenuButton<ContainerRowAction>(
+              tooltip: 'More actions',
+              icon: const Icon(Icons.more_vert, size: 20),
+              padding: EdgeInsets.zero,
+              onSelected: onAction,
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: ContainerRowAction.details,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.info_outline),
+                    title: Text('Details'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: ContainerRowAction.logs,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.article_outlined),
+                    title: Text('Logs'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: ContainerRowAction.terminal,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.terminal),
+                    title: Text('Terminal'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            width: 1,
+            height: 20,
+            margin: const EdgeInsets.symmetric(horizontal: Space.xs),
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+          _ActionButton(
+            icon: Icons.delete_outline_rounded,
+            color: AppColors.failed,
+            tooltip: 'Remove',
+            onPressed: on(ContainerRowAction.remove),
+          ),
+        ],
       ],
     );
   }

@@ -222,7 +222,9 @@ class _DatabaseMarketplaceScreenState extends State<DatabaseMarketplaceScreen>
                   delegate: SliverChildBuilderDelegate(
                     (context, i) => _EngineCard(
                       engine: engines[i],
-                      onDeploy: () => _openWizard(engines[i]),
+                      onDeploy: widget.isAdmin
+                          ? () => _openWizard(engines[i])
+                          : null,
                     ),
                     childCount: engines.length,
                   ),
@@ -314,7 +316,7 @@ class _DatabaseMarketplaceScreenState extends State<DatabaseMarketplaceScreen>
 
 class _EngineCard extends StatelessWidget {
   final DatabaseEngine engine;
-  final VoidCallback onDeploy;
+  final VoidCallback? onDeploy;
 
   const _EngineCard({required this.engine, required this.onDeploy});
 

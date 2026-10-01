@@ -16,8 +16,9 @@ import 'alert_rule_dialog.dart';
 /// themselves.
 class AlertsScreen extends StatefulWidget {
   final ApiClient apiClient;
+  final bool isAdmin;
 
-  const AlertsScreen({super.key, required this.apiClient});
+  const AlertsScreen({super.key, required this.apiClient, this.isAdmin = true});
 
   @override
   State<AlertsScreen> createState() => _AlertsScreenState();
@@ -144,11 +145,13 @@ class _AlertsScreenState extends State<AlertsScreen> {
             ],
           ),
         ),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: _rules == null ? null : () => _editRule(),
-          icon: const Icon(Icons.add_alert_outlined),
-          label: const Text('New rule'),
-        ),
+        floatingActionButton: widget.isAdmin
+            ? FloatingActionButton.extended(
+                onPressed: _rules == null ? null : () => _editRule(),
+                icon: const Icon(Icons.add_alert_outlined),
+                label: const Text('New rule'),
+              )
+            : null,
         body: _error != null && _alerts == null
             ? StateMessage.error(what: 'alerts', error: _error, onRetry: _load)
             : _alerts == null
@@ -228,7 +231,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
               serverName: a.serverName.isNotEmpty
                   ? a.serverName
                   : (_serverNames[a.serverId] ?? a.serverId),
-              onAcknowledge: a.isOpen && !a.isAcknowledged
+              onAcknowledge: widget.isAdmin && a.isOpen && !a.isAcknowledged
                   ? () => _acknowledge(a)
                   : null,
             ),
@@ -247,9 +250,9 @@ class _AlertsScreenState extends State<AlertsScreen> {
             'Add a rule like "CPU above 90% for 5 minutes" to be alerted when '
             'a container runs hot. Abnormal-usage detection works without '
             'any rules.',
-        actionLabel: 'New rule',
-        actionIcon: Icons.add,
-        onAction: () => _editRule(),
+        actionLabel: widget.isAdmin ? 'New rule' : null,
+        actionIcon: widget.isAdmin ? Icons.add : null,
+        onAction: widget.isAdmin ? () => _editRule() : null,
       );
     }
     return RefreshIndicator(
@@ -267,7 +270,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
             r.containerName ?? 'all containers',
           ].join(' · ');
           return ListTile(
-            onTap: () => _editRule(r),
+            onTap: widget.isAdmin ? () => _editRule(r) : null,
             leading: Icon(
               r.severity == 'critical'
                   ? Icons.error_outline
@@ -282,12 +285,14 @@ class _AlertsScreenState extends State<AlertsScreen> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Switch(value: r.enabled, onChanged: (v) => _toggleRule(r, v)),
-                IconButton(
-                  tooltip: 'Delete rule',
-                  onPressed: () => _deleteRule(r),
-                  icon: const Icon(Icons.delete_outline),
-                ),
+                if (widget.isAdmin)
+                  Switch(value: r.enabled, onChanged: (v) => _toggleRule(r, v)),
+                if (widget.isAdmin)
+                  IconButton(
+                    tooltip: 'Delete rule',
+                    onPressed: () => _deleteRule(r),
+                    icon: const Icon(Icons.delete_outline),
+                  ),
               ],
             ),
           );

@@ -51,13 +51,93 @@ void main() {
 
     expect(find.byType(NavigationRail), findsOneWidget);
     expect(find.byType(NavigationBar), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(NavigationRail),
+        matching: find.text('PS-pocketEdge'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<NavigationRail>(find.byType(NavigationRail))
+          .minExtendedWidth,
+      336,
+    );
+
+    await tester.tap(find.byTooltip('Collapse menu'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<NavigationRail>(find.byType(NavigationRail)).extended,
+      isFalse,
+    );
+    expect(find.text('PS-pocketEdge'), findsNothing);
+
+    await tester.tap(find.byTooltip('Expand menu'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<NavigationRail>(find.byType(NavigationRail)).extended,
+      isTrue,
+    );
+    expect(find.text('PS-pocketEdge'), findsOneWidget);
+
+    await tester.drag(
+      find.byKey(const ValueKey('sidebar-resize-handle')),
+      const Offset(80, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<NavigationRail>(find.byType(NavigationRail))
+          .minExtendedWidth,
+      greaterThan(336),
+    );
+
+    await tester.drag(
+      find.byKey(const ValueKey('sidebar-resize-handle')),
+      const Offset(-300, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<NavigationRail>(find.byType(NavigationRail))
+          .minExtendedWidth,
+      256,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('short desktop windows can scroll the side rail', (tester) async {
+    await pumpShell(tester, const Size(1280, 500));
+
+    expect(find.byType(NavigationRail), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('narrow desktop rail can expand on demand', (tester) async {
+    await pumpShell(tester, const Size(760, 700));
+
+    expect(
+      tester.widget<NavigationRail>(find.byType(NavigationRail)).extended,
+      isFalse,
+    );
+    await tester.tap(find.byTooltip('Expand menu'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<NavigationRail>(find.byType(NavigationRail)).extended,
+      isTrue,
+    );
+    expect(find.text('PS-pocketEdge'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }
 
 class _FakeClient extends http.BaseClient {
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    final body = request.url.path == '/api/auth/me'
+    final body = request.url.path == '/api/settings/access'
+        ? jsonEncode({'requireLocalLogin': false, 'localListener': true})
+        : request.url.path == '/api/auth/me'
         ? jsonEncode({
             'id': 'u1',
             'email': 'me@example.com',

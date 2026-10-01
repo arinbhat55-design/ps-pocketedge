@@ -88,6 +88,22 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (*User, error) {
 	return &u, nil
 }
 
+// GetAnyAdmin returns an administrator for a trusted local dashboard session.
+func (s *Store) GetAnyAdmin(ctx context.Context) (*User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, email, password_hash, role, created_at
+		FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1
+	`).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // ListUsers returns all users, oldest first.
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.pool.Query(ctx, `

@@ -24,6 +24,7 @@ class ContainerConfigForm extends StatefulWidget {
   final bool loading;
   final String? error;
   final void Function(ContainerConfig config) onSubmit;
+  final VoidCallback? onCancel;
 
   /// Rendered between the title and the image field — e.g. a server
   /// picker, which only the create dialog needs (recreate/clone already
@@ -48,6 +49,7 @@ class ContainerConfigForm extends StatefulWidget {
     required this.loading,
     this.error,
     required this.onSubmit,
+    this.onCancel,
     this.header,
     this.apiClient,
     this.serverId,
@@ -398,18 +400,36 @@ class _ContainerConfigFormState extends State<ContainerConfigForm> {
               ),
               if (widget.error != null) ...[
                 const SizedBox(height: 12),
-                Text(widget.error!, style: const TextStyle(color: AppColors.failed)),
+                Text(
+                  widget.error!,
+                  style: const TextStyle(color: AppColors.failed),
+                ),
               ],
               const SizedBox(height: 20),
-              FilledButton(
-                onPressed: widget.loading ? null : _submit,
-                child: widget.loading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(widget.submitLabel),
+              Row(
+                children: [
+                  if (widget.onCancel != null) ...[
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: widget.loading ? null : widget.onCancel,
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: widget.loading ? null : _submit,
+                      child: widget.loading
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Text(widget.submitLabel),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -618,7 +638,10 @@ class _PortFieldState extends State<_PortField> {
                   const SizedBox(width: 4),
                   Text(
                     _conflictWarning!,
-                    style: const TextStyle(color: AppColors.warning, fontSize: 12),
+                    style: const TextStyle(
+                      color: AppColors.warning,
+                      fontSize: 12,
+                    ),
                   ),
                 ],
               ),

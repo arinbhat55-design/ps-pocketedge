@@ -131,11 +131,19 @@ type actor struct {
 	ID      string
 	Email   string
 	IsAdmin bool
+	// Local is a no-login local session borrowing an admin account.
+	Local bool
 }
 
 func actorFromRequest(r *http.Request) actor {
 	if claims, ok := auth.ClaimsFromContext(r.Context()); ok {
-		return actor{ID: claims.UserID, Email: claims.Email, IsAdmin: claims.Role == "admin"}
+		email := claims.Email
+		if claims.Local {
+			// Local sessions borrow an admin account; say so in audit and
+			// event messages so they aren't mistaken for that admin.
+			email += " (local session)"
+		}
+		return actor{ID: claims.UserID, Email: email, IsAdmin: claims.Role == "admin", Local: claims.Local}
 	}
 	return actor{}
 }
@@ -167,7 +175,7 @@ func (d *deployer) event(ctx context.Context, deploymentID, phase, message, acto
 }
 
 func (d *deployer) audit(ctx context.Context, a actor, action, entityType, entityID, summary string, details any) {
-	if err := d.st.RecordAudit(ctx, a.ID, action, entityType, entityID, summary, details); err != nil {
+	if err := d.st.RecordAudit(ctx, a.ID, a.Local, action, entityType, entityID, summary, details); err != nil {
 		d.log.Error("failed to record audit event", "action", action, "error", err)
 	}
 }

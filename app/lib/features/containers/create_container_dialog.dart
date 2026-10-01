@@ -119,6 +119,7 @@ class _CreateContainerSheetState extends State<_CreateContainerSheet> {
       error: _error,
       header: header,
       onSubmit: _submit,
+      onCancel: () => Navigator.of(context).pop(),
       apiClient: widget.apiClient,
       serverId: _selectedServerId,
     );

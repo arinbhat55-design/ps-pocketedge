@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,9 +141,13 @@ func handleInspectContainer(log *slog.Logger, dispatcher *deploy.Dispatcher, wai
 					Output:    h.GetOutput(),
 				}
 			}
+			env := detail.GetEnv()
+			if claims, ok := auth.ClaimsFromContext(r.Context()); ok && claims.Role == "viewer" {
+				env = redactEnvValues(env)
+			}
 			writeJSON(w, http.StatusOK, containerDetailResponse{
 				ContainerID:                detail.GetContainerId(),
-				Env:                        detail.GetEnv(),
+				Env:                        env,
 				RestartPolicyName:          detail.GetRestartPolicyName(),
 				RestartPolicyMaxRetryCount: int(detail.GetRestartPolicyMaxRetryCount()),
 				HealthStatus:               detail.GetHealthStatus(),
@@ -164,6 +169,15 @@ func handleInspectContainer(log *slog.Logger, dispatcher *deploy.Dispatcher, wai
 		case <-r.Context().Done():
 		}
 	}
+}
+
+func redactEnvValues(env []string) []string {
+	redacted := make([]string, len(env))
+	for i, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		redacted[i] = name + "=••••"
+	}
+	return redacted
 }
 
 // errOpTimeout is sendAndAwaitContainerOp's error when no ContainerOpResult

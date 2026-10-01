@@ -32,6 +32,7 @@ class ContainerDetailScreen extends StatefulWidget {
   final String serverId;
   final String serverName;
   final ContainerInfo container;
+  final bool isAdmin;
   // 0 Overview, 1 Resources, 2 Logs, 3 Terminal, 4 Events.
   final int initialTab;
 
@@ -41,6 +42,7 @@ class ContainerDetailScreen extends StatefulWidget {
     required this.serverId,
     required this.serverName,
     required this.container,
+    this.isAdmin = true,
     this.initialTab = 0,
   });
 
@@ -51,9 +53,11 @@ class ContainerDetailScreen extends StatefulWidget {
 class _ContainerDetailScreenState extends State<ContainerDetailScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController = TabController(
-    length: 5,
+    length: widget.isAdmin ? 5 : 4,
     vsync: this,
-    initialIndex: widget.initialTab,
+    initialIndex: widget.isAdmin || widget.initialTab < 4
+        ? widget.initialTab
+        : 3,
   );
   late Future<ContainerDetail> _detailFuture;
   late final String _currentName = widget.container.name;
@@ -407,12 +411,12 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
           title: Text(_currentName),
           bottom: TabBar(
             controller: _tabController,
-            tabs: const [
-              Tab(text: 'Overview'),
-              Tab(text: 'Resources'),
-              Tab(text: 'Logs'),
-              Tab(text: 'Terminal'),
-              Tab(text: 'Events'),
+            tabs: [
+              const Tab(text: 'Overview'),
+              const Tab(text: 'Resources'),
+              const Tab(text: 'Logs'),
+              if (widget.isAdmin) Tab(text: 'Terminal'),
+              const Tab(text: 'Events'),
             ],
           ),
           actions: [
@@ -425,43 +429,44 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               ),
-            PopupMenuButton<String>(
-              tooltip: 'Actions',
-              enabled: !_busy,
-              onSelected: (action) async {
-                switch (action) {
-                  case 'start':
-                  case 'stop':
-                  case 'restart':
-                  case 'pause':
-                  case 'resume':
-                    _runAction(action);
-                  case 'kill':
-                    _confirmAndRun('kill');
-                  case 'remove':
-                    _confirmAndRun('remove', force: true);
-                  case 'rename':
-                    _rename();
-                  case 'clone':
-                    _clone();
-                  case 'schedules':
-                    _openSchedules();
-                }
-              },
-              itemBuilder: (context) => const [
-                PopupMenuItem(value: 'start', child: Text('Start')),
-                PopupMenuItem(value: 'stop', child: Text('Stop')),
-                PopupMenuItem(value: 'restart', child: Text('Restart')),
-                PopupMenuItem(value: 'pause', child: Text('Pause')),
-                PopupMenuItem(value: 'resume', child: Text('Resume')),
-                PopupMenuItem(value: 'kill', child: Text('Force-kill')),
-                PopupMenuItem(value: 'remove', child: Text('Remove')),
-                PopupMenuDivider(),
-                PopupMenuItem(value: 'rename', child: Text('Rename')),
-                PopupMenuItem(value: 'clone', child: Text('Clone')),
-                PopupMenuItem(value: 'schedules', child: Text('Schedules')),
-              ],
-            ),
+            if (widget.isAdmin)
+              PopupMenuButton<String>(
+                tooltip: 'Actions',
+                enabled: !_busy,
+                onSelected: (action) async {
+                  switch (action) {
+                    case 'start':
+                    case 'stop':
+                    case 'restart':
+                    case 'pause':
+                    case 'resume':
+                      _runAction(action);
+                    case 'kill':
+                      _confirmAndRun('kill');
+                    case 'remove':
+                      _confirmAndRun('remove', force: true);
+                    case 'rename':
+                      _rename();
+                    case 'clone':
+                      _clone();
+                    case 'schedules':
+                      _openSchedules();
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(value: 'start', child: Text('Start')),
+                  PopupMenuItem(value: 'stop', child: Text('Stop')),
+                  PopupMenuItem(value: 'restart', child: Text('Restart')),
+                  PopupMenuItem(value: 'pause', child: Text('Pause')),
+                  PopupMenuItem(value: 'resume', child: Text('Resume')),
+                  PopupMenuItem(value: 'kill', child: Text('Force-kill')),
+                  PopupMenuItem(value: 'remove', child: Text('Remove')),
+                  PopupMenuDivider(),
+                  PopupMenuItem(value: 'rename', child: Text('Rename')),
+                  PopupMenuItem(value: 'clone', child: Text('Clone')),
+                  PopupMenuItem(value: 'schedules', child: Text('Schedules')),
+                ],
+              ),
           ],
         ),
         body: TabBarView(
@@ -474,7 +479,7 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
               containerId: c.containerId,
               containerState: c.state,
               detailFuture: _detailFuture,
-              onReviewLimits: _reviewSuggestedLimits,
+              onReviewLimits: widget.isAdmin ? _reviewSuggestedLimits : null,
             ),
             ContainerLogsScreen(
               apiClient: widget.apiClient,
@@ -483,12 +488,13 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
               containerName: _currentName,
               deploymentId: c.deploymentId,
             ),
-            ContainerTerminalScreen(
-              apiClient: widget.apiClient,
-              serverId: widget.serverId,
-              containerId: c.containerId,
-              containerName: _currentName,
-            ),
+            if (widget.isAdmin)
+              ContainerTerminalScreen(
+                apiClient: widget.apiClient,
+                serverId: widget.serverId,
+                containerId: c.containerId,
+                containerName: _currentName,
+              ),
             ContainerEventsScreen(
               apiClient: widget.apiClient,
               serverId: widget.serverId,
@@ -660,10 +666,11 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
                       'Restart policy',
                       style: Theme.of(context).textTheme.titleSmall,
                     ),
-                    TextButton(
-                      onPressed: _busy ? null : () => _restartPolicy(detail),
-                      child: const Text('Change'),
-                    ),
+                    if (widget.isAdmin)
+                      TextButton(
+                        onPressed: _busy ? null : () => _restartPolicy(detail),
+                        child: const Text('Change'),
+                      ),
                   ],
                 ),
                 _DetailSection(
@@ -691,10 +698,13 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
                       'Resource limits',
                       style: Theme.of(context).textTheme.titleSmall,
                     ),
-                    TextButton(
-                      onPressed: _busy ? null : () => _resizeResources(detail),
-                      child: const Text('Resize'),
-                    ),
+                    if (widget.isAdmin)
+                      TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => _resizeResources(detail),
+                        child: const Text('Resize'),
+                      ),
                   ],
                 ),
                 _DetailSection(
@@ -806,17 +816,18 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (_rollbackHistory.isNotEmpty)
+                        if (widget.isAdmin && _rollbackHistory.isNotEmpty)
                           TextButton.icon(
                             onPressed: _busy ? null : _rollback,
                             icon: const Icon(Icons.history, size: 16),
                             label: const Text('Rollback'),
                           ),
-                        TextButton.icon(
-                          onPressed: _busy ? null : () => _recreate(detail),
-                          icon: const Icon(Icons.refresh, size: 16),
-                          label: const Text('Recreate'),
-                        ),
+                        if (widget.isAdmin)
+                          TextButton.icon(
+                            onPressed: _busy ? null : () => _recreate(detail),
+                            icon: const Icon(Icons.refresh, size: 16),
+                            label: const Text('Recreate'),
+                          ),
                       ],
                     ),
                   ],

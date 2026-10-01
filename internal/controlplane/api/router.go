@@ -37,12 +37,15 @@ const enrollmentTokenTTL = 1 * time.Hour
 // this API from its dev server origin during local development; this
 // should be tightened together with publicURL before any non-local
 // deployment.
-func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter, volumeFileWaiter *deploy.VolumeFileWaiter, v *vault.Vault, ops *dbops.Ops, buildBus *deploy.BuildBus) http.Handler {
+func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, events *deploy.EventBus, serverEvents *livestate.EventBus, blobs *backup.BlobStore, publicURL string, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter, imageListWaiter *deploy.ImageListWaiter, imageDetailWaiter *deploy.ImageDetailWaiter, imageOpWaiter *deploy.ImageOpWaiter, logStreamRelay *deploy.LogStreamRelay, eventListWaiter *deploy.EventListWaiter, execStreamRelay *deploy.ExecStreamRelay, networkListWaiter *deploy.NetworkListWaiter, networkOpWaiter *deploy.NetworkOpWaiter, volumeListWaiter *deploy.VolumeListWaiter, volumeDetailWaiter *deploy.VolumeDetailWaiter, volumeOpWaiter *deploy.VolumeOpWaiter, volumeFileWaiter *deploy.VolumeFileWaiter, v *vault.Vault, ops *dbops.Ops, buildBus *deploy.BuildBus, localAccessEnabled bool) http.Handler {
 	aiClient := ai.New()
 	secrets := vaultSecretSource(log, v)
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
+	mux.HandleFunc("POST /api/auth/local-session", handleLocalSession(log, st, authMgr, localAccessEnabled))
+	mux.Handle("GET /api/settings/access", authMgr.RequireAdmin(handleGetAccessSettings(log, st, localAccessEnabled)))
+	mux.Handle("PUT /api/settings/access", authMgr.RequireAdmin(handleUpdateAccessSettings(log, st, authMgr, localAccessEnabled)))
 	mux.Handle("GET /api/auth/me", authMgr.RequireAuth(handleGetMe(log, st)))
 	mux.Handle("POST /api/auth/change-password", authMgr.RequireAuth(handleChangePassword(log, st)))
 
@@ -121,6 +124,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("GET /api/deployments/{id}/revisions", authMgr.RequireAuth(handleListDeploymentRevisions(d)))
 	mux.Handle("GET /api/deployments/{id}/revisions/{revision}", authMgr.RequireAuth(handleGetDeploymentRevision(d)))
 	mux.Handle("GET /api/deployments/{id}/drift", authMgr.RequireAuth(handleDeploymentDrift(d)))
+	mux.Handle("GET /api/deployments/git-report", authMgr.RequireAuth(handleDeploymentGitReport(d)))
 	// Images built from Git for a deployment's build: services. Auth via
 	// ?token= on the WS stream, like the deployment stream.
 	mux.Handle("GET /api/deployments/{id}/builds", authMgr.RequireAuth(handleListDeploymentBuilds(d)))
@@ -283,7 +287,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.HandleFunc("PUT /api/agent/backups/{id}/blob", handleUploadBackupBlob(log, st, blobs))
 	mux.HandleFunc("GET /api/agent/backups/{id}/blob", handleDownloadBackupBlob(log, st, blobs))
 
-	return withCORS(mux)
+	return withCORS(authMgr, mux)
 }
 
 func handleLogin(log *slog.Logger, st *store.Store, authMgr *auth.Manager) http.HandlerFunc {
@@ -326,6 +330,41 @@ func handleLogin(log *slog.Logger, st *store.Store, authMgr *auth.Manager) http.
 		}
 
 		writeJSON(w, http.StatusOK, response{Token: token})
+	}
+}
+
+// A local session is an administrator session for whoever uses this
+// computer, like Docker Desktop. It manages every connected server, so it is
+// only issued to requests auth.Manager.LocalRequestRefusal accepts.
+func handleLocalSession(log *slog.Logger, st *store.Store, authMgr *auth.Manager, enabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reason := authMgr.LocalRequestRefusal(r)
+		switch {
+		case !enabled:
+			reason = "the control plane listens on a network address, so login is required"
+		case !authMgr.LocalSessionsAllowed():
+			reason = "login is required on this computer"
+		}
+		if reason != "" {
+			log.Info("local session refused", "reason", reason, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"))
+			http.Error(w, "local access unavailable: "+reason, http.StatusForbidden)
+			return
+		}
+		user, err := st.GetAnyAdmin(r.Context())
+		if err != nil {
+			log.Error("local session admin lookup failed", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		token, err := authMgr.IssueLocalToken(user.ID, user.Email, user.Role)
+		if err != nil {
+			log.Error("local session token issuance failed", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, struct {
+			Token string `json:"token"`
+		}{Token: token})
 	}
 }
 
@@ -468,9 +507,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func withCORS(next http.Handler) http.Handler {
+func withCORS(authMgr *auth.Manager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.URL.Path == "/api/auth/local-session" {
+			if authMgr.IsLocalRequest(r) && r.Header.Get("Origin") != "" {
+				w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+				w.Header().Set("Vary", "Origin")
+			}
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {

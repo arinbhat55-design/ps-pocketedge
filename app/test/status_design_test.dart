@@ -129,7 +129,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: AppTheme.dark(),
-        home: ServerListScreen(apiClient: client),
+        home: ServerListScreen(apiClient: client, isAdmin: true),
       ),
     );
     await tester.pumpAndSettle();

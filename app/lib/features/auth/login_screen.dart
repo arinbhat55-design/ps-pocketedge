@@ -7,10 +7,19 @@ class LoginScreen extends StatefulWidget {
   final ApiClient apiClient;
   final void Function(String token) onLoggedIn;
 
+  /// Offered when the control plane runs on this computer, which may grant a
+  /// session without login. Null hides the option.
+  final void Function(String token)? onLocalSession;
+
+  /// Why the user is seeing this screen, e.g. their session ended.
+  final String? notice;
+
   const LoginScreen({
     super.key,
     required this.apiClient,
     required this.onLoggedIn,
+    this.onLocalSession,
+    this.notice,
   });
 
   @override
@@ -50,6 +59,24 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  Future<void> _useLocalAccess() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      widget.onLocalSession!(await widget.apiClient.localSession());
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = 'Could not reach the control plane: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -65,10 +92,14 @@ class _LoginScreenState extends State<LoginScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Text(
-                    'PSpocketEdge',
+                    'PS-pocketEdge',
                     style: Theme.of(context).textTheme.headlineSmall,
                     textAlign: TextAlign.center,
                   ),
+                  if (widget.notice != null) ...[
+                    const SizedBox(height: 12),
+                    Text(widget.notice!, textAlign: TextAlign.center),
+                  ],
                   const SizedBox(height: 24),
                   TextFormField(
                     controller: _emailController,
@@ -88,7 +119,10 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   if (_error != null) ...[
                     const SizedBox(height: 12),
-                    Text(_error!, style: const TextStyle(color: AppColors.failed)),
+                    Text(
+                      _error!,
+                      style: const TextStyle(color: AppColors.failed),
+                    ),
                   ],
                   const SizedBox(height: 24),
                   FilledButton(
@@ -101,6 +135,13 @@ class _LoginScreenState extends State<LoginScreen> {
                           )
                         : const Text('Log in'),
                   ),
+                  if (widget.onLocalSession != null) ...[
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: _loading ? null : _useLocalAccess,
+                      child: const Text('Use this computer without signing in'),
+                    ),
+                  ],
                 ],
               ),
             ),

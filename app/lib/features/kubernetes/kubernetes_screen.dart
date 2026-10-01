@@ -146,7 +146,7 @@ class _KubernetesScreenState extends State<KubernetesScreen> {
         content: Text(
           local
               ? 'Delete ${cluster['name']} and all workloads inside it? This removes its kind containers and data.'
-              : 'Remove ${cluster['name']} from PSpocketEdge? Kubernetes workloads will keep running.',
+              : 'Remove ${cluster['name']} from PS-pocketEdge? Kubernetes workloads will keep running.',
         ),
         actions: [
           TextButton(
@@ -235,7 +235,34 @@ class _KubernetesScreenState extends State<KubernetesScreen> {
         }
         final clusters = snapshot.data!;
         if (clusters.isEmpty) {
-          return const Center(child: Text('No Kubernetes clusters connected.'));
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('No Kubernetes clusters connected.'),
+                if (widget.isAdmin) ...[
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _creatingLocal ? null : _createLocal,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Create local cluster'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _creatingLocal ? null : _add,
+                        icon: const Icon(Icons.link),
+                        label: const Text('Connect existing cluster'),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          );
         }
         return ListView.builder(
           itemCount: clusters.length,

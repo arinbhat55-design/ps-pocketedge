@@ -13,6 +13,7 @@ import '../../widgets/state_message.dart';
 import '../deployments/deployment_history_screen.dart';
 import '../deployments/deployment_status_screen.dart';
 import '../deployments/deployment_widgets.dart';
+import '../deployments/git_report_screen.dart';
 import '../git/git_repositories_screen.dart';
 import '../governance/governance_screen.dart';
 import 'compose_editor_screen.dart';
@@ -46,10 +47,13 @@ class _DockerComposeScreenState extends State<DockerComposeScreen>
   static const _tabs = [
     'Compose files',
     'History',
+    'Git report',
     'Config',
     'Git',
     'Governance',
   ];
+  // The tabs non-admins see; the rest manage files and configuration.
+  static const _viewerTabs = ['History', 'Git report', 'Governance'];
 
   late final TabController _tabController;
   // Bumped when another tab (Git import/sync) changes the Compose files,
@@ -59,7 +63,10 @@ class _DockerComposeScreenState extends State<DockerComposeScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: _tabs.length, vsync: this);
+    _tabController = TabController(
+      length: widget.isAdmin ? _tabs.length : _viewerTabs.length,
+      vsync: this,
+    );
   }
 
   @override
@@ -77,27 +84,33 @@ class _DockerComposeScreenState extends State<DockerComposeScreen>
           controller: _tabController,
           isScrollable: true,
           tabAlignment: TabAlignment.start,
-          tabs: [for (final t in _tabs) Tab(text: t)],
+          tabs: [
+            for (final t in _tabs)
+              if (widget.isAdmin || _viewerTabs.contains(t)) Tab(text: t),
+          ],
         ),
       ),
       body: TabBarView(
         controller: _tabController,
         children: [
-          _ComposeFilesTab(
-            key: ValueKey(_filesGeneration),
-            apiClient: widget.apiClient,
-            isAdmin: widget.isAdmin,
-          ),
+          if (widget.isAdmin)
+            _ComposeFilesTab(
+              key: ValueKey(_filesGeneration),
+              apiClient: widget.apiClient,
+              isAdmin: widget.isAdmin,
+            ),
           DeploymentHistoryScreen(
             apiClient: widget.apiClient,
             isAdmin: widget.isAdmin,
           ),
-          _ConfigurationTab(apiClient: widget.apiClient),
-          GitRepositoriesScreen(
-            apiClient: widget.apiClient,
-            isAdmin: widget.isAdmin,
-            onComposeFilesChanged: () => setState(() => _filesGeneration++),
-          ),
+          GitReportScreen(apiClient: widget.apiClient, isAdmin: widget.isAdmin),
+          if (widget.isAdmin) _ConfigurationTab(apiClient: widget.apiClient),
+          if (widget.isAdmin)
+            GitRepositoriesScreen(
+              apiClient: widget.apiClient,
+              isAdmin: widget.isAdmin,
+              onComposeFilesChanged: () => setState(() => _filesGeneration++),
+            ),
           GovernanceScreen(
             apiClient: widget.apiClient,
             isAdmin: widget.isAdmin,
@@ -421,7 +434,7 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
       onPressed: _openCreate,
     );
     return Scaffold(
-      floatingActionButton: create.fab(context),
+      floatingActionButton: widget.isAdmin ? create.fab(context) : null,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -429,7 +442,7 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
             description:
                 'Compose files you can deploy to any server. Each deploy '
                 'shows a preview with pre-deployment checks first.',
-            action: create.inline(context),
+            action: widget.isAdmin ? create.inline(context) : null,
           ),
           const SizedBox(height: Space.sm),
           Expanded(
@@ -454,9 +467,9 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
                     message:
                         'Build one in the visual editor, paste existing YAML, or '
                         'import one from the Git tab.',
-                    actionLabel: 'New Compose file',
-                    actionIcon: Icons.add,
-                    onAction: _openCreate,
+                    actionLabel: widget.isAdmin ? 'New Compose file' : null,
+                    actionIcon: widget.isAdmin ? Icons.add : null,
+                    onAction: widget.isAdmin ? _openCreate : null,
                   );
                 }
                 return ListView(
@@ -483,11 +496,12 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            IconButton(
-                              icon: const Icon(Icons.rocket_launch_outlined),
-                              tooltip: 'Deploy',
-                              onPressed: () => _deploy(f),
-                            ),
+                            if (widget.isAdmin)
+                              IconButton(
+                                icon: const Icon(Icons.rocket_launch_outlined),
+                                tooltip: 'Deploy',
+                                onPressed: () => _deploy(f),
+                              ),
                             PopupMenuButton<String>(
                               tooltip: 'More',
                               onSelected: (value) {
@@ -505,7 +519,7 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
                                 }
                               },
                               itemBuilder: (context) => [
-                                if (f.isGitLinked)
+                                if (widget.isAdmin && f.isGitLinked)
                                   const PopupMenuItem(
                                     value: 'sync',
                                     child: Text('Sync from Git'),
@@ -514,24 +528,28 @@ class _ComposeFilesTabState extends State<_ComposeFilesTab> {
                                   value: 'history',
                                   child: Text('Version history'),
                                 ),
-                                const PopupMenuItem(
-                                  value: 'clone',
-                                  child: Text('Clone'),
-                                ),
+                                if (widget.isAdmin)
+                                  const PopupMenuItem(
+                                    value: 'clone',
+                                    child: Text('Clone'),
+                                  ),
                                 const PopupMenuItem(
                                   value: 'export',
                                   child: Text('Export / copy YAML'),
                                 ),
-                                const PopupMenuDivider(),
-                                const PopupMenuItem(
-                                  value: 'delete',
-                                  child: Text('Delete'),
-                                ),
+                                if (widget.isAdmin) const PopupMenuDivider(),
+                                if (widget.isAdmin)
+                                  const PopupMenuItem(
+                                    value: 'delete',
+                                    child: Text('Delete'),
+                                  ),
                               ],
                             ),
                           ],
                         ),
-                        onTap: () => _openEdit(f),
+                        onTap: widget.isAdmin
+                            ? () => _openEdit(f)
+                            : () => _openHistory(f),
                       ),
                   ],
                 );

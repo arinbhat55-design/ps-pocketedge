@@ -112,9 +112,9 @@ class _VolumeListScreenState extends State<VolumeListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Volumes'),
-        actions: [?create.appBarAction(context)],
+        actions: [if (widget.isAdmin) ?create.appBarAction(context)],
       ),
-      floatingActionButton: create.fab(context),
+      floatingActionButton: widget.isAdmin ? create.fab(context) : null,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -229,12 +229,19 @@ class _VolumeListScreenState extends State<VolumeListScreen> {
                                     message:
                                         'Named volumes keep container data '
                                         'across restarts and re-creates.',
-                                    actionLabel: 'Create volume',
-                                    actionIcon: Icons.add,
-                                    onAction: _openCreate,
+                                    actionLabel: widget.isAdmin
+                                        ? 'Create volume'
+                                        : null,
+                                    actionIcon: widget.isAdmin
+                                        ? Icons.add
+                                        : null,
+                                    onAction: widget.isAdmin
+                                        ? _openCreate
+                                        : null,
                                   ))
                           : _VolumeTable(
                               volumes: volumes,
+                              readOnly: !widget.isAdmin,
                               onOpenDetail: _openDetail,
                               onDelete: _delete,
                             ),
@@ -257,11 +264,13 @@ class _VolumeListScreenState extends State<VolumeListScreen> {
 /// only allows touch/stylus/trackpad there.
 class _VolumeTable extends StatefulWidget {
   final List<VolumeSummary> volumes;
+  final bool readOnly;
   final void Function(VolumeSummary) onOpenDetail;
   final void Function(VolumeSummary) onDelete;
 
   const _VolumeTable({
     required this.volumes,
+    this.readOnly = false,
     required this.onOpenDetail,
     required this.onDelete,
   });
@@ -349,13 +358,15 @@ class _VolumeTableState extends State<_VolumeTable> {
           Text(volume.createdAt?.toLocal().toString().split('.').first ?? '—'),
         ),
         DataCell(
-          IconButton(
-            icon: const Icon(Icons.delete_outline, size: 18),
-            tooltip: 'Delete',
-            visualDensity: VisualDensity.compact,
-            color: AppColors.failed,
-            onPressed: () => widget.onDelete(volume),
-          ),
+          widget.readOnly
+              ? const SizedBox.shrink()
+              : IconButton(
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  tooltip: 'Delete',
+                  visualDensity: VisualDensity.compact,
+                  color: AppColors.failed,
+                  onPressed: () => widget.onDelete(volume),
+                ),
         ),
       ],
     );

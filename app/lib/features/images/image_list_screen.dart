@@ -234,7 +234,7 @@ class _ImageListScreenState extends State<ImageListScreen> {
 
   Widget _buildImagesTab() {
     return Scaffold(
-      floatingActionButton: _pullAction.fab(context),
+      floatingActionButton: widget.isAdmin ? _pullAction.fab(context) : null,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -333,7 +333,7 @@ class _ImageListScreenState extends State<ImageListScreen> {
                               icon: const Icon(Icons.filter_alt_off, size: 18),
                               label: const Text('Clear filters'),
                             ),
-                          if (_selectedServerId != null) ...[
+                          if (widget.isAdmin && _selectedServerId != null) ...[
                             const SizedBox(width: 4),
                             const VerticalDivider(width: 1),
                             const SizedBox(width: 4),

@@ -22,8 +22,13 @@ import (
 // package uses (see handleServerStream's doc comment).
 func handleContainerExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, relay *deploy.ExecStreamRelay) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, err := authMgr.ParseToken(r.URL.Query().Get("token")); err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		claims, err := authMgr.AuthenticateRequest(r, r.URL.Query().Get("token"))
+		if err != nil {
+			auth.WriteAuthError(w, err)
+			return
+		}
+		if claims.Role != "admin" {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 

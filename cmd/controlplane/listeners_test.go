@@ -19,3 +19,16 @@ func TestValidateListeners(t *testing.T) {
 		t.Fatal("incomplete TLS config accepted")
 	}
 }
+
+func TestLocalAccessOnlyOnLoopbackListener(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8080", "[::1]:8080", "localhost:8080"} {
+		if !isLoopbackListener(addr) {
+			t.Errorf("local access disabled for %s", addr)
+		}
+	}
+	for _, addr := range []string{"0.0.0.0:8080", ":8080", "192.0.2.1:8080"} {
+		if isLoopbackListener(addr) {
+			t.Errorf("local access enabled for %s", addr)
+		}
+	}
+}

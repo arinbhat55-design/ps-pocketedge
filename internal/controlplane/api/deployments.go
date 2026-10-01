@@ -785,6 +785,9 @@ func handleGetDeployment(d *deployer) http.HandlerFunc {
 			return
 		}
 		resp := deploymentDetailResponse{Deployment: *deployment, Events: events, OpenRequests: []store.DeploymentRequest{}, ServiceNames: []string{}}
+		if claims, ok := auth.ClaimsFromContext(r.Context()); ok && claims.Role == "viewer" {
+			resp.Deployment.Env = nil
+		}
 		for _, status := range []string{store.RequestPendingApproval, store.RequestScheduled} {
 			reqs, err := d.st.ListDeploymentRequests(ctx, status, id)
 			if err != nil {
@@ -837,6 +840,11 @@ func handleListDeployments(d *deployer) http.HandlerFunc {
 		if err != nil {
 			writeActionError(w, d.log, err)
 			return
+		}
+		if claims, ok := auth.ClaimsFromContext(r.Context()); ok && claims.Role == "viewer" {
+			for i := range list {
+				list[i].Deployment.Env = nil
+			}
 		}
 		writeJSON(w, http.StatusOK, list)
 	}

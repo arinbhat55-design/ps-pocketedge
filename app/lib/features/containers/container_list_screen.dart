@@ -35,8 +35,13 @@ String _selectionKey(FleetContainer c) =>
 /// across servers, and a "Create container" entry point.
 class ContainerListScreen extends StatefulWidget {
   final ApiClient apiClient;
+  final bool isAdmin;
 
-  const ContainerListScreen({super.key, required this.apiClient});
+  const ContainerListScreen({
+    super.key,
+    required this.apiClient,
+    this.isAdmin = true,
+  });
 
   @override
   State<ContainerListScreen> createState() => _ContainerListScreenState();
@@ -244,6 +249,7 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
           serverName: c.serverName,
           container: c.container,
           initialTab: initialTab,
+          isAdmin: widget.isAdmin,
         ),
       ),
     );
@@ -367,15 +373,18 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
               tooltip: 'Refresh',
               onPressed: () => _refresh(reloadOptions: true),
             ),
-          IconButton(
-            icon: Icon(_selectionMode ? Icons.close : Icons.checklist),
-            tooltip: _selectionMode ? 'Cancel selection' : 'Select',
-            onPressed: _toggleSelectionMode,
-          ),
-          if (!_selectionMode) ?create.appBarAction(context),
+          if (widget.isAdmin)
+            IconButton(
+              icon: Icon(_selectionMode ? Icons.close : Icons.checklist),
+              tooltip: _selectionMode ? 'Cancel selection' : 'Select',
+              onPressed: _toggleSelectionMode,
+            ),
+          if (widget.isAdmin && !_selectionMode) ?create.appBarAction(context),
         ],
       ),
-      floatingActionButton: _selectionMode ? null : create.fab(context),
+      floatingActionButton: !widget.isAdmin || _selectionMode
+          ? null
+          : create.fab(context),
       bottomNavigationBar: _selectionMode && _selectedKeys.isNotEmpty
           ? _BulkActionBar(running: _bulkRunning, onAction: _runBulkAction)
           : null,
@@ -475,9 +484,13 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
                               'Containers running on your enrolled servers '
                               'show up here. Create one, or deploy an app '
                               'from the Servers tab.',
-                          actionLabel: 'Create container',
-                          actionIcon: Icons.add,
-                          onAction: _openCreateContainer,
+                          actionLabel: widget.isAdmin
+                              ? 'Create container'
+                              : null,
+                          actionIcon: widget.isAdmin ? Icons.add : null,
+                          onAction: widget.isAdmin
+                              ? _openCreateContainer
+                              : null,
                         );
                 }
 
@@ -851,6 +864,7 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
           borderRadius: BorderRadius.circular(Radii.md),
           child: ContainerTable(
             groups: groups,
+            readOnly: !widget.isAdmin,
             selectedKeys: _selectedKeys,
             keyOf: _selectionKey,
             viewOf: _view,
@@ -888,10 +902,12 @@ class _ContainerListScreenState extends State<ContainerListScreen> {
       onTap: () => _selectionMode ? _toggleSelected(c) : _openDetail(c),
       // Long-press is the usual way into multi-select on touch screens.
       onLongPress: () {
+        if (!widget.isAdmin) return;
         if (!_selectionMode) setState(() => _selectionMode = true);
         _toggleSelected(c);
       },
       onRunAction: (action) => _runRowAction(c, action),
+      readOnly: !widget.isAdmin,
       ports: _formatPorts(c),
       view: _view(c),
     );
@@ -961,6 +977,7 @@ class _ContainerCard extends StatelessWidget {
   final void Function(String action) onRunAction;
   final String ports;
   final ContainerRowView view;
+  final bool readOnly;
 
   const _ContainerCard({
     required this.container,
@@ -971,6 +988,7 @@ class _ContainerCard extends StatelessWidget {
     required this.onRunAction,
     required this.ports,
     required this.view,
+    this.readOnly = false,
   });
 
   @override
@@ -990,7 +1008,7 @@ class _ContainerCard extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
-        onLongPress: onLongPress,
+        onLongPress: readOnly ? null : onLongPress,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(
             Space.lg,
@@ -1058,7 +1076,7 @@ class _ContainerCard extends StatelessWidget {
                     child: Icon(Icons.link_off, color: AppColors.textMuted),
                   ),
                 ),
-              if (!selectionMode && view.reachable) ...[
+              if (!readOnly && !selectionMode && view.reachable) ...[
                 running
                     ? IconButton(
                         icon: const Icon(Icons.stop),

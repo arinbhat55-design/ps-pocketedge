@@ -29,7 +29,7 @@ func toGitRepo(g *store.GitRepository) gitsource.Repo {
 // recordAudit is the audit helper for handlers that don't hold a deployer.
 func recordAudit(r *http.Request, log *slog.Logger, st *store.Store, action, entityType, entityID, summary string, details any) {
 	a := actorFromRequest(r)
-	if err := st.RecordAudit(r.Context(), a.ID, action, entityType, entityID, summary, details); err != nil {
+	if err := st.RecordAudit(r.Context(), a.ID, a.Local, action, entityType, entityID, summary, details); err != nil {
 		log.Error("failed to record audit event", "action", action, "error", err)
 	}
 }
@@ -719,7 +719,7 @@ func handleGitWebhook(d *deployer) http.HandlerFunc {
 						s.Changed, s.Commit = res.Changed, res.Commit
 					}
 					syncedFiles = append(syncedFiles, s)
-					_ = d.st.RecordAudit(ctx, "", "compose_file.sync_git", "compose_file", f.ID,
+					_ = d.st.RecordAudit(ctx, "", false, "compose_file.sync_git", "compose_file", f.ID,
 						fmt.Sprintf("Compose file %s synced by push webhook (%s @ %s)", f.Name, pushed.Name, shortCommit(pushed.Commit)), s)
 				}
 				deps, err := d.st.ListAutoDeployDeployments(ctx, f.ID)

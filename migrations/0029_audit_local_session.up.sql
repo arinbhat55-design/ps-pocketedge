@@ -1,0 +1,1 @@
+ALTER TABLE audit_events ADD COLUMN local_session BOOLEAN NOT NULL DEFAULT FALSE;

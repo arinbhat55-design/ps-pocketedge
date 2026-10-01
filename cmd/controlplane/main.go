@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,6 +55,7 @@ func main() {
 	publicURL := flag.String("public-url", envOr("PUBLIC_URL", "http://localhost:8080"), "URL agents use to reach this control plane's REST API, for backup/restore blob transfer (env PUBLIC_URL); must be reachable from every enrolled agent, not just localhost, once agents run on other machines")
 	backupDir := flag.String("backup-dir", envOr("BACKUP_DIR", "./data/backups"), "local directory to store backup blobs in (env BACKUP_DIR)")
 	vaultKeyFile := flag.String("vault-key-file", envOr("VAULT_KEY_FILE", "./data/vault.key"), "file holding the key that encrypts stored database credentials, generated on first start if missing (env VAULT_KEY_FILE); ignored when VAULT_KEY is set. Back it up: without it, stored credentials cannot be decrypted")
+	dashboardOrigins := flag.String("dashboard-origins", envOr("DASHBOARD_ORIGINS", "http://localhost:8090,http://127.0.0.1:8090"), "comma-separated browser origins of the web dashboard allowed to use local access without login (env DASHBOARD_ORIGINS); run the web app on one of them, e.g. flutter run -d chrome --web-port 8090. The native desktop app is not affected")
 	flag.Parse()
 	if err := validateListeners(*grpcAddr, *httpAddr, *tlsCert, *tlsKey); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
@@ -83,6 +86,26 @@ func main() {
 		log.Warn("no JWT_SECRET set, generated a random one for this process — existing sessions will be invalidated on every restart; set JWT_SECRET for a stable one")
 	}
 	authMgr := authpkg.NewManager([]byte(secret))
+	authMgr.SetRoleLookup(func(ctx context.Context, userID string) (string, error) {
+		user, err := st.GetUserByID(ctx, userID)
+		if errors.Is(err, store.ErrNotFound) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return user.Role, nil
+	})
+	if err := authMgr.SetDashboardOrigins(splitList(*dashboardOrigins)); err != nil {
+		log.Error("invalid -dashboard-origins", "error", err)
+		os.Exit(2)
+	}
+	requireLocalLogin, err := st.RequireLocalLogin(ctx)
+	if err != nil {
+		log.Error("failed to load access settings; run database migrations", "error", err)
+		os.Exit(1)
+	}
+	authMgr.SetLocalSessionsAllowed(isLoopbackListener(*httpAddr) && !requireLocalLogin)
 
 	if err := authpkg.SeedAdmin(ctx, log, st, *adminEmail, *adminPassword); err != nil {
 		log.Error("failed to seed admin user", "error", err)
@@ -158,7 +181,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
-		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter, volumeFileWaiter, credentialVault, databaseOps, buildBus),
+		Handler: api.NewRouter(log, st, authMgr, dispatcher, events, serverEvents, blobs, *publicURL, inspectWaiter, opWaiter, imageListWaiter, imageDetailWaiter, imageOpWaiter, logStreamRelay, eventListWaiter, execStreamRelay, networkListWaiter, networkOpWaiter, volumeListWaiter, volumeDetailWaiter, volumeOpWaiter, volumeFileWaiter, credentialVault, databaseOps, buildBus, isLoopbackListener(*httpAddr)),
 	}
 
 	scheduler := schedule.New(log, st, dispatcher, opWaiter)
@@ -230,4 +253,14 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

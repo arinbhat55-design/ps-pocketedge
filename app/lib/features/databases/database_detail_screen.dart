@@ -561,12 +561,12 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                       builder: (_) => PostgresAdminScreen(
                         api: api,
                         database: detail!.instance,
-                        canManage: detail.canManage,
+                        canManage: widget.isAdmin && detail.canManage,
                       ),
                     ),
                   ),
                 ),
-              if (detail?.canManage == true)
+              if (widget.isAdmin && detail?.canManage == true)
                 PopupMenuButton<String>(
                   tooltip: 'Database actions',
                   onSelected: (value) {
@@ -807,7 +807,7 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
       title: 'Credentials',
       icon: Icons.key_outlined,
       actions: [
-        if (d.temporaryUsers)
+        if (widget.isAdmin && d.temporaryUsers)
           TextButton.icon(
             onPressed: _busy.contains('temporary')
                 ? null
@@ -863,7 +863,11 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
     final theme = Theme.of(context);
     final revealed = _revealed[c.id];
     final expired = !c.active;
-    final canRotate = c.canManage && c.kind == 'admin' && d.rotation != 'none';
+    final canRotate =
+        widget.isAdmin &&
+        c.canManage &&
+        c.kind == 'admin' &&
+        d.rotation != 'none';
     final busy = _busy.any((k) => k.endsWith(c.id));
     final meta = [
       if (c.username.isNotEmpty) c.username,
@@ -924,7 +928,7 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
-              if (c.canReveal) ...[
+              if (widget.isAdmin && c.canReveal) ...[
                 IconButton(
                   tooltip: revealed == null ? 'Reveal for 30 seconds' : 'Hide',
                   icon: Icon(
@@ -945,56 +949,57 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                   onPressed: busy ? null : () => _copy(c),
                 ),
               ],
-              PopupMenuButton<String>(
-                tooltip: 'More',
-                enabled: !busy,
-                onSelected: (v) => switch (v) {
-                  'download' => _download(c),
-                  'rotate' => _rotate(d, c),
-                  'share' => _share(c),
-                  'revoke' => _revoke(c),
-                  _ => null,
-                },
-                itemBuilder: (_) => [
-                  PopupMenuItem(
-                    value: 'download',
-                    enabled: c.canReveal && c.downloadedAt == null,
-                    child: ListTile(
-                      leading: const Icon(Icons.download_outlined),
-                      title: const Text('Download once'),
-                      subtitle: c.downloadedAt != null
-                          ? Text(
-                              'Downloaded ${formatTimestamp(c.downloadedAt!)}',
-                            )
-                          : null,
-                    ),
-                  ),
-                  if (canRotate)
-                    const PopupMenuItem(
-                      value: 'rotate',
+              if (widget.isAdmin)
+                PopupMenuButton<String>(
+                  tooltip: 'More',
+                  enabled: !busy,
+                  onSelected: (v) => switch (v) {
+                    'download' => _download(c),
+                    'rotate' => _rotate(d, c),
+                    'share' => _share(c),
+                    'revoke' => _revoke(c),
+                    _ => null,
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                      value: 'download',
+                      enabled: c.canReveal && c.downloadedAt == null,
                       child: ListTile(
-                        leading: Icon(Icons.autorenew),
-                        title: Text('Rotate'),
+                        leading: const Icon(Icons.download_outlined),
+                        title: const Text('Download once'),
+                        subtitle: c.downloadedAt != null
+                            ? Text(
+                                'Downloaded ${formatTimestamp(c.downloadedAt!)}',
+                              )
+                            : null,
                       ),
                     ),
-                  if (c.canManage && c.active)
-                    const PopupMenuItem(
-                      value: 'share',
-                      child: ListTile(
-                        leading: Icon(Icons.group_add_outlined),
-                        title: Text('Share…'),
+                    if (canRotate)
+                      const PopupMenuItem(
+                        value: 'rotate',
+                        child: ListTile(
+                          leading: Icon(Icons.autorenew),
+                          title: Text('Rotate'),
+                        ),
                       ),
-                    ),
-                  if (c.canManage && c.isTemporary && c.revokedAt == null)
-                    const PopupMenuItem(
-                      value: 'revoke',
-                      child: ListTile(
-                        leading: Icon(Icons.block),
-                        title: Text('Revoke now'),
+                    if (c.canManage && c.active)
+                      const PopupMenuItem(
+                        value: 'share',
+                        child: ListTile(
+                          leading: Icon(Icons.group_add_outlined),
+                          title: Text('Share…'),
+                        ),
                       ),
-                    ),
-                ],
-              ),
+                    if (c.canManage && c.isTemporary && c.revokedAt == null)
+                      const PopupMenuItem(
+                        value: 'revoke',
+                        child: ListTile(
+                          leading: Icon(Icons.block),
+                          title: Text('Revoke now'),
+                        ),
+                      ),
+                  ],
+                ),
             ],
           ),
         ],
@@ -1012,17 +1017,19 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
       title: 'Backups',
       icon: Icons.backup_outlined,
       actions: [
-        TextButton.icon(
-          onPressed: () => _editPolicy(d),
-          icon: const Icon(Icons.edit_calendar_outlined, size: 18),
-          label: const Text('Policy'),
-        ),
-        FilledButton.tonalIcon(
-          onPressed: _busy.contains('backup') ? null : () => _backupNow(d),
-          icon: const Icon(Icons.backup, size: 18),
-          label: const Text('Back up now'),
-        ),
-        if (d.engine == 'postgresql')
+        if (widget.isAdmin)
+          TextButton.icon(
+            onPressed: () => _editPolicy(d),
+            icon: const Icon(Icons.edit_calendar_outlined, size: 18),
+            label: const Text('Policy'),
+          ),
+        if (widget.isAdmin)
+          FilledButton.tonalIcon(
+            onPressed: _busy.contains('backup') ? null : () => _backupNow(d),
+            icon: const Icon(Icons.backup, size: 18),
+            label: const Text('Back up now'),
+          ),
+        if (widget.isAdmin && d.engine == 'postgresql')
           PopupMenuButton<String>(
             tooltip: 'More backup options',
             enabled: !_busy.contains('backup'),

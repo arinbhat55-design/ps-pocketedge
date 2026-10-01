@@ -12,20 +12,24 @@ import (
 // Compose files, variable groups, deployments, approvals, environment
 // policies, and Git repositories.
 type AuditEvent struct {
-	ID         int64           `json:"id"`
-	ActorID    *string         `json:"actorId,omitempty"`
-	ActorEmail *string         `json:"actorEmail,omitempty"`
-	Action     string          `json:"action"`
-	EntityType string          `json:"entityType"`
-	EntityID   string          `json:"entityId"`
-	Summary    string          `json:"summary"`
-	Details    json.RawMessage `json:"details"`
-	CreatedAt  time.Time       `json:"createdAt"`
+	ID         int64   `json:"id"`
+	ActorID    *string `json:"actorId,omitempty"`
+	ActorEmail *string `json:"actorEmail,omitempty"`
+	// LocalSession marks changes made through the no-login local session,
+	// which borrows an administrator account.
+	LocalSession bool            `json:"localSession"`
+	Action       string          `json:"action"`
+	EntityType   string          `json:"entityType"`
+	EntityID     string          `json:"entityId"`
+	Summary      string          `json:"summary"`
+	Details      json.RawMessage `json:"details"`
+	CreatedAt    time.Time       `json:"createdAt"`
 }
 
 // RecordAudit appends an audit event. actorID may be empty for
-// system-initiated changes (a webhook, the scheduler). details may be nil.
-func (s *Store) RecordAudit(ctx context.Context, actorID, action, entityType, entityID, summary string, details any) error {
+// system-initiated changes (a webhook, the scheduler). localSession marks a
+// change made through the no-login local session. details may be nil.
+func (s *Store) RecordAudit(ctx context.Context, actorID string, localSession bool, action, entityType, entityID, summary string, details any) error {
 	if details == nil {
 		details = map[string]any{}
 	}
@@ -38,9 +42,9 @@ func (s *Store) RecordAudit(ctx context.Context, actorID, action, entityType, en
 		actor = actorID
 	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO audit_events (actor_id, action, entity_type, entity_id, summary, details)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, actor, action, entityType, entityID, summary, payload)
+		INSERT INTO audit_events (actor_id, local_session, action, entity_type, entity_id, summary, details)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, actor, localSession, action, entityType, entityID, summary, payload)
 	return err
 }
 
@@ -62,7 +66,7 @@ func (s *Store) ListAuditEvents(ctx context.Context, f AuditFilter) ([]AuditEven
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT a.id, a.actor_id, u.email, a.action, a.entity_type, a.entity_id, a.summary, a.details, a.created_at
+		SELECT a.id, a.actor_id, u.email, a.local_session, a.action, a.entity_type, a.entity_id, a.summary, a.details, a.created_at
 		FROM audit_events a LEFT JOIN users u ON u.id = a.actor_id
 		WHERE ($1 = '' OR a.entity_type = $1)
 		  AND ($2 = '' OR a.entity_id = $2)
@@ -79,7 +83,7 @@ func (s *Store) ListAuditEvents(ctx context.Context, f AuditFilter) ([]AuditEven
 	for rows.Next() {
 		var e AuditEvent
 		var details []byte
-		if err := rows.Scan(&e.ID, &e.ActorID, &e.ActorEmail, &e.Action, &e.EntityType, &e.EntityID, &e.Summary, &details, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ActorID, &e.ActorEmail, &e.LocalSession, &e.Action, &e.EntityType, &e.EntityID, &e.Summary, &details, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		e.Details = details

@@ -343,13 +343,25 @@ type configDrift struct {
 }
 
 // gitDrift: the tracked branch moved past the deployed commit.
+// DeployedAt is when the current revision was rolled out. The *Info
+// fields and CommitsBehind come from the repository's history; when that
+// couldn't be read, DetailError says why and only the hashes are set.
 type gitDrift struct {
-	Drifted        bool   `json:"drifted"`
-	Ref            string `json:"ref"`
-	DeployedCommit string `json:"deployedCommit"`
-	LatestCommit   string `json:"latestCommit,omitempty"`
-	Error          string `json:"error,omitempty"`
+	Drifted            bool               `json:"drifted"`
+	Ref                string             `json:"ref"`
+	DeployedCommit     string             `json:"deployedCommit"`
+	LatestCommit       string             `json:"latestCommit,omitempty"`
+	DeployedAt         time.Time          `json:"deployedAt"`
+	DeployedCommitInfo *gitsource.Commit  `json:"deployedCommitInfo,omitempty"`
+	LatestCommitInfo   *gitsource.Commit  `json:"latestCommitInfo,omitempty"`
+	CommitsBehind      []gitsource.Commit `json:"commitsBehind,omitempty"`
+	MoreCommitsBehind  bool               `json:"moreCommitsBehind,omitempty"`
+	DetailError        string             `json:"detailError,omitempty"`
+	Error              string             `json:"error,omitempty"`
 }
+
+// maxDriftCommits is how many commits behind the drift report lists.
+const maxDriftCommits = 20
 
 // runtimeDrift: the containers actually on the server (as last reported
 // by its agent) don't match what the current revision defines.
@@ -481,7 +493,7 @@ func handleDeploymentDrift(d *deployer) http.HandlerFunc {
 			if ref == "" {
 				ref = file.GitRef
 			}
-			gd := &gitDrift{Ref: ref, DeployedCommit: rev.GitCommit}
+			gd := &gitDrift{Ref: ref, DeployedCommit: rev.GitCommit, DeployedAt: rev.CreatedAt}
 			if _, repo, err := d.gitRepoFor(ctx, file); err != nil {
 				gd.Error = err.Error()
 			} else if latest, err := gitsource.ResolveRef(ctx, repo, ref); err != nil {
@@ -489,6 +501,12 @@ func handleDeploymentDrift(d *deployer) http.HandlerFunc {
 			} else {
 				gd.LatestCommit = latest
 				gd.Drifted = rev.GitCommit != "" && latest != rev.GitCommit
+				if cmp, err := gitsource.CompareCommits(ctx, repo, ref, latest, rev.GitCommit, maxDriftCommits); err != nil {
+					gd.DetailError = err.Error()
+				} else {
+					gd.LatestCommitInfo, gd.DeployedCommitInfo = &cmp.Latest, cmp.Deployed
+					gd.CommitsBehind, gd.MoreCommitsBehind = cmp.Behind, cmp.More
+				}
 			}
 			report.Git = gd
 		}

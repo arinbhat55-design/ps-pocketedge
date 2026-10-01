@@ -22,15 +22,51 @@ func (m *Manager) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		claims, err := m.ParseToken(token)
+		claims, err := m.AuthenticateRequest(r, token)
 		if err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			WriteAuthError(w, err)
+			return
+		}
+		if claims.Role == "viewer" && !viewerMayAccess(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), claimsContextKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// Viewers can use read endpoints and the few POST endpoints that only
+// inspect/transform data. New write routes are denied by default.
+func viewerMayAccess(r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		switch r.Pattern {
+		case "GET /api/servers/{id}/volumes/{name}/files/content",
+			"GET /api/compose-files",
+			"GET /api/compose-files/{id}",
+			"GET /api/compose-files/{id}/versions",
+			"GET /api/compose-files/{id}/versions/{versionId}",
+			"GET /api/env-var-groups",
+			"GET /api/env-var-groups/{id}",
+			"GET /api/git-repositories/{id}/file",
+			"GET /api/deployments/{id}/revisions/{revision}":
+			return false
+		}
+		return true
+	}
+	if r.Method == http.MethodPost {
+		switch r.Pattern {
+		case "POST /api/auth/change-password",
+			"POST /api/servers/{id}/containers/{containerId}/inspect",
+			"POST /api/compose-files/parse",
+			"POST /api/compose-files/render",
+			"POST /api/deployments/preview",
+			"POST /api/databases/preview":
+			return true
+		}
+	}
+	return false
 }
 
 // RequireAdmin wraps next like RequireAuth, additionally rejecting

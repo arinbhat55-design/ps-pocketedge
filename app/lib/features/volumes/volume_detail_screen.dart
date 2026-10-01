@@ -174,19 +174,20 @@ class _VolumeDetailScreenState extends State<VolumeDetailScreen> {
                 ),
               ),
               const SizedBox(height: 24),
-              OutlinedButton.icon(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => VolumeFilesScreen(
-                      apiClient: widget.apiClient,
-                      volume: volume,
-                      isAdmin: widget.isAdmin,
+              if (widget.isAdmin)
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => VolumeFilesScreen(
+                        apiClient: widget.apiClient,
+                        volume: volume,
+                        isAdmin: widget.isAdmin,
+                      ),
                     ),
                   ),
+                  icon: const Icon(Icons.folder_open_outlined),
+                  label: const Text('Browse files'),
                 ),
-                icon: const Icon(Icons.folder_open_outlined),
-                label: const Text('Browse files'),
-              ),
               if (widget.isAdmin && volume.orphaned) ...[
                 const SizedBox(height: 8),
                 OutlinedButton.icon(
@@ -196,14 +197,18 @@ class _VolumeDetailScreenState extends State<VolumeDetailScreen> {
                 ),
               ],
               const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () => _delete(volume),
-                icon: const Icon(Icons.delete_outline, color: AppColors.failed),
-                label: const Text(
-                  'Delete volume',
-                  style: TextStyle(color: AppColors.failed),
+              if (widget.isAdmin)
+                OutlinedButton.icon(
+                  onPressed: () => _delete(volume),
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    color: AppColors.failed,
+                  ),
+                  label: const Text(
+                    'Delete volume',
+                    style: TextStyle(color: AppColors.failed),
+                  ),
                 ),
-              ),
             ],
           );
         },
