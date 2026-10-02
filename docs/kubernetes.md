@@ -1,6 +1,6 @@
 # Kubernetes integration
 
-PSpocketEdge connects directly to a standard Kubernetes API server. The
+PS-pocketEdge connects directly to a standard Kubernetes API server. The
 Kubernetes module is separate from Docker agents and Compose deployments.
 Apply migration `0025_kubernetes_clusters.up.sql` before starting the updated
 control plane.
@@ -36,7 +36,7 @@ For workload management, also grant `create`, `update`, and `delete` on
 the objects in each chart and `get`, `list`, `create`, `update`, and `delete`
 on core `secrets` for release storage. Bind namespace-scoped permissions where
 possible; the all-namespace overview and placement estimate need cluster-wide
-list permissions. PSpocketEdge restricts cluster connection and changes to
+list permissions. PS-pocketEdge restricts cluster connection and changes to
 its admins. A read-only installation can use a read-only credential.
 
 ## Workload behavior
@@ -52,7 +52,7 @@ estimate does not model affinity, topology spread, volume placement, admission
 changes, or concurrent changes. Updates use a conservative estimate that
 reserves capacity for all requested replicas in addition to current Pods.
 
-Only Deployments created by PSpocketEdge can be updated, rolled back, or
+Only Deployments created by PS-pocketEdge can be updated, rolled back, or
 deleted from the UI. Revision history comes from retained ReplicaSets;
 rollback is available only while the desired revision remains in Kubernetes.
 Deleting a Deployment removes its Pods, while separately created storage is

@@ -56,6 +56,20 @@ func handleCreateSchedule(log *slog.Logger, st *store.Store) http.HandlerFunc {
 			http.Error(w, "serverId, containerId, and containerName are required", http.StatusBadRequest)
 			return
 		}
+		if !isUUID(req.ServerID) {
+			http.Error(w, "serverId "+req.ServerID+" is not a valid ID", http.StatusBadRequest)
+			return
+		}
+		server, err := st.GetServer(r.Context(), req.ServerID)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && server.Status == "removed") {
+			http.Error(w, "server not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			log.Error("failed to load server", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 		if req.Action != "start" && req.Action != "stop" {
 			http.Error(w, `action must be "start" or "stop"`, http.StatusBadRequest)
 			return

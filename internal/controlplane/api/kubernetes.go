@@ -489,7 +489,7 @@ func (api *kubernetesAPI) workload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if existing.Labels["app.kubernetes.io/managed-by"] != "pspocketedge" {
-			http.Error(w, "only PSpocketEdge-managed deployments can be updated", 403)
+			http.Error(w, "only PS-pocketEdge-managed deployments can be updated", 403)
 			return
 		}
 		if len(existing.Spec.Template.Spec.Containers) == 0 {

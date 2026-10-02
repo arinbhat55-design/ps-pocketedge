@@ -144,6 +144,9 @@ func (api *databaseAPI) prepare(ctx context.Context, req *databaseRequest) (*pla
 	if req.ServerID == "" {
 		return nil, newActionError(http.StatusBadRequest, "serverId is required")
 	}
+	if !isUUID(req.ServerID) {
+		return nil, newActionError(http.StatusBadRequest, "serverId %s is not a valid ID", req.ServerID)
+	}
 	server, err := api.st.GetServer(ctx, req.ServerID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && server.Status == "removed") {
 		return nil, newActionError(http.StatusNotFound, "server not found")

@@ -98,6 +98,10 @@ func writeActionError(w http.ResponseWriter, log *slog.Logger, err error) {
 		writeJSON(w, ae.status, body)
 		return
 	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
 	log.Error("deployment action failed", "error", err)
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 }

@@ -1,11 +1,11 @@
 {
-    "name": "PSpocketEdge",
-    "short_name": "PSpocketEdge",
+    "name": "PS-pocketEdge",
+    "short_name": "PS-pocketEdge",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#1A1D21",
+    "theme_color": "#1A1D21",
+    "description": "Manage your containers, servers, and deployments with PS-pocketEdge.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

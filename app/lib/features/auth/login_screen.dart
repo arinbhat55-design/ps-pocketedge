@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/app_logo.dart';
 
 class LoginScreen extends StatefulWidget {
   final ApiClient apiClient;
@@ -91,6 +92,8 @@ class _LoginScreenState extends State<LoginScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  const Center(child: AppLogo(size: 112)),
+                  const SizedBox(height: 16),
                   Text(
                     'PS-pocketEdge',
                     style: Theme.of(context).textTheme.headlineSmall,

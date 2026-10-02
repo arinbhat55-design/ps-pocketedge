@@ -6,9 +6,12 @@ LDFLAGS  := -X '$(MODULE)/internal/shared/version.Version=$(VERSION)' \
             -X '$(MODULE)/internal/shared/version.Commit=$(COMMIT)' \
             -X '$(MODULE)/internal/shared/version.BuildDate=$(DATE)'
 
-.PHONY: build build-agent build-controlplane test vet proto migrate dev release clean
+.PHONY: build build-agent build-controlplane build-cli test vet proto migrate dev release clean
 
-build: build-agent build-controlplane
+build: build-agent build-controlplane build-cli
+
+build-cli:
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/pse ./cmd/pse
 
 build-agent:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/pe-agent ./cmd/agent

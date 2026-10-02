@@ -1,6 +1,6 @@
 # Manage local Docker without Docker Desktop
 
-PSpocketEdge manages a Docker Engine through its agent. The dashboard alone cannot run containers: a Docker daemon must be running on the machine you want to manage. The agent connects outbound to the control plane's gRPC address, normally port 8443.
+PS-pocketEdge manages a Docker Engine through its agent. The dashboard alone cannot run containers: a Docker daemon must be running on the machine you want to manage. The agent connects outbound to the control plane's gRPC address, normally port 8443.
 
 ## Dashboard access
 

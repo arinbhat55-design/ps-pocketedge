@@ -1,0 +1,10 @@
+Generated with the built-in image_gen tool.
+
+Use case: logo-brand
+Asset type: standalone application logo symbol for PS-pocketEdge, a container/server/deployment management application.
+Primary request: containers within a pocket; the pocket is slightly torn at its upper-left edge; one container protrudes halfway outside the pocket at an incline.
+Subject/composition: one centered compact logo mark. A recognizable clothing patch-pocket silhouette, broad open top, rounded lower corners and a gently pointed base. Two small ribbed shipping-container shapes tucked behind the front of the pocket; the main container has roughly half its body above the opening, tilted about 20 degrees toward the upper-left, a smaller upright container peeks behind it on the right. Clear overlap makes the containers look held INSIDE the pocket. Small intentional jagged tear at the upper-left rim, with one short folded flap; understated and readable, not shredded. Use only a few bold rib lines on containers. Pocket front has a simple inset seam line.
+Style: polished minimal geometric logo, flat vector-like solid shapes, crisp boundaries, strong compact silhouette, restrained detail, suitable for a developer infrastructure app and legible as an app icon.
+Color palette: existing app charcoal #23282D and teal #34B8A6 with pale mint #A5EFE3 for restrained edge/seam details. Container faces may use slightly lighter teal to differentiate planes. Bold teal pocket body with charcoal inset seam and charcoal/mint container edge details so the mark reads on both light and dark backgrounds.
+Scene/backdrop: genuinely transparent background, generous even clear margin, square canvas.
+Constraints: exactly one logo symbol, no wordmark, no letters, no text, no watermark, no extra symbols, no whale, no surrounding badge, no mockup, no drop shadows, no photographic texture, no gradients. Preserve the upper-left tear and the half-protruding tilted container.

@@ -1,4 +1,4 @@
-// Command agent is the PSpocketEdge per-node agent.
+// Command agent is the PS-pocketEdge per-node agent.
 package main
 
 import (

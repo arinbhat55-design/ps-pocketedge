@@ -1,6 +1,6 @@
 # Docker Desktop parity work
 
-PSpocketEdge is a Docker management app. A Docker Engine or compatible daemon is still required on every machine where containers run.
+PS-pocketEdge is a Docker management app. A Docker Engine or compatible daemon is still required on every machine where containers run.
 
 | Priority | Capability | Current state |
 | --- | --- | --- |

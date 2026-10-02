@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -22,7 +23,7 @@ import (
 // package uses (see handleServerStream's doc comment).
 func handleContainerExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, relay *deploy.ExecStreamRelay) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, err := authMgr.AuthenticateRequest(r, r.URL.Query().Get("token"))
+		claims, err := authMgr.AuthenticateRequest(r, streamToken(r))
 		if err != nil {
 			auth.WriteAuthError(w, err)
 			return
@@ -34,6 +35,13 @@ func handleContainerExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *de
 
 		serverID := r.PathValue("id")
 		containerID := r.PathValue("containerId")
+		// Repeated cmd parameters preserve argument boundaries for terminal
+		// clients. Omitting them retains the dashboard's default shell.
+		command, err := parseExecCommand(r.URL.Query()["cmd"])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		cols, rows := 80, 24
 		if v := r.URL.Query().Get("cols"); v != "" {
@@ -66,6 +74,7 @@ func handleContainerExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *de
 					RequestId:   requestID,
 					ServerId:    serverID,
 					ContainerId: containerID,
+					Cmd:         command,
 					Cols:        uint32(cols),
 					Rows:        uint32(rows),
 				},
@@ -142,6 +151,35 @@ func handleContainerExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *de
 			}
 		}
 	}
+}
+
+func parseExecCommand(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	if len(args) > 128 || args[0] == "" {
+		return nil, fmt.Errorf("exec requires a nonempty executable and at most 128 arguments")
+	}
+	total := 0
+	for _, arg := range args {
+		total += len(arg)
+		if strings.ContainsRune(arg, '\x00') || total > 16384 {
+			return nil, fmt.Errorf("exec command contains a NUL or exceeds 16 KiB")
+		}
+	}
+	return args, nil
+}
+
+// CLI clients can send a bearer header; browsers retain query-token auth.
+func streamToken(r *http.Request) string {
+	if header := r.Header.Get("Authorization"); header != "" {
+		token, ok := strings.CutPrefix(header, "Bearer ")
+		if !ok {
+			return ""
+		}
+		return token
+	}
+	return r.URL.Query().Get("token")
 }
 
 // parseResize parses a "resize:<cols>x<rows>" control message sent by the

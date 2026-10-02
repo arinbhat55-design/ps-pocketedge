@@ -5,6 +5,24 @@ before:
     - go mod tidy
 
 builds:
+  - id: cli
+    main: ./cmd/pse
+    binary: pse
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.Version={{.Version}}
+      - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.Commit={{.Commit}}
+      - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.BuildDate={{.Date}}
+
   - id: agent
     main: ./cmd/agent
     binary: pe-agent
@@ -42,6 +60,9 @@ builds:
       - -X github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/version.BuildDate={{.Date}}
 
 archives:
+  - id: cli
+    ids: [cli]
+    name_template: "pse_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
   - id: agent
     ids: [agent]
     name_template: "pe-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"

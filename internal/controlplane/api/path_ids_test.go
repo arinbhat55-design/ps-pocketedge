@@ -1,6 +1,10 @@
 package api
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestInvalidUUIDParam(t *testing.T) {
 	const id = "30c5aaf5-3531-41b9-bf18-c3b1630f63b9"
@@ -19,6 +23,24 @@ func TestInvalidUUIDParam(t *testing.T) {
 	for _, tc := range cases {
 		if _, _, ok := invalidUUIDParam(tc.pattern, tc.path); ok != tc.ok {
 			t.Errorf("invalidUUIDParam(%q, %q) ok = %v, want %v", tc.pattern, tc.path, ok, tc.ok)
+		}
+	}
+}
+
+func TestPathIDValidationChecksServerIDQuery(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/schedules", func(w http.ResponseWriter, _ *http.Request) {})
+	h := withPathIDValidation(mux)
+	cases := map[string]int{
+		"/api/schedules": http.StatusOK,
+		"/api/schedules?serverId=30c5aaf5-3531-41b9-bf18-c3b1630f63b9": http.StatusOK,
+		"/api/schedules?serverId=not-a-uuid":                           http.StatusBadRequest,
+	}
+	for path, want := range cases {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != want {
+			t.Errorf("GET %s = %d, want %d", path, w.Code, want)
 		}
 	}
 }

@@ -64,7 +64,7 @@ func (api *kubernetesAPI) revisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !managedDeployment(deployment) {
-		http.Error(w, "only PSpocketEdge-managed deployments have a managed history", 403)
+		http.Error(w, "only PS-pocketEdge-managed deployments have a managed history", 403)
 		return
 	}
 	sets, err := client.AppsV1().ReplicaSets(ns).List(r.Context(), metav1.ListOptions{})
@@ -96,7 +96,7 @@ func (api *kubernetesAPI) rollbackWorkload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !managedDeployment(deployment) {
-		http.Error(w, "only PSpocketEdge-managed deployments can be rolled back", 403)
+		http.Error(w, "only PS-pocketEdge-managed deployments can be rolled back", 403)
 		return
 	}
 	sets, err := client.AppsV1().ReplicaSets(ns).List(r.Context(), metav1.ListOptions{})
@@ -149,7 +149,7 @@ func (api *kubernetesAPI) deleteWorkload(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !managedDeployment(deployment) {
-		http.Error(w, "only PSpocketEdge-managed deployments can be deleted", 403)
+		http.Error(w, "only PS-pocketEdge-managed deployments can be deleted", 403)
 		return
 	}
 	policy := metav1.DeletePropagationBackground

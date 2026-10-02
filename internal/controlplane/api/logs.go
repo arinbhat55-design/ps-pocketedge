@@ -158,7 +158,7 @@ func fetchContainerLogs(dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRe
 // in this package uses (see handleServerStream's doc comment).
 func handleContainerLogsStream(log *slog.Logger, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, relay *deploy.LogStreamRelay, secrets secretSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, err := authMgr.AuthenticateRequest(r, r.URL.Query().Get("token")); err != nil {
+		if _, err := authMgr.AuthenticateRequest(r, streamToken(r)); err != nil {
 			auth.WriteAuthError(w, err)
 			return
 		}

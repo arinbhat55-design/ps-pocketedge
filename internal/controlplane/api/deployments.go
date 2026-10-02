@@ -175,6 +175,9 @@ func publishedHostPorts(project *types.Project) []requestedPort {
 // only fail once the deploy reached the agent, with a raw networking
 // error. Compose errors are left for the deploy itself to report.
 func (d *deployer) preflightNewDeployment(ctx context.Context, serverID, composeYAML string, env map[string]string) error {
+	if !isUUID(serverID) {
+		return newActionError(http.StatusBadRequest, "serverId %s is not a valid ID", serverID)
+	}
 	server, err := d.st.GetServer(ctx, serverID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && server.Status == "removed") {
 		return newActionError(http.StatusNotFound, "server not found")

@@ -156,7 +156,22 @@ const execReadBufSize = 32 * 1024
 // or a StopStreamCommand for this request_id closes the session early
 // (via streams). Keystrokes/resizes arrive as ExecInputCommands routed
 // through streams by session.go's receive loop.
+//
+// It registers the session synchronously — call it from the receive loop,
+// not in a goroutine — and runs the session in its own goroutine. The
+// session is registered before the process starts, so input sent
+// right after the client connects (e.g. piped stdin from the CLI) queues
+// on the input channel instead of being dropped while Docker starts the
+// exec — the receive loop would otherwise find no session to route it to.
 func (r *Runner) handleExecStart(ctx context.Context, dockerCli *dockerclient.Client, cmd *agentv1.ExecStartCommand, outbound chan<- *agentv1.AgentMessage, streams *activeStreams) {
+	execCtx, execCancel := context.WithCancel(ctx)
+	input, unregister := streams.registerExec(cmd.GetRequestId(), execCancel)
+	go r.runExec(ctx, execCtx, execCancel, dockerCli, cmd, outbound, input, unregister)
+}
+
+func (r *Runner) runExec(ctx, execCtx context.Context, execCancel context.CancelFunc, dockerCli *dockerclient.Client, cmd *agentv1.ExecStartCommand, outbound chan<- *agentv1.AgentMessage, input <-chan *agentv1.ExecInputCommand, unregister func()) {
+	defer unregister()
+	defer execCancel()
 	send := func(chunk *agentv1.ExecOutputChunk) {
 		select {
 		case outbound <- &agentv1.AgentMessage{Payload: &agentv1.AgentMessage_ExecOutput{ExecOutput: chunk}}:
@@ -169,20 +184,18 @@ func (r *Runner) handleExecStart(ctx context.Context, dockerCli *dockerclient.Cl
 		return
 	}
 
-	session, err := docker.StartExec(ctx, dockerCli, cmd.GetContainerId(), cmd.GetCmd(), uint(cmd.GetCols()), uint(cmd.GetRows()))
+	session, err := docker.StartExec(execCtx, dockerCli, cmd.GetContainerId(), cmd.GetCmd(), uint(cmd.GetCols()), uint(cmd.GetRows()))
 	if err != nil {
 		send(&agentv1.ExecOutputChunk{RequestId: cmd.GetRequestId(), Done: true, ErrorMessage: err.Error()})
 		return
 	}
 	defer session.Conn.Close()
-
-	execCtx, execCancel := context.WithCancel(ctx)
-	defer execCancel()
-	input, unregister := streams.registerExec(cmd.GetRequestId(), func() {
-		execCancel()
+	// A StopStreamCommand cancels execCtx; closing the connection unblocks
+	// the read loop below.
+	go func() {
+		<-execCtx.Done()
 		session.Conn.Close()
-	})
-	defer unregister()
+	}()
 
 	go func() {
 		for {

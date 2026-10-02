@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
 import '../../models/user.dart';
+import '../../widgets/app_logo.dart';
 import '../../widgets/state_message.dart';
 import '../alerts/alerts_screen.dart';
 import '../containers/container_list_screen.dart';
@@ -396,10 +397,7 @@ class _AppBrand extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Tooltip(
-              message: 'PS-pocketEdge',
-              child: Icon(Icons.layers_outlined, color: scheme.primary),
-            ),
+            Tooltip(message: 'PS-pocketEdge', child: const AppLogo(size: 36)),
             IconButton(
               tooltip: 'Expand menu',
               icon: const Icon(Icons.chevron_right),
@@ -416,7 +414,7 @@ class _AppBrand extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.layers_outlined, color: scheme.primary, size: 24),
+            const AppLogo(size: 36),
             const SizedBox(width: 10),
             Expanded(
               child: Text(

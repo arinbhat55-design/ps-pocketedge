@@ -1,7 +1,7 @@
 # Cloud connectivity
 
-PSpocketEdge can run its control plane on a cloud VM and manage Docker hosts
-that run the PSpocketEdge agent. Agents initiate the gRPC connection to the
+PS-pocketEdge can run its control plane on a cloud VM and manage Docker hosts
+that run the PS-pocketEdge agent. Agents initiate the gRPC connection to the
 control plane; Docker Engine does not need a public TCP port.
 
 ## TLS setup

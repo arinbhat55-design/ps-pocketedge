@@ -385,7 +385,7 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 			case msg.GetListEvents() != nil:
 				go r.handleListEvents(sessionCtx, dockerCli, msg.GetListEvents(), outbound)
 			case msg.GetExecStart() != nil:
-				go r.handleExecStart(sessionCtx, dockerCli, msg.GetExecStart(), outbound, streams)
+				r.handleExecStart(sessionCtx, dockerCli, msg.GetExecStart(), outbound, streams)
 			case msg.GetListNetworks() != nil:
 				go r.handleListNetworks(sessionCtx, dockerCli, msg.GetListNetworks(), outbound)
 			case msg.GetCreateNetwork() != nil:

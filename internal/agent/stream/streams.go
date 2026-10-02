@@ -46,7 +46,9 @@ func (s *activeStreams) registerLog(requestID string, cancel func()) (done func(
 // where ExecInputCommands for this session arrive, and done removes the
 // entry once the exec process exits on its own.
 func (s *activeStreams) registerExec(requestID string, stop func()) (input chan *agentv1.ExecInputCommand, done func()) {
-	input = make(chan *agentv1.ExecInputCommand, 32)
+	// Room for input queued while the exec process starts (piped stdin
+	// arrives in up to 4 KiB messages).
+	input = make(chan *agentv1.ExecInputCommand, 256)
 	s.mu.Lock()
 	s.entries[requestID] = &activeStream{stop: stop, execInput: input}
 	s.mu.Unlock()

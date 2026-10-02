@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the PSpocketEdge agent as a systemd service.
+# Installs the PS-pocketEdge agent as a systemd service.
 #
 # Usage:
 #   curl -sSL https://<control-plane>/install.sh | sh -s -- \
@@ -113,7 +113,7 @@ chmod 600 "$CONFIG_DIR/agent.yaml"
 echo "==> installing systemd unit"
 cat > /etc/systemd/system/pe-agent.service <<'EOF'
 [Unit]
-Description=PSpocketEdge agent
+Description=PS-pocketEdge agent
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service

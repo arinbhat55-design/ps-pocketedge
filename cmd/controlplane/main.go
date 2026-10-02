@@ -1,4 +1,4 @@
-// Command controlplane is the PSpocketEdge control-plane server.
+// Command controlplane is the PS-pocketEdge control-plane server.
 package main
 
 import (
