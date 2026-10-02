@@ -1,0 +1,908 @@
+import 'package:flutter/material.dart';
+
+import '../../api/api_client.dart';
+import '../../models/container.dart';
+import '../../models/image.dart' show ImageRollbackEntry, formatBytes;
+import '../../models/resource_insights.dart' show ResourceLimits;
+import '../../models/server_metrics.dart';
+import 'clone_container_dialog.dart';
+import 'container_events_screen.dart';
+import 'container_logs_screen.dart';
+import 'container_resources_screen.dart';
+import 'container_schedules_screen.dart';
+import 'container_terminal_screen.dart';
+import 'recreate_container_dialog.dart';
+import 'rename_container_dialog.dart';
+import 'resource_limits_dialog.dart';
+import 'restart_policy_dialog.dart';
+import '../../theme/app_theme.dart';
+import '../../models/server.dart';
+import '../../widgets/formatting.dart';
+import '../../widgets/notice_banner.dart';
+import '../../widgets/status_pill.dart';
+
+/// Full detail for one container: the cheap [ContainerInfo] fields (already
+/// known from the list/stream, shown immediately) plus the expensive
+/// [ContainerDetail] fields (env vars, restart policy, health), fetched on
+/// demand from the owning agent via a live ContainerInspect. Also hosts the
+/// full container-management action menu: lifecycle actions, rename,
+/// clone, recreate, restart policy, and schedules.
+class ContainerDetailScreen extends StatefulWidget {
+  final ApiClient apiClient;
+  final String serverId;
+  final String serverName;
+  final ContainerInfo container;
+  final bool isAdmin;
+  // 0 Overview, 1 Resources, 2 Logs, 3 Terminal, 4 Events.
+  final int initialTab;
+
+  const ContainerDetailScreen({
+    super.key,
+    required this.apiClient,
+    required this.serverId,
+    required this.serverName,
+    required this.container,
+    this.isAdmin = true,
+    this.initialTab = 0,
+  });
+
+  @override
+  State<ContainerDetailScreen> createState() => _ContainerDetailScreenState();
+}
+
+class _ContainerDetailScreenState extends State<ContainerDetailScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController = TabController(
+    length: widget.isAdmin ? 5 : 4,
+    vsync: this,
+    initialIndex: widget.isAdmin || widget.initialTab < 4
+        ? widget.initialTab
+        : 3,
+  );
+  late Future<ContainerDetail> _detailFuture;
+  late final String _currentName = widget.container.name;
+  List<ImageRollbackEntry> _rollbackHistory = [];
+  bool _busy = false;
+  // True once any action below has actually changed something server-side
+  // (start/stop/rename/remove/recreate/...) — popped back to the caller so
+  // the fleet-wide/per-server list knows to refresh instead of showing
+  // stale state.
+  bool _changed = false;
+  // The container's server, to tell live state from a stale snapshot:
+  // if its agent has stopped reporting, the state below is only the last
+  // thing it reported.
+  Server? _server;
+
+  bool get _serverDisconnected =>
+      _server != null && serverStatus(_server!).tone == StatusTone.failed;
+
+  Future<void> _loadServer() async {
+    try {
+      final servers = await widget.apiClient.listServers();
+      if (!mounted) return;
+      setState(() {
+        _server = servers.where((s) => s.id == widget.serverId).firstOrNull;
+      });
+    } catch (_) {
+      // Without it the page behaves as before (state shown as reported).
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadServer();
+    _detailFuture = widget.apiClient.inspectContainer(
+      widget.serverId,
+      widget.container.containerId,
+    );
+    _loadRollbackHistory();
+  }
+
+  Future<void> _loadRollbackHistory() async {
+    try {
+      final history = await widget.apiClient.listImageRollbackHistory(
+        widget.serverId,
+        widget.container.containerId,
+      );
+      if (mounted) setState(() => _rollbackHistory = history);
+    } catch (_) {
+      // Best-effort — the "Rollback" button just stays hidden.
+    }
+  }
+
+  Future<void> _rollback() async {
+    if (_rollbackHistory.isEmpty) return;
+    final previousImage = _rollbackHistory.first.previousImage;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Rollback to previous image?'),
+        content: Text(
+          'Recreates this container on its previous image:\n\n$previousImage\n\n'
+          'Every other setting (name, ports, volumes, restart policy) stays the same.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Rollback'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _busy = true);
+    try {
+      final result = await widget.apiClient.rollbackContainer(
+        widget.serverId,
+        widget.container.containerId,
+      );
+      if (!mounted) return;
+      if (!result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.error ?? 'Rollback failed')),
+        );
+        return;
+      }
+      // Recreate mints a new container id — this screen is built around the
+      // old one, so pop back and let the caller refresh, same as _recreate.
+      Navigator.of(context).pop(true);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Rollback failed: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _refreshDetail() {
+    setState(() {
+      _detailFuture = widget.apiClient.inspectContainer(
+        widget.serverId,
+        widget.container.containerId,
+      );
+    });
+  }
+
+  String _uptime(DateTime? createdAt) {
+    if (createdAt == null) return '—';
+    final d = DateTime.now().difference(createdAt);
+    if (d.inDays > 0) return '${d.inDays}d ${d.inHours % 24}h';
+    if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
+    return '${d.inMinutes}m';
+  }
+
+  Future<void> _runAction(String action, {bool force = false}) async {
+    setState(() => _busy = true);
+    try {
+      final result = await widget.apiClient.containerAction(
+        widget.serverId,
+        widget.container.containerId,
+        action,
+        force: force,
+      );
+      if (!mounted) return;
+      if (!result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.error ?? 'Action failed')),
+        );
+        return;
+      }
+      _changed = true;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$action succeeded')));
+      if (action == 'remove') {
+        Navigator.of(context).pop(true);
+        return;
+      }
+      _refreshDetail();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to $action container: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _confirmAndRun(String action, {bool force = false}) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(
+          action == 'kill' ? 'Force-kill container?' : 'Remove container?',
+        ),
+        content: Text(
+          action == 'kill'
+              ? 'Sends SIGKILL immediately, with no graceful shutdown. Use for an '
+                    'unresponsive container.'
+              : 'This permanently deletes the container'
+                    '${force ? ' (forced — it will be stopped first if running)' : ''}. '
+                    'Any data outside a named volume is lost.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.failed),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(action == 'kill' ? 'Force-kill' : 'Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) _runAction(action, force: force);
+  }
+
+  Future<void> _rename() async {
+    final ok = await showRenameContainerDialog(
+      context,
+      apiClient: widget.apiClient,
+      serverId: widget.serverId,
+      containerId: widget.container.containerId,
+      currentName: _currentName,
+    );
+    if (ok == true) {
+      // The controller that opened this screen (list) knows the new name
+      // came from a fresh GET; here we just don't have one, so the rename
+      // dialog's own submitted text becomes the new display name is not
+      // available — reload via inspect isn't enough (name isn't part of
+      // ContainerDetail). Simplest correct fix: tell the caller to refresh
+      // and pop, since this screen has no server-authoritative way to know
+      // the new name beyond re-fetching the list itself.
+      _changed = true;
+      if (mounted) Navigator.of(context).pop(true);
+    }
+  }
+
+  Future<void> _clone() async {
+    final newId = await showCloneContainerDialog(
+      context,
+      apiClient: widget.apiClient,
+      serverId: widget.serverId,
+      containerId: widget.container.containerId,
+      currentName: _currentName,
+    );
+    if (newId != null && mounted) {
+      _changed = true;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Container cloned')));
+    }
+  }
+
+  Future<void> _recreate(ContainerDetail detail) async {
+    // Docker lists a published port once per address family (0.0.0.0 and
+    // ::); keep one mapping each, or the recreate would bind it twice.
+    final seenPorts = <String>{};
+    final current = ContainerConfig(
+      image: widget.container.image ?? '',
+      name: _currentName,
+      env: detail.env,
+      ports: [
+        for (final p in widget.container.ports)
+          if (p.privatePort != 0 &&
+              seenPorts.add('${p.privatePort}:${p.publicPort}/${p.type}'))
+            ContainerPortSpec(
+              containerPort: p.privatePort,
+              hostPort: p.publicPort,
+              protocol: p.type.isEmpty ? 'tcp' : p.type,
+            ),
+      ],
+      restartPolicyName: detail.restartPolicyName.isEmpty
+          ? 'no'
+          : detail.restartPolicyName,
+      restartPolicyMaxRetryCount: detail.restartPolicyMaxRetryCount,
+      nanoCpus: detail.nanoCpus,
+      memoryLimitBytes: detail.memoryLimitBytes,
+      memoryReservationBytes: detail.memoryReservationBytes,
+      pidsLimit: detail.pidsLimit,
+    );
+    final newId = await showRecreateContainerDialog(
+      context,
+      apiClient: widget.apiClient,
+      serverId: widget.serverId,
+      containerId: widget.container.containerId,
+      current: current,
+    );
+    if (newId != null && mounted) {
+      // The container id changed, so this screen (built around the old
+      // id) can no longer act on it — pop back so the caller refreshes.
+      Navigator.of(context).pop(true);
+    }
+  }
+
+  Future<void> _resizeResources(ContainerDetail detail) async {
+    final ok = await showResourceLimitsDialog(
+      context,
+      apiClient: widget.apiClient,
+      serverId: widget.serverId,
+      containerId: widget.container.containerId,
+      currentNanoCpus: detail.nanoCpus,
+      currentMemoryLimitBytes: detail.memoryLimitBytes,
+      currentMemoryReservationBytes: detail.memoryReservationBytes,
+      currentPidsLimit: detail.pidsLimit,
+    );
+    if (ok == true) {
+      _changed = true;
+      _refreshDetail();
+    }
+  }
+
+  /// Opens the limits editor prefilled with the insights panel's
+  /// recommended limits, for the user to review before saving.
+  Future<bool> _reviewSuggestedLimits(ResourceLimits suggested) async {
+    final ok = await showResourceLimitsDialog(
+      context,
+      apiClient: widget.apiClient,
+      serverId: widget.serverId,
+      containerId: widget.container.containerId,
+      currentNanoCpus: suggested.nanoCpus,
+      currentMemoryLimitBytes: suggested.memoryLimitBytes,
+      currentMemoryReservationBytes: suggested.memoryReservationBytes,
+      currentPidsLimit: suggested.pidsLimit,
+    );
+    if (ok == true) {
+      _changed = true;
+      _refreshDetail();
+    }
+    return ok == true;
+  }
+
+  Future<void> _restartPolicy(ContainerDetail detail) async {
+    final ok = await showRestartPolicyDialog(
+      context,
+      apiClient: widget.apiClient,
+      serverId: widget.serverId,
+      containerId: widget.container.containerId,
+      currentPolicyName: detail.restartPolicyName.isEmpty
+          ? 'no'
+          : detail.restartPolicyName,
+      currentMaxRetryCount: detail.restartPolicyMaxRetryCount,
+    );
+    if (ok == true) {
+      _changed = true;
+      _refreshDetail();
+    }
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _openSchedules() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ContainerSchedulesScreen(
+          apiClient: widget.apiClient,
+          serverId: widget.serverId,
+          containerId: widget.container.containerId,
+          containerName: _currentName,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.container;
+    return PopScope(
+      // Blocks the default back gesture/button pop only when something
+      // changed, so we can substitute a pop that carries `true` — the
+      // caller (list screens) uses that to know it should refresh instead
+      // of showing now-stale state.
+      canPop: !_changed,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) Navigator.of(context).pop(true);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_currentName),
+          bottom: TabBar(
+            controller: _tabController,
+            tabs: [
+              const Tab(text: 'Overview'),
+              const Tab(text: 'Resources'),
+              const Tab(text: 'Logs'),
+              if (widget.isAdmin) Tab(text: 'Terminal'),
+              const Tab(text: 'Events'),
+            ],
+          ),
+          actions: [
+            if (_busy)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            if (widget.isAdmin)
+              PopupMenuButton<String>(
+                tooltip: 'Actions',
+                enabled: !_busy,
+                onSelected: (action) async {
+                  switch (action) {
+                    case 'start':
+                    case 'stop':
+                    case 'restart':
+                    case 'pause':
+                    case 'resume':
+                      _runAction(action);
+                    case 'kill':
+                      _confirmAndRun('kill');
+                    case 'remove':
+                      _confirmAndRun('remove', force: true);
+                    case 'rename':
+                      _rename();
+                    case 'clone':
+                      _clone();
+                    case 'schedules':
+                      _openSchedules();
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(value: 'start', child: Text('Start')),
+                  PopupMenuItem(value: 'stop', child: Text('Stop')),
+                  PopupMenuItem(value: 'restart', child: Text('Restart')),
+                  PopupMenuItem(value: 'pause', child: Text('Pause')),
+                  PopupMenuItem(value: 'resume', child: Text('Resume')),
+                  PopupMenuItem(value: 'kill', child: Text('Force-kill')),
+                  PopupMenuItem(value: 'remove', child: Text('Remove')),
+                  PopupMenuDivider(),
+                  PopupMenuItem(value: 'rename', child: Text('Rename')),
+                  PopupMenuItem(value: 'clone', child: Text('Clone')),
+                  PopupMenuItem(value: 'schedules', child: Text('Schedules')),
+                ],
+              ),
+          ],
+        ),
+        body: TabBarView(
+          controller: _tabController,
+          children: [
+            _buildOverview(context, c),
+            ContainerResourcesScreen(
+              apiClient: widget.apiClient,
+              serverId: widget.serverId,
+              containerId: c.containerId,
+              containerState: c.state,
+              detailFuture: _detailFuture,
+              onReviewLimits: widget.isAdmin ? _reviewSuggestedLimits : null,
+            ),
+            ContainerLogsScreen(
+              apiClient: widget.apiClient,
+              serverId: widget.serverId,
+              containerId: c.containerId,
+              containerName: _currentName,
+              deploymentId: c.deploymentId,
+            ),
+            if (widget.isAdmin)
+              ContainerTerminalScreen(
+                apiClient: widget.apiClient,
+                serverId: widget.serverId,
+                containerId: c.containerId,
+                containerName: _currentName,
+              ),
+            ContainerEventsScreen(
+              apiClient: widget.apiClient,
+              serverId: widget.serverId,
+              containerId: c.containerId,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOverview(BuildContext context, ContainerInfo c) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        if (c.deploymentId != null)
+          Card(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: const Padding(
+              padding: EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 18),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'This container belongs to a deployed stack. Lifecycle '
+                      "actions here act on the container directly and won't "
+                      "update the stack's desired configuration.",
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (c.deploymentId != null) const SizedBox(height: 16),
+        if (_serverDisconnected) ...[
+          NoticeBanner(
+            tone: StatusTone.warning,
+            icon: Icons.link_off,
+            title: '${widget.serverName} is disconnected',
+            message: _server!.lastHeartbeatAt == null
+                ? 'Its agent hasn\'t reported yet, so this container\'s '
+                      'current state is unknown.'
+                : 'Its agent last reported '
+                      '${formatAgo(_server!.lastHeartbeatAt!)}. Details below '
+                      'are from that report and may be out of date; actions '
+                      'will fail until it reconnects.',
+          ),
+          const SizedBox(height: Space.lg),
+        ],
+        Row(
+          children: [
+            StatusPill.of(
+              _serverDisconnected
+                  ? (label: 'Unknown', tone: StatusTone.neutral)
+                  : containerStatusDetailed(c.state, c.status),
+            ),
+            if (_serverDisconnected) ...[
+              const SizedBox(width: Space.sm),
+              Flexible(
+                child: Text(
+                  'Was ${containerStatus(c.state).label.toLowerCase()}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ] else if (c.status?.isNotEmpty == true) ...[
+              const SizedBox(width: Space.sm),
+              Flexible(
+                child: Text(
+                  c.status!,
+                  style: Theme.of(context).textTheme.bodySmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 16),
+        _DetailSection(
+          title: 'Overview',
+          rows: [
+            _DetailRow('Container ID', c.containerId),
+            _DetailRow('Server', widget.serverName),
+            _DetailRow('Image', c.image ?? '—'),
+            if (c.imageId != null && c.imageId!.isNotEmpty)
+              _DetailRow('Image ID', c.imageId!),
+            _DetailRow(
+              'Created',
+              c.createdAt == null ? '—' : c.createdAt!.toLocal().toString(),
+            ),
+            _DetailRow('Uptime', _uptime(c.createdAt)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _DetailSection(
+          title: 'Ports',
+          rows: c.ports.isEmpty
+              ? [_DetailRow('', 'No published ports')]
+              : c.ports
+                    .map(
+                      (p) => _DetailRow(
+                        '${p.privatePort}/${p.type}',
+                        p.publicPort == 0
+                            ? 'not published'
+                            : '${p.ip.isEmpty ? '0.0.0.0' : p.ip}:${p.publicPort}',
+                      ),
+                    )
+                    .toList(),
+        ),
+        const SizedBox(height: 16),
+        _DetailSection(
+          title: 'Networks',
+          rows: c.networks.isEmpty
+              ? [_DetailRow('', 'No networks')]
+              : c.networks
+                    .map(
+                      (n) => _DetailRow(
+                        n.name,
+                        n.ipAddress.isEmpty ? '—' : n.ipAddress,
+                      ),
+                    )
+                    .toList(),
+        ),
+        const SizedBox(height: 16),
+        _DetailSection(
+          title: 'Volumes / Mounts',
+          rows: c.mounts.isEmpty
+              ? [_DetailRow('', 'No mounts')]
+              : c.mounts
+                    .map(
+                      (m) => _DetailRow(
+                        m.name.isEmpty ? m.source : m.name,
+                        '${m.destination} (${m.readWrite ? 'rw' : 'ro'})',
+                      ),
+                    )
+                    .toList(),
+        ),
+        const SizedBox(height: 16),
+        Text('Details', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        FutureBuilder<ContainerDetail>(
+          future: _detailFuture,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'Failed to load container details: ${snapshot.error}',
+                  style: const TextStyle(color: AppColors.warning),
+                ),
+              );
+            }
+            final detail = snapshot.data!;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Restart policy',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    if (widget.isAdmin)
+                      TextButton(
+                        onPressed: _busy ? null : () => _restartPolicy(detail),
+                        child: const Text('Change'),
+                      ),
+                  ],
+                ),
+                _DetailSection(
+                  title: '',
+                  rows: [
+                    _DetailRow(
+                      'Policy',
+                      detail.restartPolicyName.isEmpty
+                          ? '—'
+                          : detail.restartPolicyName,
+                    ),
+                    if (detail.restartPolicyMaxRetryCount > 0)
+                      _DetailRow(
+                        'Max retries',
+                        '${detail.restartPolicyMaxRetryCount}',
+                      ),
+                    _DetailRow('Restart count', '${detail.restartCount}'),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Resource limits',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    if (widget.isAdmin)
+                      TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => _resizeResources(detail),
+                        child: const Text('Resize'),
+                      ),
+                  ],
+                ),
+                _DetailSection(
+                  title: '',
+                  rows: [
+                    _DetailRow(
+                      'CPU',
+                      detail.nanoCpus == 0
+                          ? 'unlimited'
+                          : '${(detail.nanoCpus / 1000000000).toStringAsFixed(2)} cores',
+                    ),
+                    _DetailRow(
+                      'Memory limit',
+                      detail.memoryLimitBytes == 0
+                          ? 'unlimited'
+                          : formatBytes(detail.memoryLimitBytes),
+                    ),
+                    _DetailRow(
+                      'Memory reservation',
+                      detail.memoryReservationBytes == 0
+                          ? 'none'
+                          : formatBytes(detail.memoryReservationBytes),
+                    ),
+                    _DetailRow(
+                      'Process limit',
+                      detail.pidsLimit == 0
+                          ? 'unlimited'
+                          : '${detail.pidsLimit}',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _DetailSection(
+                  title: 'Health',
+                  rows: [
+                    _DetailRow(
+                      'Status',
+                      detail.healthStatus.isEmpty
+                          ? 'no healthcheck configured'
+                          : detail.healthStatus,
+                    ),
+                    if (detail.healthFailingStreak > 0)
+                      _DetailRow(
+                        'Failing streak',
+                        '${detail.healthFailingStreak}',
+                      ),
+                  ],
+                ),
+                if (detail.healthLog.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    'Health-check history',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  _DetailSection(
+                    title: '',
+                    rows: [
+                      for (final h in detail.healthLog.reversed)
+                        _DetailRow(
+                          h.start == null ? '—' : h.start!.toLocal().toString(),
+                          'exit ${h.exitCode}${h.output.isEmpty ? '' : ' — ${h.output.trim()}'}',
+                        ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Text(
+                  'Configuration',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                _DetailSection(
+                  title: '',
+                  rows: [
+                    _DetailRow(
+                      'Image',
+                      detail.image.isEmpty ? '—' : detail.image,
+                    ),
+                    _DetailRow(
+                      'Command',
+                      detail.command.isEmpty ? '—' : detail.command.join(' '),
+                    ),
+                    _DetailRow(
+                      'Entrypoint',
+                      detail.entrypoint.isEmpty
+                          ? '—'
+                          : detail.entrypoint.join(' '),
+                    ),
+                    _DetailRow(
+                      'Working dir',
+                      detail.workingDir.isEmpty ? '—' : detail.workingDir,
+                    ),
+                    if (detail.labels.isEmpty)
+                      _DetailRow('Labels', 'none')
+                    else
+                      for (final entry in detail.labels.entries)
+                        _DetailRow('Label: ${entry.key}', entry.value),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Environment variables',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (widget.isAdmin && _rollbackHistory.isNotEmpty)
+                          TextButton.icon(
+                            onPressed: _busy ? null : _rollback,
+                            icon: const Icon(Icons.history, size: 16),
+                            label: const Text('Rollback'),
+                          ),
+                        if (widget.isAdmin)
+                          TextButton.icon(
+                            onPressed: _busy ? null : () => _recreate(detail),
+                            icon: const Icon(Icons.refresh, size: 16),
+                            label: const Text('Recreate'),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+                _DetailSection(
+                  title: '',
+                  rows: detail.env.isEmpty
+                      ? [_DetailRow('', 'No environment variables')]
+                      : detail.env.map((e) {
+                          final parts = e.split('=');
+                          final key = parts.first;
+                          final value = parts.length > 1
+                              ? parts.sublist(1).join('=')
+                              : '';
+                          return _DetailRow(key, value);
+                        }).toList(),
+                ),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _DetailRow {
+  final String label;
+  final String value;
+  const _DetailRow(this.label, this.value);
+}
+
+class _DetailSection extends StatelessWidget {
+  final String title;
+  final List<_DetailRow> rows;
+
+  const _DetailSection({required this.title, required this.rows});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (title.isNotEmpty)
+          Text(title, style: Theme.of(context).textTheme.titleSmall),
+        if (title.isNotEmpty) const SizedBox(height: 4),
+        for (final row in rows)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: row.label.isEmpty
+                ? Text(row.value, style: Theme.of(context).textTheme.bodySmall)
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 140,
+                        child: Text(
+                          row.label,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          row.value,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+      ],
+    );
+  }
+}

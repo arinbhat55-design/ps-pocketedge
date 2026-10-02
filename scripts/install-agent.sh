@@ -1,0 +1,168 @@
+#!/bin/sh
+# Installs the PS-pocketEdge agent as a systemd service.
+#
+# Usage:
+#   curl -sSL https://<control-plane>/install.sh | sh -s -- \
+#     --server=<control-plane-host>:8443 --token=<enrollment-token> \
+#     [--ca-file=/path/to/private-ca.pem] [--runtime=docker|podman] [--allow-builds]
+#
+# --allow-builds lets the control plane build images from Git on this
+# server (Dockerfile RUN steps execute here with the runtime's privileges).
+#
+# The --token=<value> form is the quick-start default but leaves the token
+# visible in shell history and `ps` output on this machine. Prefer setting
+# PE_ENROLL_TOKEN instead:
+#   curl -sSL https://<control-plane>/install.sh | PE_ENROLL_TOKEN=<token> sh -s -- --server=<host>:8443
+#
+# For local testing before any GitHub release exists, use
+# --local-binary=/path/to/pe-agent to install an already-built binary
+# instead of downloading one.
+
+set -eu
+
+VERSION="latest"
+REPO="ankitapaul1586-cmd/pspocketedge"
+SERVER=""
+TOKEN="${PE_ENROLL_TOKEN:-}"
+LOCAL_BINARY=""
+CA_FILE=""
+ALLOW_BUILDS="false"
+CONTAINER_RUNTIME="docker"
+CONTAINER_HOST="${DOCKER_HOST:-}"
+INSTALL_DIR="/usr/local/bin"
+CONFIG_DIR="/etc/pspocketedge"
+
+for arg in "$@"; do
+  case "$arg" in
+    --server=*) SERVER="${arg#*=}" ;;
+    --token=*) TOKEN="${arg#*=}" ;;
+    --version=*) VERSION="${arg#*=}" ;;
+    --local-binary=*) LOCAL_BINARY="${arg#*=}" ;;
+    --ca-file=*) CA_FILE="${arg#*=}" ;;
+    --runtime=*) CONTAINER_RUNTIME="${arg#*=}" ;;
+    --container-host=*) CONTAINER_HOST="${arg#*=}" ;;
+    --allow-builds) ALLOW_BUILDS="true" ;;
+    *) echo "unknown argument: $arg" >&2; exit 1 ;;
+  esac
+done
+
+if [ -z "$SERVER" ]; then
+  echo "error: --server=<host>:<port> is required" >&2
+  exit 1
+fi
+if [ -z "$TOKEN" ]; then
+  echo "error: an enrollment token is required (--token=... or PE_ENROLL_TOKEN env var)" >&2
+  exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "error: this script must be run as root (it installs a systemd service)" >&2
+  exit 1
+fi
+
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+if [ "$OS" != "linux" ]; then
+  echo "error: only linux is supported (got $OS)" >&2
+  exit 1
+fi
+
+case "$(uname -m)" in
+  x86_64) ARCH="amd64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  armv7l|armv6l) ARCH="armv7" ;;
+  *) echo "error: unsupported architecture $(uname -m)" >&2; exit 1 ;;
+esac
+
+case "$CONTAINER_RUNTIME" in
+  docker) RUNTIME_UNIT="docker.service" ;;
+  podman)
+    RUNTIME_UNIT="podman.socket"
+    CONTAINER_HOST="${CONTAINER_HOST:-unix:///run/podman/podman.sock}"
+    ;;
+  *) echo "error: --runtime must be docker or podman" >&2; exit 1 ;;
+esac
+# Keep the endpoint safe to embed in YAML.
+case "$CONTAINER_HOST" in
+  *[!a-zA-Z0-9_./:@%-]*) echo "error: invalid container host" >&2; exit 1 ;;
+esac
+
+if [ "$CONTAINER_RUNTIME" = "podman" ]; then
+  if ! command -v podman >/dev/null 2>&1; then
+    echo "error: Podman is not installed; install it (e.g. apt install podman) and rerun" >&2
+    exit 1
+  fi
+  systemctl enable --now podman.socket
+  # Podman has no daemon, so nothing restarts containers after a reboot
+  # unless this unit is enabled (shipped since Podman 4.3).
+  if ! systemctl enable podman-restart.service; then
+    echo "warning: podman-restart.service unavailable; deployed containers will not start again after a reboot" >&2
+  fi
+fi
+
+echo "==> installing pe-agent binary"
+if [ -n "$LOCAL_BINARY" ]; then
+  install -m 0755 "$LOCAL_BINARY" "$INSTALL_DIR/pe-agent"
+else
+  if [ "$VERSION" = "latest" ]; then
+    RELEASE_URL="$(curl -fLsS -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
+    VERSION="${RELEASE_URL##*/}"
+  fi
+  ASSET_VERSION="${VERSION#v}"
+  ASSET="pe-agent_${ASSET_VERSION}_linux_${ARCH}.tar.gz"
+  URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT
+  echo "    downloading $URL"
+  curl -sSL "$URL" -o "$TMP/agent.tar.gz"
+  tar -xzf "$TMP/agent.tar.gz" -C "$TMP" pe-agent
+  install -m 0755 "$TMP/pe-agent" "$INSTALL_DIR/pe-agent"
+fi
+
+echo "==> writing $CONFIG_DIR/agent.yaml"
+mkdir -p "$CONFIG_DIR"
+chmod 700 "$CONFIG_DIR"
+if [ -n "$CA_FILE" ]; then
+  if [ ! -r "$CA_FILE" ]; then
+    echo "error: CA file is not readable: $CA_FILE" >&2
+    exit 1
+  fi
+  install -m 0644 "$CA_FILE" "$CONFIG_DIR/control-plane-ca.pem"
+fi
+cat > "$CONFIG_DIR/agent.yaml" <<EOF
+server: "$SERVER"
+token: "$TOKEN"
+state_path: "$CONFIG_DIR/state.json"
+tls: true
+allow_builds: $ALLOW_BUILDS
+container_runtime: "$CONTAINER_RUNTIME"
+container_host: "$CONTAINER_HOST"
+EOF
+if [ -n "$CA_FILE" ]; then
+  echo "tls_ca_file: \"$CONFIG_DIR/control-plane-ca.pem\"" >> "$CONFIG_DIR/agent.yaml"
+fi
+chmod 600 "$CONFIG_DIR/agent.yaml"
+
+echo "==> installing systemd unit"
+cat > /etc/systemd/system/pe-agent.service <<EOF
+[Unit]
+Description=PS-pocketEdge agent
+After=network-online.target $RUNTIME_UNIT
+Wants=network-online.target
+Requires=$RUNTIME_UNIT
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pe-agent --config=/etc/pspocketedge/agent.yaml
+Restart=on-failure
+RestartSec=5s
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now pe-agent.service
+
+echo "==> done. check status with: systemctl status pe-agent.service"
+echo "    follow logs with:        journalctl -u pe-agent.service -f"

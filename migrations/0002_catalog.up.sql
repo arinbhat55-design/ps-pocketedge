@@ -1,0 +1,4 @@
+ALTER TABLE stacks
+  ADD COLUMN description TEXT NOT NULL DEFAULT '',
+  ADD COLUMN category TEXT NOT NULL DEFAULT 'other',
+  ADD COLUMN parameters JSONB NOT NULL DEFAULT '[]';

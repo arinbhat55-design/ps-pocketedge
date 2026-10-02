@@ -1,0 +1,973 @@
+syntax = "proto3";
+
+package agent.v1;
+
+option go_package = "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+// AgentSession is the contract between a managed-node agent and the
+// control plane. The agent always dials out to the control plane so it
+// works behind NAT/home-network firewalls with no inbound port-forwarding.
+service AgentSession {
+  // Enroll is a one-shot unary call an agent makes on first startup,
+  // exchanging a one-time enrollment token for a long-lived credential.
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+
+  // Session is the persistent bidirectional stream the agent opens after
+  // enrolling. It multiplexes heartbeats/status reports (agent -> control
+  // plane) and commands (control plane -> agent) over one connection.
+  rpc Session(stream AgentMessage) returns (stream ControlMessage);
+}
+
+message EnrollRequest {
+  string token = 1;
+  string hostname = 2;
+  string os = 3;
+  string arch = 4;
+  string agent_version = 5;
+}
+
+message EnrollResponse {
+  string server_id = 1;
+  string agent_credential = 2;
+}
+
+message AgentMessage {
+  oneof payload {
+    Heartbeat heartbeat = 1;
+    DeployStatus deploy_status = 2;
+    BackupStatus backup_status = 3;
+    RestoreStatus restore_status = 4;
+    ContainerDetail container_detail = 5;
+    ContainerOpResult container_op_result = 6;
+    ImageListResult image_list_result = 7;
+    ImageDetail image_detail = 8;
+    ImageOpResult image_op_result = 9;
+    LogChunk log_chunk = 10;
+    EventListResult event_list_result = 11;
+    ExecOutputChunk exec_output = 12;
+    NetworkListResult network_list_result = 13;
+    NetworkOpResult network_op_result = 14;
+    VolumeListResult volume_list_result = 15;
+    VolumeOpResult volume_op_result = 16;
+    VolumeDetail volume_detail = 17;
+    BuildStatus build_status = 18;
+    VolumeFileResult volume_file_result = 19;
+  }
+}
+
+message ControlMessage {
+  oneof payload {
+    DeployStackCommand deploy_stack = 1;
+    Ack ack = 2;
+    BackupCommand backup = 3;
+    RestoreCommand restore = 4;
+    InspectContainerCommand inspect_container = 5;
+    ContainerActionCommand container_action = 6;
+    CreateContainerCommand create_container = 7;
+    RenameContainerCommand rename_container = 8;
+    CloneContainerCommand clone_container = 9;
+    RecreateContainerCommand recreate_container = 10;
+    UpdateRestartPolicyCommand update_restart_policy = 11;
+    ListImagesCommand list_images = 12;
+    InspectImageCommand inspect_image = 13;
+    PullImageCommand pull_image = 14;
+    RemoveImageCommand remove_image = 15;
+    PruneImagesCommand prune_images = 16;
+    StreamLogsCommand stream_logs = 17;
+    StopStreamCommand stop_stream = 18;
+    ListEventsCommand list_events = 19;
+    ExecStartCommand exec_start = 20;
+    ExecInputCommand exec_input = 21;
+    UpdateResourceLimitsCommand update_resource_limits = 22;
+    ListNetworksCommand list_networks = 23;
+    CreateNetworkCommand create_network = 24;
+    RemoveNetworkCommand remove_network = 25;
+    ConnectContainerToNetworkCommand connect_container_to_network = 26;
+    DisconnectContainerFromNetworkCommand disconnect_container_from_network = 27;
+    ListVolumesCommand list_volumes = 28;
+    CreateVolumeCommand create_volume = 29;
+    RemoveVolumeCommand remove_volume = 30;
+    InspectVolumeCommand inspect_volume = 31;
+    UndeployCommand undeploy = 32;
+    DeployServiceCommand deploy_service = 33;
+    BuildImageCommand build_image = 34;
+    PushImageCommand push_image = 35;
+    VolumeFileCommand volume_file = 36;
+  }
+}
+
+message Heartbeat {
+  string server_id = 1;
+  google.protobuf.Timestamp sent_at = 2;
+  ResourceSnapshot resources = 3;
+  repeated ContainerSummary containers = 4;
+  // False means "not refreshed this tick" (see edge-device tuning's
+  // container-list gating), not "genuinely zero containers running" —
+  // a repeated field alone can't distinguish those two cases.
+  bool containers_included = 5;
+  // container_stats rides the same refresh tick as containers (see
+  // container_stats_included below) — a per-container ContainerStats call
+  // is more expensive than the ListContainers call containers comes from,
+  // so it's deliberately not sampled more often than the container list
+  // itself already is.
+  repeated ContainerResourceUsage container_stats = 6;
+  bool container_stats_included = 7;
+}
+
+// ContainerResourceUsage is one point-in-time resource-usage sample for a
+// running container, computed the same way `docker stats` derives its
+// percentages from cumulative cgroup counters (see agent/docker/stats.go).
+// Only running containers are sampled — a stopped container has nothing to
+// report.
+message ContainerResourceUsage {
+  string container_id = 1;
+  double cpu_percent = 2;
+  int64 mem_usage_bytes = 3;
+  int64 mem_limit_bytes = 4;
+  double mem_percent = 5;
+  int64 net_rx_bytes = 6;
+  int64 net_tx_bytes = 7;
+  int64 block_read_bytes = 8;
+  int64 block_write_bytes = 9;
+  int64 pids = 10;
+}
+
+message ResourceSnapshot {
+  double cpu_percent = 1;
+  double mem_percent = 2;
+  double disk_percent = 3;
+  // Total host capacity, not usage — lets the control plane estimate
+  // whether a deployment's declared resource requests actually fit
+  // ("Confirm sufficient CPU, RAM, and storage" pre-deployment check).
+  // 0 means an older agent that predates these fields, or a collection
+  // failure — callers should treat 0 as "unknown", not "no capacity".
+  uint64 total_memory_bytes = 4;
+  uint32 num_cpus = 5;
+  uint64 total_disk_bytes = 6;
+  // Optional so older agents and failed collectors differ from zero usage.
+  optional uint64 used_memory_bytes = 7;
+  optional uint64 used_disk_bytes = 8;
+}
+
+message ContainerSummary {
+  string id = 1;
+  string name = 2;
+  string state = 3;
+  string deployment_id = 4;
+  string image = 5;
+  string image_id = 6;
+  int64 created_unix = 7;
+  string status = 8;
+  repeated ContainerPort ports = 9;
+  repeated ContainerNetwork networks = 10;
+  repeated ContainerMount mounts = 11;
+}
+
+message ContainerPort {
+  string ip = 1;
+  uint32 private_port = 2;
+  uint32 public_port = 3;
+  string type = 4;
+}
+
+message ContainerNetwork {
+  string name = 1;
+  string ip_address = 2;
+}
+
+message ContainerMount {
+  string type = 1;
+  string name = 2;
+  string source = 3;
+  string destination = 4;
+  bool read_write = 5;
+}
+
+message DeployStackCommand {
+  string deployment_id = 1;
+  string stack_name = 2;
+  string compose_yaml = 3;
+  map<string, string> env = 4;
+  // Per-service replica overrides; a service not listed here runs its
+  // Compose-declared deploy.replicas/scale, or 1.
+  map<string, int32> replicas = 5;
+  // "recreate" (default: remove every old container, then create the new
+  // ones) or "rolling" (replace one container at a time, waiting for each
+  // to become ready, and restore the previous containers if any fail).
+  string strategy = 6;
+  // How long post-deployment health verification waits for every
+  // container to be running (and healthy, when it has a healthcheck).
+  // 0 uses the agent's default; negative skips verification.
+  int32 verify_timeout_seconds = 7;
+  // The control plane's revision number for this rollout, echoed back on
+  // every DeployStatus so statuses are attributed to the right revision
+  // even if rollouts of the same deployment queue up behind each other.
+  int32 revision = 8;
+}
+
+// UndeployCommand tears down a deployment: stops and removes every
+// container labeled with deployment_id, then removes its per-deployment
+// network. Named volumes are deliberately left in place, matching
+// `docker compose down`'s default (no -v) — see docker.Undeploy's doc
+// comment. Answered with a ContainerOpResult (like ContainerActionCommand
+// and friends), not a dedicated status message, since it's a one-shot
+// op with no intermediate phases worth streaming.
+message UndeployCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string deployment_id = 3;
+}
+
+// DeployServiceCommand redeploys one service within an already-deployed
+// stack — pulls its image, then recreates just that service's container
+// (found by its deterministic "pe-<deployment_id>-<service_name>" name),
+// leaving every other service in the deployment untouched. Carries the
+// same compose_yaml/env a full DeployStackCommand would, since that's the
+// only source of truth for the service's desired config. Answered with a
+// ContainerOpResult, like UndeployCommand.
+message DeployServiceCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string deployment_id = 3;
+  string stack_name = 4;
+  string compose_yaml = 5;
+  map<string, string> env = 6;
+  string service_name = 7;
+  // Replica count to run for service_name; 0 keeps the Compose-declared
+  // count (or 1).
+  int32 replicas = 8;
+  // When true, only add or remove replicas to reach `replicas` — existing
+  // containers are left running untouched (scaling) instead of recreated
+  // (redeploying).
+  bool scale_only = 9;
+}
+
+enum DeployPhase {
+  DEPLOY_PHASE_UNSPECIFIED = 0;
+  DEPLOY_PHASE_PENDING = 1;
+  DEPLOY_PHASE_PULLING = 2;
+  DEPLOY_PHASE_CREATING = 3;
+  DEPLOY_PHASE_RUNNING = 4;
+  DEPLOY_PHASE_FAILED = 5;
+  // Post-deployment health verification, reported after RUNNING.
+  DEPLOY_PHASE_VERIFYING = 6;
+  DEPLOY_PHASE_HEALTHY = 7;
+  DEPLOY_PHASE_UNHEALTHY = 8;
+  // A rolling update failed and the previous containers were restored:
+  // the stack is still running its previous revision.
+  DEPLOY_PHASE_ROLLED_BACK = 9;
+}
+
+message DeployStatus {
+  string deployment_id = 1;
+  DeployPhase phase = 2;
+  string message = 3;
+  google.protobuf.Timestamp updated_at = 4;
+  // Set when this status is about one service's progress (e.g. its image
+  // pulled, its container started) rather than the stack as a whole. A
+  // per-service status never changes the deployment's overall phase.
+  string service = 5;
+  // DeployStackCommand.revision this status belongs to (0 from agents
+  // that predate it, or for restores).
+  int32 revision = 6;
+}
+
+message Ack {
+  string message_id = 1;
+}
+
+enum TaskPhase {
+  TASK_PHASE_UNSPECIFIED = 0;
+  TASK_PHASE_RUNNING = 1;
+  TASK_PHASE_COMPLETED = 2;
+  TASK_PHASE_FAILED = 3;
+}
+
+// BackupCommand tells the agent to snapshot every named volume belonging
+// to deployment_id into a single tar stream and PUT it to upload_url.
+// Bulk bytes deliberately don't travel over the AgentSession stream
+// itself (see internal/controlplane/backup's doc comment) — upload_url
+// is a separate authenticated HTTP endpoint so a large transfer can't
+// starve heartbeats/other commands sharing this stream's one outbound
+// channel.
+message BackupCommand {
+  string backup_id = 1;
+  string deployment_id = 2;
+  string upload_url = 3;
+  // quiesce stops the deployment's running containers for the duration of
+  // the snapshot and starts them again afterwards, so a database's files
+  // are copied at rest rather than mid-write. Costs a short outage.
+  bool quiesce = 4;
+  // Stream a pg_dump custom archive of postgres_database instead of volumes.
+  bool postgres_logical = 5;
+  string postgres_username = 6;
+  string postgres_database = 7;
+}
+
+message BackupStatus {
+  string backup_id = 1;
+  TaskPhase phase = 2;
+  string message = 3;
+  int64 size_bytes = 4;
+}
+
+// RestoreCommand tells the agent to GET a tar snapshot from download_url,
+// extract it back into deployment_id's named volumes, then redeploy
+// (stack_name/compose_yaml/env are included because the agent doesn't
+// cache the original DeployStackCommand — this is what makes restore
+// bring the containers back up on top of the restored data rather than
+// just leaving the volumes populated with nothing running).
+message RestoreCommand {
+  string backup_id = 1;
+  string deployment_id = 2;
+  string download_url = 3;
+  string stack_name = 4;
+  string compose_yaml = 5;
+  map<string, string> env = 6;
+  // Nonempty when refreshing a different deployment from this backup.
+  // The tar's volume names are remapped from source to deployment_id.
+  string source_deployment_id = 7;
+  // Reapply the target's vaulted PostgreSQL password after restoring data
+  // from another instance, whose pg_authid still contains the source hash.
+  bool sync_postgres_password = 8;
+  string postgres_username = 9;
+  string postgres_database = 10;
+  // Restore a pg_dump custom archive into the already running target.
+  bool postgres_logical = 11;
+}
+
+// RestoreStatus covers only the download+extract step. Once that
+// completes, the agent immediately re-runs the normal deploy pipeline
+// (internal/agent/docker.Deploy) on top of the restored volumes, which
+// reports its own DeployStatus events through the existing path — so a
+// restore's "containers coming back up" progress reuses deployment_events
+// rather than this message needing to duplicate it.
+message RestoreStatus {
+  string backup_id = 1;
+  string deployment_id = 2;
+  TaskPhase phase = 3;
+  string message = 4;
+}
+
+// InspectContainerCommand asks the agent to run a live ContainerInspect for
+// one container and reply with ContainerDetail carrying request_id
+// unchanged, so the control plane can correlate the async reply back to
+// the HTTP request that triggered it. Deliberately not part of the
+// heartbeat: ContainerInspect is a per-container round-trip, too expensive
+// to run for every container on every heartbeat tick across a fleet, so
+// it's only issued on demand when a user opens a container's detail view.
+message InspectContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+}
+
+message ContainerDetail {
+  string request_id = 1;
+  string container_id = 2;
+  bool found = 3;
+  string error_message = 4;
+  repeated string env = 5;
+  string restart_policy_name = 6;
+  int32 restart_policy_max_retry_count = 7;
+  string health_status = 8;
+  int32 health_failing_streak = 9;
+  int32 restart_count = 10;
+  // health_log is Docker's last-N health-check results (State.Health.Log),
+  // discarded by the original inspect.go which only kept the current
+  // status — kept here for the troubleshooting view's health-check history.
+  repeated HealthCheckEntry health_log = 11;
+  repeated string command = 12;
+  repeated string entrypoint = 13;
+  string working_dir = 14;
+  map<string, string> labels = 15;
+  string image = 16;
+  // Current resource limits, 0 meaning "not set" — same convention as
+  // ContainerConfig's equivalents above.
+  int64 nano_cpus = 17;
+  int64 memory_limit_bytes = 18;
+  int64 memory_reservation_bytes = 19;
+  int64 pids_limit = 20;
+}
+
+message HealthCheckEntry {
+  int64 start_unix = 1;
+  int64 end_unix = 2;
+  int32 exit_code = 3;
+  string output = 4;
+}
+
+// ContainerAction is a lifecycle operation applied to one existing
+// container, dispatched via ContainerActionCommand.
+enum ContainerAction {
+  CONTAINER_ACTION_UNSPECIFIED = 0;
+  CONTAINER_ACTION_START = 1;
+  CONTAINER_ACTION_STOP = 2;
+  CONTAINER_ACTION_RESTART = 3;
+  CONTAINER_ACTION_PAUSE = 4;
+  CONTAINER_ACTION_RESUME = 5;
+  CONTAINER_ACTION_KILL = 6; // force-kill (SIGKILL), for an unresponsive container
+  CONTAINER_ACTION_REMOVE = 7;
+}
+
+message ContainerPortSpec {
+  uint32 container_port = 1;
+  uint32 host_port = 2;
+  string protocol = 3;
+}
+
+message ContainerVolumeSpec {
+  string volume_name = 1;
+  string target = 2;
+  bool read_only = 3;
+}
+
+// ContainerConfig is the full desired shape of a standalone container (not
+// part of a deployed stack), used by both CreateContainerCommand and
+// RecreateContainerCommand. Named volumes only, same as the compose deploy
+// path (see docker/deploy.go's ensureVolumes doc comment on why bind
+// mounts are rejected rather than silently ignored).
+message ContainerConfig {
+  string image = 1;
+  string name = 2;
+  repeated string command = 3;
+  repeated string env = 4;
+  repeated ContainerPortSpec ports = 5;
+  repeated ContainerVolumeSpec volumes = 6;
+  string restart_policy_name = 7;
+  int32 restart_policy_max_retry_count = 8;
+  map<string, string> labels = 9;
+  // Resource limits — 0 means "not set" (unlimited), same "0 = no limit"
+  // convention as restart_policy_max_retry_count/host_port above.
+  int64 nano_cpus = 10;               // CPU limit, in 1e-9 CPUs (1_500_000_000 = 1.5 CPUs)
+  int64 memory_limit_bytes = 11;      // hard memory limit
+  int64 memory_reservation_bytes = 12; // soft memory reservation (only enforced under host pressure)
+  int64 pids_limit = 13;              // max number of processes/threads
+}
+
+message ContainerActionCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  ContainerAction action = 4;
+  int32 timeout_seconds = 5; // graceful stop/restart timeout; 0 = agent default
+  bool force = 6;            // for REMOVE: remove even if running
+}
+
+message CreateContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  ContainerConfig config = 3;
+}
+
+message RenameContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  string new_name = 4;
+}
+
+message CloneContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  string new_name = 4;
+}
+
+message RecreateContainerCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  ContainerConfig config = 4;
+}
+
+message UpdateRestartPolicyCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  string restart_policy_name = 4;
+  int32 restart_policy_max_retry_count = 5;
+}
+
+// UpdateResourceLimitsCommand changes an existing container's CPU/memory/
+// process limits live via Docker's ContainerUpdate, the same
+// no-recreate-needed path UpdateRestartPolicyCommand already uses — 0 on
+// any field clears that limit (unlimited), same convention as
+// ContainerConfig's equivalents.
+message UpdateResourceLimitsCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  int64 nano_cpus = 4;
+  int64 memory_limit_bytes = 5;
+  int64 memory_reservation_bytes = 6;
+  int64 pids_limit = 7;
+}
+
+// ContainerOpResult answers ContainerActionCommand, CreateContainerCommand,
+// RenameContainerCommand, CloneContainerCommand, RecreateContainerCommand,
+// and UpdateRestartPolicyCommand alike, correlated back to the request via
+// request_id — same one-request/one-reply correlation InspectWaiter
+// already does for InspectContainerCommand/ContainerDetail. container_id
+// is the newly created container's id for CreateContainer/CloneContainer/
+// RecreateContainer, and the acted-on container's id otherwise.
+message ContainerOpResult {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  string container_id = 4;
+}
+
+// ImageSummary is a snapshot of one locally-present image, from the same
+// ImageList call as Docker's `docker images` — cheap enough for the
+// on-demand list, unlike ImageDetail's per-image ImageInspect (see below).
+message ImageSummary {
+  string id = 1;
+  repeated string repo_tags = 2;
+  repeated string repo_digests = 3;
+  int64 size_bytes = 4;
+  int64 created_unix = 5;
+  // Dangling means repo_tags is empty (an untagged, superseded layer) —
+  // computed by the agent so the dashboard doesn't need to reimplement
+  // Docker's own definition of "dangling".
+  bool dangling = 6;
+  int64 containers_count = 7;
+}
+
+// ListImagesCommand asks the agent for its current local image inventory.
+// Unlike ContainerSummary, this is deliberately not part of Heartbeat: the
+// Images tab is visited far less often than the live container view, so an
+// on-demand round trip (same reasoning as InspectContainerCommand) avoids
+// bloating every heartbeat with a list that's usually not being watched.
+message ListImagesCommand {
+  string request_id = 1;
+  string server_id = 2;
+}
+
+message ImageListResult {
+  string request_id = 1;
+  repeated ImageSummary images = 2;
+}
+
+// InspectImageCommand asks for one image's full detail (layers, env,
+// labels, architecture) via ImageInspect — too expensive to run for every
+// image on every list request, so it's fetched only when a user opens an
+// image's detail view, same split as InspectContainerCommand/ContainerDetail.
+message InspectImageCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string image_id = 3;
+}
+
+message ImageLayer {
+  string digest = 1;
+  int64 size_bytes = 2;
+}
+
+message ImageDetail {
+  string request_id = 1;
+  bool found = 2;
+  string error_message = 3;
+  string id = 4;
+  repeated string repo_tags = 5;
+  repeated string repo_digests = 6;
+  int64 size_bytes = 7;
+  int64 created_unix = 8;
+  string architecture = 9;
+  string os = 10;
+  repeated ImageLayer layers = 11;
+  repeated string env = 12;
+  map<string, string> labels = 13;
+}
+
+// RegistryAuth carries credentials for a PullImageCommand against a private
+// registry; unset (both fields empty) means an anonymous/public pull.
+message RegistryAuth {
+  string username = 1;
+  string password = 2;
+}
+
+message PullImageCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string image_ref = 3;
+  RegistryAuth auth = 4;
+}
+
+// Pushes an image already built on this server to a selected registry.
+// The control plane chooses target_ref from its configured registry, so
+// credentials cannot be redirected to a caller-supplied host.
+message PushImageCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string source_tag = 3;
+  string target_ref = 4;
+  RegistryAuth auth = 5;
+}
+
+message RemoveImageCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string image_id = 3;
+  bool force = 4;
+}
+
+message PruneImagesCommand {
+  string request_id = 1;
+  string server_id = 2;
+  // all=false removes only dangling images (docker image prune);
+  // all=true also removes any image not referenced by a container
+  // (docker image prune -a).
+  bool all = 3;
+}
+
+// ImageOpResult answers PullImageCommand, PushImageCommand,
+// RemoveImageCommand, and PruneImagesCommand alike, correlated via request_id — same one-request/
+// one-reply pattern ContainerOpResult already uses for container ops.
+// reclaimed_bytes is only meaningful for PruneImagesCommand.
+message ImageOpResult {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  string image_id = 4;
+  int64 reclaimed_bytes = 5;
+}
+
+// NetworkSummary is a snapshot of one Docker network, from the same
+// NetworkList/NetworkInspect calls Docker's `docker network ls` uses.
+// container_ids is the set of containers currently attached, used both for
+// display and to disable/guard removing a network that's still in use.
+message NetworkSummary {
+  string id = 1;
+  string name = 2;
+  string driver = 3;
+  string scope = 4;
+  bool internal = 5;
+  map<string, string> labels = 6;
+  repeated string container_ids = 7;
+}
+
+// ListNetworksCommand asks the agent for its current local network
+// inventory. Deliberately not part of Heartbeat, same reasoning as
+// ListImagesCommand: the Networks tab is visited far less often than the
+// live container view.
+message ListNetworksCommand {
+  string request_id = 1;
+  string server_id = 2;
+}
+
+message NetworkListResult {
+  string request_id = 1;
+  repeated NetworkSummary networks = 2;
+}
+
+message CreateNetworkCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string name = 3;
+  string driver = 4; // "" => Docker default (bridge)
+  bool internal = 5;
+  map<string, string> labels = 6;
+}
+
+message RemoveNetworkCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string network_id = 3;
+}
+
+message ConnectContainerToNetworkCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string network_id = 3;
+  string container_id = 4;
+}
+
+message DisconnectContainerFromNetworkCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string network_id = 3;
+  string container_id = 4;
+  bool force = 5;
+}
+
+// NetworkOpResult answers CreateNetworkCommand, RemoveNetworkCommand,
+// ConnectContainerToNetworkCommand, and DisconnectContainerFromNetworkCommand
+// alike, correlated via request_id — same one-request/one-reply pattern
+// ContainerOpResult/ImageOpResult already use.
+message NetworkOpResult {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  string network_id = 4;
+}
+
+// VolumeSummary is a snapshot of one locally-present named volume, from the
+// same VolumeList call `docker volume ls` uses, plus in_use_by which the
+// agent computes by cross-referencing every container's mounts in the same
+// pass (see internal/agent/docker/volumes.go) — an empty in_use_by means
+// the volume is orphaned.
+message VolumeSummary {
+  string name = 1;
+  string driver = 2;
+  string mountpoint = 3;
+  map<string, string> labels = 4;
+  int64 size_bytes = 5; // 0 if the driver/engine doesn't report usage
+  repeated string in_use_by = 6; // container IDs currently mounting it
+  int64 created_unix = 7;
+}
+
+// ListVolumesCommand asks the agent for its current local volume inventory,
+// same on-demand reasoning as ListImagesCommand/ListNetworksCommand.
+message ListVolumesCommand {
+  string request_id = 1;
+  string server_id = 2;
+}
+
+message VolumeListResult {
+  string request_id = 1;
+  repeated VolumeSummary volumes = 2;
+}
+
+message CreateVolumeCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string name = 3;
+  string driver = 4; // "" => Docker default (local)
+  map<string, string> labels = 5;
+}
+
+// RemoveVolumeCommand deletes a volume. The agent refuses (success=false)
+// if the volume is currently in use by any container unless force is set —
+// this is a courtesy check ahead of Docker's own engine-level refusal, so
+// the control plane can surface a clear "in use by X, Y" message rather
+// than a raw Docker API error.
+message RemoveVolumeCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string name = 3;
+  bool force = 4;
+}
+
+message InspectVolumeCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string name = 3;
+}
+
+message VolumeDetail {
+  string request_id = 1;
+  bool found = 2;
+  string error_message = 3;
+  VolumeSummary volume = 4;
+}
+
+// VolumeOpResult answers CreateVolumeCommand and RemoveVolumeCommand alike,
+// correlated via request_id — same pattern as NetworkOpResult above.
+message VolumeOpResult {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  string name = 4;
+}
+
+// VolumeFileCommand operates inside a named volume through a temporary
+// helper container. Paths are relative to the volume root. Content reads
+// and writes are bounded to 1 MiB; clone streams between Docker containers.
+message VolumeFileCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string volume_name = 3;
+  string operation = 4; // list, read, write, clone
+  string path = 5;
+  bytes content = 6;
+  string target_volume = 7; // clone only, must not exist
+}
+
+message VolumeFileEntry {
+  string name = 1;
+  bool is_directory = 2;
+  bool is_symlink = 3;
+  int64 size_bytes = 4;
+}
+
+message VolumeFileResult {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  repeated VolumeFileEntry entries = 4;
+  bytes content = 5;
+}
+
+// StreamLogsCommand asks the agent to tail container_id's logs, replying
+// with a sequence of LogChunk messages sharing request_id, terminated by
+// a final chunk with done=true. If follow is true the agent keeps
+// streaming new lines until a StopStreamCommand for the same request_id
+// arrives or the session ends; if false it sends everything currently
+// available (bounded by tail_lines/since_unix/until_unix) and then one
+// done chunk — used for both the live tail view and the log-download/
+// AI-analysis paths, which just set follow=false.
+message StreamLogsCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  bool follow = 4;
+  int32 tail_lines = 5; // 0 = agent default
+  int64 since_unix = 6; // 0 = unbounded
+  int64 until_unix = 7; // 0 = unbounded
+}
+
+// StopStreamCommand cancels an in-progress StreamLogsCommand or
+// ExecStartCommand identified by request_id — the one message type that
+// must reach an already-running handler goroutine rather than spawn a new
+// one, which is why the agent keeps a registry of active request_ids (see
+// internal/agent/stream/session.go's activeStreams).
+message StopStreamCommand {
+  string request_id = 1;
+}
+
+message LogLine {
+  int64 timestamp_unix_nano = 1; // 0 if the agent couldn't parse a timestamp
+  string stream = 2;             // "stdout" or "stderr"
+  string message = 3;
+}
+
+message LogChunk {
+  string request_id = 1;
+  string container_id = 2;
+  repeated LogLine lines = 3;
+  bool done = 4;
+  string error_message = 5;
+}
+
+// ListEventsCommand asks for recent Docker events scoped to one container
+// (or, if container_id is empty, every container on the server) between
+// since_unix/until_unix. A bounded historical list, not a live
+// subscription — the live container view already gets state transitions
+// via Heartbeat; this is for the troubleshooting "what happened here"
+// view.
+message ListEventsCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  int64 since_unix = 4;
+  int64 until_unix = 5;
+}
+
+message ContainerEvent {
+  int64 timestamp_unix = 1;
+  string type = 2;
+  string action = 3;
+  string container_id = 4;
+  string container_name = 5;
+}
+
+message EventListResult {
+  string request_id = 1;
+  repeated ContainerEvent events = 2;
+  string error_message = 3;
+}
+
+// ExecStartCommand asks the agent to open an interactive `docker exec`
+// session inside container_id, or a host shell when host_shell is true.
+// The agent replies with a sequence of
+// ExecOutputChunk messages sharing request_id until the process exits
+// (done=true, exit_code set) or a StopStreamCommand arrives. Keystrokes
+// travel the other way as ExecInputCommand messages carrying the same
+// request_id.
+message ExecStartCommand {
+  string request_id = 1;
+  string server_id = 2;
+  string container_id = 3;
+  repeated string cmd = 4; // empty defaults to a shell (see docker/exec.go)
+  uint32 cols = 5;
+  uint32 rows = 6;
+  // Explicit target: an empty container_id never implicitly means host access.
+  bool host_shell = 7;
+}
+
+// ExecInputCommand carries either a chunk of stdin (data) or a pty resize
+// (resize_cols/resize_rows, both >0) for an already-running exec session,
+// routed by the agent to that session's goroutine via request_id rather
+// than starting a new exec.
+message ExecInputCommand {
+  string request_id = 1;
+  bytes data = 2;
+  uint32 resize_cols = 3;
+  uint32 resize_rows = 4;
+}
+
+message ExecOutputChunk {
+  string request_id = 1;
+  bytes data = 2;
+  bool done = 3;
+  int64 exit_code = 4;
+  string error_message = 5;
+}
+
+// BuildImageCommand builds a Docker image from a Git repository on the
+// agent's own Docker daemon, so the result can be deployed on this server
+// without a registry. The agent clones repo_url at git_commit (reached via
+// git_ref), sends context_path to the daemon as the build context (honoring
+// its .dockerignore), and tags the result image_tag. If image_tag already
+// exists locally and no_cache is false, nothing is built: tags are derived
+// from the commit and the build settings, so an existing tag is already
+// exactly this build (see also settings_key). A StopStreamCommand carrying
+// build_id cancels it.
+message BuildImageCommand {
+  string build_id = 1;
+  string deployment_id = 2;
+  string image_tag = 3;
+  string repo_url = 4;
+  // Branch or tag git_commit is reachable from.
+  string git_ref = 5;
+  string git_commit = 6;
+  // HTTPS credentials; empty for a public repository.
+  string git_username = 7;
+  string git_token = 8;
+  // Repository-relative directory ("." for the root), slash-separated.
+  string context_path = 9;
+  // Relative to context_path; empty means "Dockerfile".
+  string dockerfile = 10;
+  string target = 11;
+  map<string, string> build_args = 12;
+  map<string, string> labels = 13;
+  bool no_cache = 14;
+  // 0 uses the agent's default.
+  int32 timeout_seconds = 15;
+  // Identifies the build settings (context path, dockerfile, target, args,
+  // the service's own labels). Combined with the Git tree of the build
+  // context, it identifies everything the image is built from: an image
+  // already built from identical inputs — for an earlier commit that only
+  // changed files outside the context, such as the Compose file — is
+  // tagged image_tag and reused instead of rebuilt. Empty disables this.
+  string settings_key = 16;
+}
+
+enum BuildPhase {
+  BUILD_PHASE_UNSPECIFIED = 0;
+  // Received, waiting for another build on this server to finish.
+  BUILD_PHASE_QUEUED = 1;
+  BUILD_PHASE_CLONING = 2;
+  BUILD_PHASE_BUILDING = 3;
+  BUILD_PHASE_SUCCEEDED = 4;
+  BUILD_PHASE_FAILED = 5;
+  BUILD_PHASE_CANCELLED = 6;
+}
+
+// BuildStatus reports a build's progress. Build output arrives in batches
+// in log, numbered by log_seq (1, 2, ...) so a viewer that loaded earlier
+// output from the control plane's copy can skip batches it already has.
+message BuildStatus {
+  string build_id = 1;
+  BuildPhase phase = 2;
+  string message = 3;
+  string log = 4;
+  int64 log_seq = 5;
+  // Set on SUCCEEDED.
+  string image_id = 6;
+  // SUCCEEDED without building, because image_tag already existed.
+  bool reused = 7;
+}
