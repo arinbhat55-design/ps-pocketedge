@@ -1,6 +1,6 @@
-# Manage local Docker without Docker Desktop
+# Manage local Docker and Podman
 
-PS-pocketEdge manages a Docker Engine through its agent. The dashboard alone cannot run containers: a Docker daemon must be running on the machine you want to manage. The agent connects outbound to the control plane's gRPC address, normally port 8443.
+PS-pocketEdge manages Docker Engine or Podman through its agent. The dashboard alone cannot run containers: a container runtime API must be available on the machine you want to manage. The agent connects outbound to the control plane's gRPC address, normally port 8443.
 
 ## Dashboard access
 
@@ -59,3 +59,77 @@ Install WSL2 with an Ubuntu distribution, [enable systemd in WSL](https://learn.
 The generated enrollment token works once and expires after one hour. The quick-start command puts it in shell history; for a shared machine, pass it in `PE_ENROLL_TOKEN` instead of `--token`. The agent needs to reach the control plane's gRPC port. `--allow-builds` grants repository Dockerfiles access to that machine's Docker daemon, so use it only on machines where trusted admins may build.
 
 The current installers download `pe-agent` from a GitHub release. For testing a locally compiled agent, replace the download with `--local-binary=/path/to/pe-agent`.
+
+## Podman
+
+Select **Podman** in **Add server**. The generated installer command includes
+`--runtime=podman`; Docker remains the default for existing agents.
+Podman uses its [Docker-compatible API](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html),
+so container, image, network, volume, and Compose operations share the agent's
+existing API path. This is compatibility support, not Podman-native pod management.
+
+On Linux, install Podman before running the generated command. The installer
+runs as root and enables `podman.socket` at `/run/podman/podman.sock`; it manages
+rootful containers. The Windows command follows the same path inside WSL2
+with systemd enabled.
+
+On macOS, install Podman and create/start its machine:
+
+```sh
+brew install podman
+podman machine init
+podman machine start
+```
+
+Run the macOS installer as your normal user with `--runtime=podman`. It discovers
+the forwarded API socket using `podman machine inspect`, checks that the socket
+responds, and persists it in launchd. It requires neither Docker CLI nor Colima.
+For a different machine/socket, pass `--container-host=unix:///path/to/podman.sock`.
+Keep the Podman machine running; if its socket path changes, rerun the installer
+with the new path.
+
+To manage **rootless** Linux containers, run the agent as the same user as Podman,
+rather than using the rootful installer:
+
+```sh
+systemctl --user enable --now podman.socket
+pe-agent --runtime=podman --server=<control-plane-host>:8443 --token=<token> \
+  --state-path="$HOME/.local/share/pspocketedge/state.json"
+```
+
+The agent uses `$XDG_RUNTIME_DIR/podman/podman.sock` (or
+`/run/user/<uid>/podman/podman.sock`). Set up a user service if the agent should
+persist across logins. Rootless networking, resource limits, and privileged
+operations follow Podman's host permissions.
+
+Agent YAML also supports `container_runtime: podman` and
+`container_host: unix:///path/to/podman.sock`. The `--runtime` and
+`--container-host` flags override those fields. When no explicit host is set,
+`DOCKER_HOST` takes precedence over the runtime's default socket.
+
+Add `--allow-builds` to enable Git image builds through Podman's API. Docker
+Buildx is skipped for Podman. Docker-specific build extensions and API behavior
+may differ; full on-device parity still needs validation against your Podman version.
+
+## Bottom resource bar
+
+The dashboard's bottom bar shows the selected agent host's CPU usage, RAM used
+and total RAM, and disk space used and total capacity. The server menu switches
+which host is measured; values refresh every ten seconds and remain visible
+while navigating detail pages. The status strip is a single 32-pixel row. On phones, its metrics scroll
+horizontally above the navigation bar.
+
+Disk capacity is the host's root filesystem (`/`), rather than a per-container
+storage quota. RAM and disk byte usage require an updated agent and control
+plane. Older agents continue to show their reported usage percentages; unknown
+capacity displays as a dash. Offline or unavailable readings are marked as last
+reported.
+
+**Terminal** opens an interactive shell on the selected agent host. It runs as
+that agent's OS user (root for the Linux system installer; your user for the
+macOS installer or a rootless Linux agent). Administrators have access; viewers
+and disconnected hosts cannot open it. The agent and control plane must be
+updated to support host terminals. Docker/Podman and running containers are not
+required for host shells. Leaving the terminal closes the session and terminates
+its active commands. The terminal uses a plain command input and scrollback view;
+full-screen terminal applications are not supported.

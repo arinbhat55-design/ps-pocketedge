@@ -25,6 +25,8 @@ type Snapshot struct {
 	TotalMemoryBytes uint64
 	NumCPUs          uint32
 	TotalDiskBytes   uint64
+	UsedMemoryBytes  *uint64
+	UsedDiskBytes    *uint64
 }
 
 // Collect samples current host CPU, memory, and disk usage, plus each
@@ -53,6 +55,7 @@ func Collect(ctx context.Context) (Snapshot, error) {
 	} else {
 		snap.MemPercent = vm.UsedPercent
 		snap.TotalMemoryBytes = vm.Total
+		snap.UsedMemoryBytes = &vm.Used
 	}
 
 	if du, err := disk.UsageWithContext(ctx, diskPath); err != nil {
@@ -60,6 +63,7 @@ func Collect(ctx context.Context) (Snapshot, error) {
 	} else {
 		snap.DiskPercent = du.UsedPercent
 		snap.TotalDiskBytes = du.Total
+		snap.UsedDiskBytes = &du.Used
 	}
 
 	if len(errs) > 0 {

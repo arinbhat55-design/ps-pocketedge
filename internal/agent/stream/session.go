@@ -55,15 +55,17 @@ const (
 // already-consumed token), then keep the Session stream alive, reconnecting
 // with backoff on failure.
 type Runner struct {
-	Addr         string
-	Token        string
-	Hostname     string
-	OS           string
-	Arch         string
-	AgentVersion string
-	StatePath    string
-	TLS          bool
-	TLSCAFile    string
+	ContainerRuntime string
+	ContainerHost    string
+	Addr             string
+	Token            string
+	Hostname         string
+	OS               string
+	Arch             string
+	AgentVersion     string
+	StatePath        string
+	TLS              bool
+	TLSCAFile        string
 	// AllowBuilds lets the control plane build images from Git on this
 	// server's Docker daemon. Off by default: a Dockerfile's RUN steps
 	// execute on this host with the daemon's privileges.
@@ -174,7 +176,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// only fails later, when a deploy is actually attempted. So a host
 	// without Docker reachable yet still enrolls and heartbeats fine;
 	// deploy commands just report FAILED until it's reachable.
-	dockerCli, err := docker.NewClient()
+	dockerCli, err := docker.NewClientForRuntime(r.ContainerRuntime, r.ContainerHost)
 	if err != nil {
 		r.log.Warn("failed to create docker client, deploy commands will fail until this is resolved", "error", err)
 	}
@@ -240,10 +242,15 @@ func (r *Runner) bufferWhileDisconnected(ctx context.Context) {
 			}
 			buf := health.Open(r.bufferPath, bufferMaxEntries)
 			if err := buf.Append(health.Sample{
-				RecordedAt:  time.Now(),
-				CPUPercent:  snap.CPUPercent,
-				MemPercent:  snap.MemPercent,
-				DiskPercent: snap.DiskPercent,
+				RecordedAt:       time.Now(),
+				CPUPercent:       snap.CPUPercent,
+				MemPercent:       snap.MemPercent,
+				DiskPercent:      snap.DiskPercent,
+				TotalMemoryBytes: snap.TotalMemoryBytes,
+				NumCPUs:          snap.NumCPUs,
+				TotalDiskBytes:   snap.TotalDiskBytes,
+				UsedMemoryBytes:  snap.UsedMemoryBytes,
+				UsedDiskBytes:    snap.UsedDiskBytes,
 			}); err != nil {
 				r.log.Warn("failed to append to heartbeat buffer", "error", err)
 			}
@@ -489,9 +496,14 @@ func (r *Runner) flushBufferedHeartbeats(ctx context.Context, stream agentv1.Age
 	r.log.Info("flushing buffered heartbeats", "count", len(samples))
 	for _, s := range samples {
 		msg := buildHeartbeat(serverID, s.RecordedAt, health.Snapshot{
-			CPUPercent:  s.CPUPercent,
-			MemPercent:  s.MemPercent,
-			DiskPercent: s.DiskPercent,
+			CPUPercent:       s.CPUPercent,
+			MemPercent:       s.MemPercent,
+			DiskPercent:      s.DiskPercent,
+			TotalMemoryBytes: s.TotalMemoryBytes,
+			NumCPUs:          s.NumCPUs,
+			TotalDiskBytes:   s.TotalDiskBytes,
+			UsedMemoryBytes:  s.UsedMemoryBytes,
+			UsedDiskBytes:    s.UsedDiskBytes,
 		}, nil, false, nil, false)
 		if err := stream.Send(msg); err != nil {
 			r.log.Warn("failed to send buffered heartbeat, remaining samples dropped", "error", err)
@@ -1138,6 +1150,8 @@ func buildHeartbeat(serverID string, sentAt time.Time, snap health.Snapshot, con
 					TotalMemoryBytes: snap.TotalMemoryBytes,
 					NumCpus:          snap.NumCPUs,
 					TotalDiskBytes:   snap.TotalDiskBytes,
+					UsedMemoryBytes:  snap.UsedMemoryBytes,
+					UsedDiskBytes:    snap.UsedDiskBytes,
 				},
 				Containers:             containers,
 				ContainersIncluded:     containersIncluded,

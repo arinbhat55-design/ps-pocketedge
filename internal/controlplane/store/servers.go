@@ -34,6 +34,8 @@ type ResourceSnapshot struct {
 	TotalMemoryBytes uint64  `json:"totalMemoryBytes,omitempty"`
 	NumCPUs          uint32  `json:"numCpus,omitempty"`
 	TotalDiskBytes   uint64  `json:"totalDiskBytes,omitempty"`
+	UsedMemoryBytes  *uint64 `json:"usedMemoryBytes,omitempty"`
+	UsedDiskBytes    *uint64 `json:"usedDiskBytes,omitempty"`
 }
 
 // CreateServer inserts a new server row and returns its generated ID.

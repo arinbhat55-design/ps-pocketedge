@@ -22,6 +22,16 @@ import (
 // ?token=, the same documented exception every WS endpoint in this
 // package uses (see handleServerStream's doc comment).
 func handleContainerExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, relay *deploy.ExecStreamRelay) http.HandlerFunc {
+	return handleExec(log, authMgr, dispatcher, relay, false)
+}
+
+// handleHostExec shares the admin-only authenticated relay, but explicitly
+// targets a host process instead of a container.
+func handleHostExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, relay *deploy.ExecStreamRelay) http.HandlerFunc {
+	return handleExec(log, authMgr, dispatcher, relay, true)
+}
+
+func handleExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *deploy.Dispatcher, relay *deploy.ExecStreamRelay, hostShell bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, err := authMgr.AuthenticateRequest(r, streamToken(r))
 		if err != nil {
@@ -35,6 +45,12 @@ func handleContainerExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *de
 
 		serverID := r.PathValue("id")
 		containerID := r.PathValue("containerId")
+		if hostShell {
+			containerID = ""
+		} else if containerID == "" {
+			http.Error(w, "container is required", http.StatusBadRequest)
+			return
+		}
 		// Repeated cmd parameters preserve argument boundaries for terminal
 		// clients. Omitting them retains the dashboard's default shell.
 		command, err := parseExecCommand(r.URL.Query()["cmd"])
@@ -74,6 +90,7 @@ func handleContainerExec(log *slog.Logger, authMgr *auth.Manager, dispatcher *de
 					RequestId:   requestID,
 					ServerId:    serverID,
 					ContainerId: containerID,
+					HostShell:   hostShell,
 					Cmd:         command,
 					Cols:        uint32(cols),
 					Rows:        uint32(rows),

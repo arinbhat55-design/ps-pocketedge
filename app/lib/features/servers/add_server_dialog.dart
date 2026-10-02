@@ -17,6 +17,7 @@ class _AddServerDialogState extends State<AddServerDialog> {
   EnrollmentToken? _token;
   String? _error;
   String _platform = 'Linux';
+  String _runtime = 'docker';
 
   static const _scripts =
       'https://raw.githubusercontent.com/ankitapaul1586-cmd/pspocketedge/master/scripts';
@@ -27,7 +28,8 @@ class _AddServerDialogState extends State<AddServerDialog> {
         : 'install-agent.sh';
     final sudo = _platform == 'macOS' ? '' : 'sudo ';
     return 'curl -fsSL $_scripts/$script | ${sudo}sh -s -- '
-        '--server=<control-plane-host>:8443 --token=${token.token}';
+        '--server=<control-plane-host>:8443 --token=${token.token}'
+        ' --runtime=$_runtime';
   }
 
   @override
@@ -53,6 +55,7 @@ class _AddServerDialogState extends State<AddServerDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Add server'),
+      scrollable: true,
       content: SizedBox(
         width: 560,
         child: _error != null
@@ -69,7 +72,7 @@ class _AddServerDialogState extends State<AddServerDialog> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Choose the machine running Docker. The token is single-use.',
+                    'Choose the machine running your containers. The token is single-use.',
                   ),
                   const SizedBox(height: 12),
                   SegmentedButton<String>(
@@ -83,14 +86,30 @@ class _AddServerDialogState extends State<AddServerDialog> {
                         setState(() => _platform = value.first),
                   ),
                   const SizedBox(height: 12),
-                  Text(switch (_platform) {
-                    'macOS' =>
-                      'Install Docker CLI and Colima, then run colima start. Run the command below in Terminal without sudo. Builds are disabled until you add --allow-builds.',
-                    'Windows' =>
-                      'Run this command inside an Ubuntu WSL2 distribution with Docker Engine and systemd enabled. It does not install Docker Engine.',
-                    _ =>
-                      'Run this on a Linux machine with Docker Engine installed and running. Builds are disabled until you add --allow-builds.',
-                  }),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'docker', label: Text('Docker')),
+                      ButtonSegment(value: 'podman', label: Text('Podman')),
+                    ],
+                    selected: {_runtime},
+                    onSelectionChanged: (value) =>
+                        setState(() => _runtime = value.first),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    _runtime == 'podman'
+                        ? (_platform == 'macOS'
+                              ? 'Install Podman, then run podman machine init and podman machine start. Run the command below without sudo. Add --allow-builds to enable image builds.'
+                              : 'Install Podman on Linux (inside WSL2 for Windows) with systemd enabled. This command enables the rootful Podman socket. Add --allow-builds to enable image builds.')
+                        : switch (_platform) {
+                            'macOS' =>
+                              'Install Docker CLI and Colima, then run colima start. Run the command below in Terminal without sudo. Builds are disabled until you add --allow-builds.',
+                            'Windows' =>
+                              'Run this command inside an Ubuntu WSL2 distribution with Docker Engine and systemd enabled. It does not install Docker Engine.',
+                            _ =>
+                              'Run this on a Linux machine with Docker Engine installed and running. Builds are disabled until you add --allow-builds.',
+                          },
+                  ),
                   const SizedBox(height: 12),
                   _CopyableCommand(command: _command(_token!)),
                   const SizedBox(height: 8),

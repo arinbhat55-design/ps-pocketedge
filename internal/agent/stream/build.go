@@ -63,7 +63,7 @@ func (r *Runner) handleBuildImage(sessionCtx context.Context, dockerCli *dockerc
 		workDir = filepath.Join(os.TempDir(), "pspocketedge-builds")
 	}
 	r.log.Info("building image", "build_id", cmd.GetBuildId(), "deployment_id", cmd.GetDeploymentId(), "tag", cmd.GetImageTag(), "commit", cmd.GetGitCommit())
-	res, err := build.Run(ctx, dockerCli, cmd, build.Options{WorkDir: workDir}, logs.phase, logs)
+	res, err := build.Run(ctx, dockerCli, cmd, build.Options{WorkDir: workDir, Runtime: r.ContainerRuntime}, logs.phase, logs)
 	switch {
 	case err != nil && errors.Is(ctx.Err(), context.Canceled) && sessionCtx.Err() == nil:
 		r.log.Info("build cancelled", "build_id", cmd.GetBuildId())

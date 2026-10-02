@@ -146,6 +146,9 @@ message ResourceSnapshot {
   uint64 total_memory_bytes = 4;
   uint32 num_cpus = 5;
   uint64 total_disk_bytes = 6;
+  // Optional so older agents and failed collectors differ from zero usage.
+  optional uint64 used_memory_bytes = 7;
+  optional uint64 used_disk_bytes = 8;
 }
 
 message ContainerSummary {
@@ -868,7 +871,8 @@ message EventListResult {
 }
 
 // ExecStartCommand asks the agent to open an interactive `docker exec`
-// session inside container_id. The agent replies with a sequence of
+// session inside container_id, or a host shell when host_shell is true.
+// The agent replies with a sequence of
 // ExecOutputChunk messages sharing request_id until the process exits
 // (done=true, exit_code set) or a StopStreamCommand arrives. Keystrokes
 // travel the other way as ExecInputCommand messages carrying the same
@@ -880,6 +884,8 @@ message ExecStartCommand {
   repeated string cmd = 4; // empty defaults to a shell (see docker/exec.go)
   uint32 cols = 5;
   uint32 rows = 6;
+  // Explicit target: an empty container_id never implicitly means host access.
+  bool host_shell = 7;
 }
 
 // ExecInputCommand carries either a chunk of stdin (data) or a pty resize

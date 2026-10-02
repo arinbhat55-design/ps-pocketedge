@@ -1617,8 +1617,11 @@ type ResourceSnapshot struct {
 	TotalMemoryBytes uint64 `protobuf:"varint,4,opt,name=total_memory_bytes,json=totalMemoryBytes,proto3" json:"total_memory_bytes,omitempty"`
 	NumCpus          uint32 `protobuf:"varint,5,opt,name=num_cpus,json=numCpus,proto3" json:"num_cpus,omitempty"`
 	TotalDiskBytes   uint64 `protobuf:"varint,6,opt,name=total_disk_bytes,json=totalDiskBytes,proto3" json:"total_disk_bytes,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Optional so older agents and failed collectors differ from zero usage.
+	UsedMemoryBytes *uint64 `protobuf:"varint,7,opt,name=used_memory_bytes,json=usedMemoryBytes,proto3,oneof" json:"used_memory_bytes,omitempty"`
+	UsedDiskBytes   *uint64 `protobuf:"varint,8,opt,name=used_disk_bytes,json=usedDiskBytes,proto3,oneof" json:"used_disk_bytes,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ResourceSnapshot) Reset() {
@@ -1689,6 +1692,20 @@ func (x *ResourceSnapshot) GetNumCpus() uint32 {
 func (x *ResourceSnapshot) GetTotalDiskBytes() uint64 {
 	if x != nil {
 		return x.TotalDiskBytes
+	}
+	return 0
+}
+
+func (x *ResourceSnapshot) GetUsedMemoryBytes() uint64 {
+	if x != nil && x.UsedMemoryBytes != nil {
+		return *x.UsedMemoryBytes
+	}
+	return 0
+}
+
+func (x *ResourceSnapshot) GetUsedDiskBytes() uint64 {
+	if x != nil && x.UsedDiskBytes != nil {
+		return *x.UsedDiskBytes
 	}
 	return 0
 }
@@ -6755,19 +6772,22 @@ func (x *EventListResult) GetErrorMessage() string {
 }
 
 // ExecStartCommand asks the agent to open an interactive `docker exec`
-// session inside container_id. The agent replies with a sequence of
+// session inside container_id, or a host shell when host_shell is true.
+// The agent replies with a sequence of
 // ExecOutputChunk messages sharing request_id until the process exits
 // (done=true, exit_code set) or a StopStreamCommand arrives. Keystrokes
 // travel the other way as ExecInputCommand messages carrying the same
 // request_id.
 type ExecStartCommand struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	ServerId      string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
-	ContainerId   string                 `protobuf:"bytes,3,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
-	Cmd           []string               `protobuf:"bytes,4,rep,name=cmd,proto3" json:"cmd,omitempty"` // empty defaults to a shell (see docker/exec.go)
-	Cols          uint32                 `protobuf:"varint,5,opt,name=cols,proto3" json:"cols,omitempty"`
-	Rows          uint32                 `protobuf:"varint,6,opt,name=rows,proto3" json:"rows,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	RequestId   string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ServerId    string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
+	ContainerId string                 `protobuf:"bytes,3,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
+	Cmd         []string               `protobuf:"bytes,4,rep,name=cmd,proto3" json:"cmd,omitempty"` // empty defaults to a shell (see docker/exec.go)
+	Cols        uint32                 `protobuf:"varint,5,opt,name=cols,proto3" json:"cols,omitempty"`
+	Rows        uint32                 `protobuf:"varint,6,opt,name=rows,proto3" json:"rows,omitempty"`
+	// Explicit target: an empty container_id never implicitly means host access.
+	HostShell     bool `protobuf:"varint,7,opt,name=host_shell,json=hostShell,proto3" json:"host_shell,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6842,6 +6862,13 @@ func (x *ExecStartCommand) GetRows() uint32 {
 		return x.Rows
 	}
 	return 0
+}
+
+func (x *ExecStartCommand) GetHostShell() bool {
+	if x != nil {
+		return x.HostShell
+	}
+	return false
 }
 
 // ExecInputCommand carries either a chunk of stdin (data) or a pty resize
@@ -7385,7 +7412,7 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x10block_read_bytes\x18\b \x01(\x03R\x0eblockReadBytes\x12*\n" +
 	"\x11block_write_bytes\x18\t \x01(\x03R\x0fblockWriteBytes\x12\x12\n" +
 	"\x04pids\x18\n" +
-	" \x01(\x03R\x04pids\"\xea\x01\n" +
+	" \x01(\x03R\x04pids\"\xf2\x02\n" +
 	"\x10ResourceSnapshot\x12\x1f\n" +
 	"\vcpu_percent\x18\x01 \x01(\x01R\n" +
 	"cpuPercent\x12\x1f\n" +
@@ -7394,7 +7421,11 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\fdisk_percent\x18\x03 \x01(\x01R\vdiskPercent\x12,\n" +
 	"\x12total_memory_bytes\x18\x04 \x01(\x04R\x10totalMemoryBytes\x12\x19\n" +
 	"\bnum_cpus\x18\x05 \x01(\rR\anumCpus\x12(\n" +
-	"\x10total_disk_bytes\x18\x06 \x01(\x04R\x0etotalDiskBytes\"\xf6\x02\n" +
+	"\x10total_disk_bytes\x18\x06 \x01(\x04R\x0etotalDiskBytes\x12/\n" +
+	"\x11used_memory_bytes\x18\a \x01(\x04H\x00R\x0fusedMemoryBytes\x88\x01\x01\x12+\n" +
+	"\x0fused_disk_bytes\x18\b \x01(\x04H\x01R\rusedDiskBytes\x88\x01\x01B\x14\n" +
+	"\x12_used_memory_bytesB\x12\n" +
+	"\x10_used_disk_bytes\"\xf6\x02\n" +
 	"\x10ContainerSummary\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -7899,7 +7930,7 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x120\n" +
 	"\x06events\x18\x02 \x03(\v2\x18.agent.v1.ContainerEventR\x06events\x12#\n" +
-	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\"\xab\x01\n" +
+	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\"\xca\x01\n" +
 	"\x10ExecStartCommand\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1b\n" +
@@ -7907,7 +7938,9 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\fcontainer_id\x18\x03 \x01(\tR\vcontainerId\x12\x10\n" +
 	"\x03cmd\x18\x04 \x03(\tR\x03cmd\x12\x12\n" +
 	"\x04cols\x18\x05 \x01(\rR\x04cols\x12\x12\n" +
-	"\x04rows\x18\x06 \x01(\rR\x04rows\"\x87\x01\n" +
+	"\x04rows\x18\x06 \x01(\rR\x04rows\x12\x1d\n" +
+	"\n" +
+	"host_shell\x18\a \x01(\bR\thostShell\"\x87\x01\n" +
 	"\x10ExecInputCommand\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -8280,6 +8313,7 @@ func file_agent_v1_agent_proto_init() {
 		(*ControlMessage_PushImage)(nil),
 		(*ControlMessage_VolumeFile)(nil),
 	}
+	file_agent_v1_agent_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

@@ -167,6 +167,10 @@ func (s *Server) Session(stream agentv1.AgentSession_SessionServer) error {
 				NumCPUs:          hb.GetResources().GetNumCpus(),
 				TotalDiskBytes:   hb.GetResources().GetTotalDiskBytes(),
 			}
+			if hb.GetResources() != nil {
+				resources.UsedMemoryBytes = hb.GetResources().UsedMemoryBytes
+				resources.UsedDiskBytes = hb.GetResources().UsedDiskBytes
+			}
 			if err := s.store.RecordHeartbeat(ctx, serverID, resources); err != nil {
 				s.log.Error("failed to record heartbeat", "server_id", serverID, "error", err)
 				continue

@@ -6,6 +6,8 @@ import '../../widgets/app_logo.dart';
 import '../../widgets/state_message.dart';
 import '../alerts/alerts_screen.dart';
 import '../containers/container_list_screen.dart';
+import '../containers/container_terminal_screen.dart';
+import 'runtime_status_bar.dart';
 import '../compose/docker_compose_screen.dart';
 import '../databases/database_marketplace_screen.dart';
 import '../kubernetes/kubernetes_screen.dart';
@@ -43,6 +45,9 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _selectedIndex = 0;
+  final _moduleIndex = ValueNotifier<int>(0);
+  final _contentNavigatorKey = GlobalKey<NavigatorState>();
+  final _statusBarKey = GlobalKey();
   bool? _railExpandedOverride;
   double _railWidth = 336;
   late Future<AppUser> _meFuture;
@@ -51,6 +56,18 @@ class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
     _meFuture = widget.apiClient.getMe();
+  }
+
+  @override
+  void dispose() {
+    _moduleIndex.dispose();
+    super.dispose();
+  }
+
+  void _selectModule(int index) {
+    _contentNavigatorKey.currentState?.popUntil((route) => route.isFirst);
+    _moduleIndex.value = index;
+    setState(() => _selectedIndex = index);
   }
 
   Future<void> _openChangePassword() async {
@@ -171,9 +188,41 @@ class _AppShellState extends State<AppShell> {
         final selectedIndex = _selectedIndex < destinations.length
             ? _selectedIndex
             : 0;
-        final pages = IndexedStack(
-          index: selectedIndex,
-          children: [for (final d in destinations) d.builder(context)],
+        // Keep detail pages inside this navigator so the status bar stays
+        // visible when opening a server, container, or terminal.
+        final pages = NavigatorPopHandler<Object?>(
+          onPopWithResult: (_) => _contentNavigatorKey.currentState?.pop(),
+          child: Navigator(
+            key: _contentNavigatorKey,
+            onGenerateRoute: (_) => MaterialPageRoute<void>(
+              builder: (_) => ValueListenableBuilder<int>(
+                valueListenable: _moduleIndex,
+                builder: (context, index, _) => IndexedStack(
+                  index: index,
+                  children: [for (final d in destinations) d.builder(context)],
+                ),
+              ),
+            ),
+          ),
+        );
+        final statusBar = RuntimeStatusBar(
+          key: _statusBarKey,
+          apiClient: widget.apiClient,
+          isAdmin: isAdmin,
+          onOpenTerminal: (server) {
+            _contentNavigatorKey.currentState?.push(
+              MaterialPageRoute<void>(
+                builder: (_) => Scaffold(
+                  appBar: AppBar(title: Text('Host terminal · ${server.name}')),
+                  body: ContainerTerminalScreen.host(
+                    apiClient: widget.apiClient,
+                    serverId: server.id,
+                    serverName: server.name,
+                  ),
+                ),
+              ),
+            );
+          },
         );
 
         if (isCompactWidth(context)) {
@@ -182,6 +231,7 @@ class _AppShellState extends State<AppShell> {
             selectedIndex: selectedIndex,
             email: snapshot.data?.email,
             body: pages,
+            statusBar: statusBar,
           );
         }
 
@@ -194,6 +244,7 @@ class _AppShellState extends State<AppShell> {
             ? _railWidth.clamp(256.0, maxRailWidth).toDouble()
             : 72.0;
         return Scaffold(
+          bottomNavigationBar: statusBar,
           body: Row(
             children: [
               SizedBox(
@@ -204,8 +255,7 @@ class _AppShellState extends State<AppShell> {
                   minExtendedWidth: railWidth,
                   scrollable: true,
                   selectedIndex: selectedIndex,
-                  onDestinationSelected: (i) =>
-                      setState(() => _selectedIndex = i),
+                  onDestinationSelected: _selectModule,
                   labelType: expanded
                       ? NavigationRailLabelType.none
                       : NavigationRailLabelType.all,
@@ -273,6 +323,7 @@ class _AppShellState extends State<AppShell> {
     required int selectedIndex,
     required String? email,
     required Widget body,
+    required Widget statusBar,
   }) {
     final primary = destinations.take(_primaryDestinationCount).toList();
     final overflow = destinations.skip(_primaryDestinationCount).toList();
@@ -281,33 +332,43 @@ class _AppShellState extends State<AppShell> {
 
     return Scaffold(
       body: body,
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: inOverflow ? primary.length : selectedIndex,
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-        onDestinationSelected: (i) {
-          if (i < primary.length) {
-            setState(() => _selectedIndex = i);
-          } else {
-            _openMoreSheet(
-              overflow: overflow,
-              firstOverflowIndex: primary.length,
-              selectedIndex: selectedIndex,
-              email: email,
-            );
-          }
-        },
-        destinations: [
-          for (final d in primary)
-            NavigationDestination(
-              icon: Icon(d.icon),
-              selectedIcon: Icon(d.selectedIcon),
-              label: d.shortLabel,
-            ),
-          NavigationDestination(
-            icon: Icon(moreDestination?.icon ?? Icons.menu),
-            selectedIcon: Icon(moreDestination?.selectedIcon ?? Icons.menu),
-            label: moreDestination?.shortLabel ?? 'More',
-            tooltip: 'More',
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          MediaQuery.removePadding(
+            context: context,
+            removeBottom: true,
+            child: statusBar,
+          ),
+          NavigationBar(
+            selectedIndex: inOverflow ? primary.length : selectedIndex,
+            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+            onDestinationSelected: (i) {
+              if (i < primary.length) {
+                _selectModule(i);
+              } else {
+                _openMoreSheet(
+                  overflow: overflow,
+                  firstOverflowIndex: primary.length,
+                  selectedIndex: selectedIndex,
+                  email: email,
+                );
+              }
+            },
+            destinations: [
+              for (final d in primary)
+                NavigationDestination(
+                  icon: Icon(d.icon),
+                  selectedIcon: Icon(d.selectedIcon),
+                  label: d.shortLabel,
+                ),
+              NavigationDestination(
+                icon: Icon(moreDestination?.icon ?? Icons.menu),
+                selectedIcon: Icon(moreDestination?.selectedIcon ?? Icons.menu),
+                label: moreDestination?.shortLabel ?? 'More',
+                tooltip: 'More',
+              ),
+            ],
           ),
         ],
       ),
@@ -368,7 +429,7 @@ class _AppShellState extends State<AppShell> {
     );
     if (!mounted || action == null) return;
     if (action.startsWith('module:')) {
-      setState(() => _selectedIndex = int.parse(action.substring(7)));
+      _selectModule(int.parse(action.substring(7)));
     } else if (action == 'password') {
       _openChangePassword();
     } else if (action == 'logout') {

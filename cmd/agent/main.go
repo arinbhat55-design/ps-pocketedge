@@ -22,8 +22,10 @@ func main() {
 	statePath := flag.String("state-path", "", "where to persist the agent's identity across restarts (empty = re-enroll every run, for local dev)")
 	tlsEnabled := flag.Bool("tls", false, "use TLS even for a loopback control-plane address (remote addresses always require TLS)")
 	tlsCAFile := flag.String("tls-ca-file", "", "optional PEM CA certificate for the control-plane gRPC server")
-	allowBuilds := flag.Bool("allow-builds", false, "let the control plane build images from Git on this server's Docker daemon")
+	allowBuilds := flag.Bool("allow-builds", false, "let the control plane build images from Git on this server's container runtime")
 	buildDir := flag.String("build-dir", "", "where image builds clone repositories (default: a directory under the system temp dir)")
+	containerRuntime := flag.String("runtime", "docker", "container runtime: docker or podman")
+	containerHost := flag.String("container-host", "", "container API endpoint (defaults to DOCKER_HOST or the runtime socket)")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -32,11 +34,20 @@ func main() {
 	serverAddr, enrollToken, statePathValue := *controlPlaneAddr, *token, *statePath
 	useTLS, caFile := *tlsEnabled, *tlsCAFile
 	builds, buildDirValue := *allowBuilds, *buildDir
+	runtimeValue, hostValue := *containerRuntime, *containerHost
+	explicitlySet := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicitlySet[f.Name] = true })
 	if *configPath != "" {
 		cfg, err := config.Load(*configPath)
 		if err != nil {
 			log.Error("failed to load config", "path", *configPath, "error", err)
 			os.Exit(1)
+		}
+		if !explicitlySet["runtime"] && cfg.ContainerRuntime != "" {
+			runtimeValue = cfg.ContainerRuntime
+		}
+		if !explicitlySet["container-host"] {
+			hostValue = cfg.ContainerHost
 		}
 		if cfg.Server != "" {
 			serverAddr = cfg.Server
@@ -57,6 +68,13 @@ func main() {
 		}
 	}
 
+	if runtimeValue != "docker" && runtimeValue != "podman" {
+		log.Error("unsupported container runtime", "runtime", runtimeValue)
+		os.Exit(1)
+	}
+
+	log.Info("container runtime configured", "runtime", runtimeValue)
+
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "unknown"
@@ -70,6 +88,8 @@ func main() {
 	runner.TLSCAFile = caFile
 	runner.AllowBuilds = builds
 	runner.BuildDir = buildDirValue
+	runner.ContainerRuntime = runtimeValue
+	runner.ContainerHost = hostValue
 	if builds {
 		log.Info("image builds enabled on this server")
 	}

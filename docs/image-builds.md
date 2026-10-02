@@ -19,6 +19,10 @@ An Engine-only server uses the classic builder. The build log says which path
 was used. Install Buildx on the agent host to use Dockerfile features such as
 `RUN --mount`; those Dockerfile features will fail on the classic path.
 
+For agents configured with `container_runtime: podman`, builds use Podman’s
+Docker-compatible build API and skip Docker Buildx. Enable them with the same
+`allow_builds: true` setting. See [Podman setup](local-docker.md#podman).
+
 An admin can open a successful build in the deployment's **Builds** tab and
 choose **Push to registry**. Select a configured registry and a repository
 path within it. The control plane constructs an immutable tag from the local

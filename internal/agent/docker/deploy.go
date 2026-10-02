@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/strslice"
+	"github.com/docker/docker/api/types/versions"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
@@ -664,6 +665,14 @@ func createContainer(ctx context.Context, cli *client.Client, deploymentID, stac
 		Labels:       labels,
 		ExposedPorts: exposedPorts,
 		Healthcheck:  healthCheckFromCompose(svc.HealthCheck),
+	}
+	// The SDK rejects start_interval below API 1.44 (Podman's compatibility
+	// API, older Engines). It only tunes probing during start_period, so drop
+	// it rather than fail the whole deploy. Negotiate first so ClientVersion
+	// reflects the Engine (a no-op once negotiated or when pinned).
+	cli.NegotiateAPIVersion(ctx)
+	if config.Healthcheck != nil && versions.LessThan(cli.ClientVersion(), "1.44") {
+		config.Healthcheck.StartInterval = 0
 	}
 	hostConfig := &container.HostConfig{
 		PortBindings:  portBindings,

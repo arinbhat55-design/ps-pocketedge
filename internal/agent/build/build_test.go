@@ -6,10 +6,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -321,5 +324,77 @@ func TestRunBuildsFromGit(t *testing.T) {
 	failing := &agentv1.BuildImageCommand{ImageTag: tag + "-missing", RepoUrl: repoDir, GitRef: "master", GitCommit: first, ContextPath: "nope"}
 	if _, err := Run(ctx, cli, failing, Options{WorkDir: t.TempDir()}, phase, io.Discard); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("missing context: %v", err)
+	}
+}
+
+// A Docker CLI may be installed beside Podman. It must never receive a
+// Podman build; the tar upload and inspection must use the selected API.
+func TestPodmanBuildSkipsDockerCLI(t *testing.T) {
+	repo := t.TempDir()
+	commit := commitAll(t, repo, map[string]string{"Dockerfile": "FROM scratch\n"})
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "docker-called")
+	if err := os.WriteFile(filepath.Join(binDir, "docker"), []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var built atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/v1.40/build":
+			if r.URL.Query().Get("t") != "test/podman:latest" {
+				t.Errorf("build query: %s", r.URL.RawQuery)
+			}
+			tr := tar.NewReader(r.Body)
+			foundDockerfile := false
+			for {
+				hdr, err := tr.Next()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if err != nil {
+					t.Errorf("invalid build context: %v", err)
+					break
+				}
+				if hdr.Name == "Dockerfile" {
+					foundDockerfile = true
+				}
+			}
+			if !foundDockerfile {
+				t.Error("missing Dockerfile in build context")
+			}
+
+			built.Store(true)
+			io.WriteString(w, `{"stream":"build complete\n"}`+"\n"+`{"aux":{"ID":"sha256:podman-built"}}`)
+		case strings.HasPrefix(r.URL.Path, "/v1.40/images/") && strings.HasSuffix(r.URL.Path, "/json"):
+			if !built.Load() {
+				http.Error(w, `{"message":"image missing"}`, http.StatusNotFound)
+				return
+			}
+			io.WriteString(w, `{"Id":"sha256:podman-built"}`)
+		default:
+			t.Errorf("unexpected API call: %s %s", r.Method, r.URL.String())
+			http.Error(w, "unexpected", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	cli, err := client.NewClientWithOpts(client.WithHost("tcp"+server.URL[4:]), client.WithVersion("1.40"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	var out bytes.Buffer
+	res, err := Run(context.Background(), cli, &agentv1.BuildImageCommand{
+		RepoUrl: repo, GitRef: "master", GitCommit: commit, ImageTag: "test/podman:latest",
+	}, Options{Runtime: "podman", WorkDir: t.TempDir()}, func(agentv1.BuildPhase, string) {}, &out)
+	if err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out.String())
+	}
+	if res.ImageID != "sha256:podman-built" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("Podman build invoked Docker CLI")
 	}
 }

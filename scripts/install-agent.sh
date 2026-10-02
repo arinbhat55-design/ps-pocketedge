@@ -4,10 +4,10 @@
 # Usage:
 #   curl -sSL https://<control-plane>/install.sh | sh -s -- \
 #     --server=<control-plane-host>:8443 --token=<enrollment-token> \
-#     [--ca-file=/path/to/private-ca.pem] [--allow-builds]
+#     [--ca-file=/path/to/private-ca.pem] [--runtime=docker|podman] [--allow-builds]
 #
 # --allow-builds lets the control plane build images from Git on this
-# server (Dockerfile RUN steps execute here with Docker's privileges).
+# server (Dockerfile RUN steps execute here with the runtime's privileges).
 #
 # The --token=<value> form is the quick-start default but leaves the token
 # visible in shell history and `ps` output on this machine. Prefer setting
@@ -27,6 +27,8 @@ TOKEN="${PE_ENROLL_TOKEN:-}"
 LOCAL_BINARY=""
 CA_FILE=""
 ALLOW_BUILDS="false"
+CONTAINER_RUNTIME="docker"
+CONTAINER_HOST="${DOCKER_HOST:-}"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/pspocketedge"
 
@@ -37,6 +39,8 @@ for arg in "$@"; do
     --version=*) VERSION="${arg#*=}" ;;
     --local-binary=*) LOCAL_BINARY="${arg#*=}" ;;
     --ca-file=*) CA_FILE="${arg#*=}" ;;
+    --runtime=*) CONTAINER_RUNTIME="${arg#*=}" ;;
+    --container-host=*) CONTAINER_HOST="${arg#*=}" ;;
     --allow-builds) ALLOW_BUILDS="true" ;;
     *) echo "unknown argument: $arg" >&2; exit 1 ;;
   esac
@@ -68,6 +72,32 @@ case "$(uname -m)" in
   armv7l|armv6l) ARCH="armv7" ;;
   *) echo "error: unsupported architecture $(uname -m)" >&2; exit 1 ;;
 esac
+
+case "$CONTAINER_RUNTIME" in
+  docker) RUNTIME_UNIT="docker.service" ;;
+  podman)
+    RUNTIME_UNIT="podman.socket"
+    CONTAINER_HOST="${CONTAINER_HOST:-unix:///run/podman/podman.sock}"
+    ;;
+  *) echo "error: --runtime must be docker or podman" >&2; exit 1 ;;
+esac
+# Keep the endpoint safe to embed in YAML.
+case "$CONTAINER_HOST" in
+  *[!a-zA-Z0-9_./:@%-]*) echo "error: invalid container host" >&2; exit 1 ;;
+esac
+
+if [ "$CONTAINER_RUNTIME" = "podman" ]; then
+  if ! command -v podman >/dev/null 2>&1; then
+    echo "error: Podman is not installed; install it (e.g. apt install podman) and rerun" >&2
+    exit 1
+  fi
+  systemctl enable --now podman.socket
+  # Podman has no daemon, so nothing restarts containers after a reboot
+  # unless this unit is enabled (shipped since Podman 4.3).
+  if ! systemctl enable podman-restart.service; then
+    echo "warning: podman-restart.service unavailable; deployed containers will not start again after a reboot" >&2
+  fi
+fi
 
 echo "==> installing pe-agent binary"
 if [ -n "$LOCAL_BINARY" ]; then
@@ -104,6 +134,8 @@ token: "$TOKEN"
 state_path: "$CONFIG_DIR/state.json"
 tls: true
 allow_builds: $ALLOW_BUILDS
+container_runtime: "$CONTAINER_RUNTIME"
+container_host: "$CONTAINER_HOST"
 EOF
 if [ -n "$CA_FILE" ]; then
   echo "tls_ca_file: \"$CONFIG_DIR/control-plane-ca.pem\"" >> "$CONFIG_DIR/agent.yaml"
@@ -111,12 +143,12 @@ fi
 chmod 600 "$CONFIG_DIR/agent.yaml"
 
 echo "==> installing systemd unit"
-cat > /etc/systemd/system/pe-agent.service <<'EOF'
+cat > /etc/systemd/system/pe-agent.service <<EOF
 [Unit]
 Description=PS-pocketEdge agent
-After=network-online.target docker.service
+After=network-online.target $RUNTIME_UNIT
 Wants=network-online.target
-Requires=docker.service
+Requires=$RUNTIME_UNIT
 
 [Service]
 Type=simple

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install the agent in the current macOS user's launchd session.
-# Start Colima (or set DOCKER_HOST to another Docker Engine socket) first.
-# Usage: PE_ENROLL_TOKEN=... sh scripts/install-agent-macos.sh --server=host:8443 [--allow-builds]
+# Start Colima or Podman machine before installing.
+# Usage: PE_ENROLL_TOKEN=... sh scripts/install-agent-macos.sh --server=host:8443 [--runtime=docker|podman] [--allow-builds]
 set -eu
 
 REPO="ankitapaul1586-cmd/pspocketedge"
@@ -11,6 +11,8 @@ TOKEN="${PE_ENROLL_TOKEN:-}"
 LOCAL_BINARY=""
 CA_FILE=""
 ALLOW_BUILDS="false"
+CONTAINER_RUNTIME="docker"
+CONTAINER_HOST="${DOCKER_HOST:-}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -19,6 +21,8 @@ for arg in "$@"; do
     --version=*) VERSION="${arg#*=}" ;;
     --local-binary=*) LOCAL_BINARY="${arg#*=}" ;;
     --ca-file=*) CA_FILE="${arg#*=}" ;;
+    --runtime=*) CONTAINER_RUNTIME="${arg#*=}" ;;
+    --container-host=*) CONTAINER_HOST="${arg#*=}" ;;
     --allow-builds) ALLOW_BUILDS="true" ;;
     *) echo "unknown argument: $arg" >&2; exit 1 ;;
   esac
@@ -40,18 +44,36 @@ case "$SERVER" in
   *[!a-zA-Z0-9.:-]*|'') echo "error: invalid server address" >&2; exit 1 ;;
 esac
 
-if [ -z "${DOCKER_HOST:-}" ]; then
-  if ! command -v colima >/dev/null 2>&1; then
-    echo "error: install and start Colima, or set DOCKER_HOST to a Docker Engine socket" >&2
-    exit 1
-  fi
-  DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"
-fi
-export DOCKER_HOST
-if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-  echo "error: Docker CLI cannot connect to $DOCKER_HOST; start your local Engine first" >&2
-  exit 1
-fi
+case "$CONTAINER_RUNTIME" in
+  docker)
+    CONTAINER_HOST="${CONTAINER_HOST:-unix://${HOME}/.colima/default/docker.sock}"
+    ;;
+  podman)
+    if [ -z "$CONTAINER_HOST" ]; then
+      if ! command -v podman >/dev/null 2>&1; then
+        echo "error: install Podman and start podman machine first" >&2; exit 1
+      fi
+      SOCKET="$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}')"
+      case "$SOCKET" in
+        ''|*'
+'*) echo "error: expected one Podman machine socket; start your machine or pass --container-host=unix:///path/to/socket" >&2; exit 1 ;;
+        /*) ;;
+        *) echo "error: no valid Podman machine socket; run podman machine start" >&2; exit 1 ;;
+      esac
+      CONTAINER_HOST="unix://$SOCKET"
+    fi
+    ;;
+  *) echo "error: --runtime must be docker or podman" >&2; exit 1 ;;
+esac
+export DOCKER_HOST="$CONTAINER_HOST"
+case "$CONTAINER_HOST" in
+  unix://*)
+    if ! curl -fsS --unix-socket "${CONTAINER_HOST#unix://}" http://localhost/_ping >/dev/null; then
+      echo "error: cannot connect to $CONTAINER_HOST; start your runtime first" >&2; exit 1
+    fi
+    ;;
+  *) echo "error: macOS installer requires a unix:// container socket" >&2; exit 1 ;;
+esac
 
 case "$(uname -m)" in
   x86_64) ARCH="amd64" ;;
@@ -95,6 +117,7 @@ token: "$TOKEN"
 state_path: "$CONFIG_DIR/state.json"
 tls: true
 allow_builds: $ALLOW_BUILDS
+container_runtime: "$CONTAINER_RUNTIME"
 EOF
 if [ -n "$CA_FILE" ]; then
   echo "tls_ca_file: \"$CONFIG_DIR/control-plane-ca.pem\"" >> "$CONFIG_DIR/agent.yaml"

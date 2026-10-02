@@ -2,11 +2,19 @@ class ResourceSnapshot {
   final double cpuPercent;
   final double memPercent;
   final double diskPercent;
+  final int totalMemoryBytes;
+  final int totalDiskBytes;
+  final int? usedMemoryBytes;
+  final int? usedDiskBytes;
 
   const ResourceSnapshot({
     required this.cpuPercent,
     required this.memPercent,
     required this.diskPercent,
+    this.totalMemoryBytes = 0,
+    this.totalDiskBytes = 0,
+    this.usedMemoryBytes,
+    this.usedDiskBytes,
   });
 
   factory ResourceSnapshot.fromJson(Map<String, dynamic> json) {
@@ -14,6 +22,10 @@ class ResourceSnapshot {
       cpuPercent: (json['cpuPercent'] as num).toDouble(),
       memPercent: (json['memPercent'] as num).toDouble(),
       diskPercent: (json['diskPercent'] as num).toDouble(),
+      totalMemoryBytes: (json['totalMemoryBytes'] as num?)?.toInt() ?? 0,
+      totalDiskBytes: (json['totalDiskBytes'] as num?)?.toInt() ?? 0,
+      usedMemoryBytes: (json['usedMemoryBytes'] as num?)?.toInt(),
+      usedDiskBytes: (json['usedDiskBytes'] as num?)?.toInt(),
     );
   }
 }

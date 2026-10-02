@@ -6,7 +6,7 @@ LDFLAGS  := -X '$(MODULE)/internal/shared/version.Version=$(VERSION)' \
             -X '$(MODULE)/internal/shared/version.Commit=$(COMMIT)' \
             -X '$(MODULE)/internal/shared/version.BuildDate=$(DATE)'
 
-.PHONY: build build-agent build-controlplane build-cli test vet proto migrate dev release clean
+.PHONY: build build-agent build-controlplane build-cli test vet proto migrate dev release clean package-macos-setup
 
 build: build-agent build-controlplane build-cli
 
@@ -39,6 +39,9 @@ dev:
 
 release:
 	goreleaser release --snapshot --clean
+
+package-macos-setup:
+	bash scripts/package-macos-setup.sh
 
 clean:
 	rm -rf bin dist

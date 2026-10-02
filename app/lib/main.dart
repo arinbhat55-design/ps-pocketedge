@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'api/api_client.dart';
 import 'api/auth_storage.dart';
@@ -15,12 +16,37 @@ const controlPlaneUrl = String.fromEnvironment(
   defaultValue: 'http://localhost:8080',
 );
 
-void main() {
-  runApp(const PSPocketEdgeApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(PSPocketEdgeApp(apiUrl: await configuredControlPlaneUrl()));
+}
+
+Future<String> configuredControlPlaneUrl() async {
+  var apiUrl = controlPlaneUrl;
+  try {
+    final configured = await const MethodChannel(
+      'com.pspocketedge.app/config',
+    ).invokeMethod<String>('getControlPlaneURL');
+    final uri = configured == null ? null : Uri.tryParse(configured);
+    if (uri != null &&
+        {'http', 'https'}.contains(uri.scheme) &&
+        uri.host.isNotEmpty &&
+        uri.userInfo.isEmpty &&
+        !uri.hasQuery &&
+        !uri.hasFragment) {
+      apiUrl = configured!;
+    }
+  } on MissingPluginException {
+    // Other platforms keep their compile-time configuration.
+  } on PlatformException {
+    // Keep startup working if native preferences are unavailable.
+  }
+  return apiUrl;
 }
 
 class PSPocketEdgeApp extends StatelessWidget {
-  const PSPocketEdgeApp({super.key});
+  final String apiUrl;
+  const PSPocketEdgeApp({super.key, this.apiUrl = controlPlaneUrl});
 
   @override
   Widget build(BuildContext context) {
@@ -29,14 +55,15 @@ class PSPocketEdgeApp extends StatelessWidget {
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: ThemeMode.dark,
-      home: const SessionGate(),
+      home: SessionGate(apiUrl: apiUrl),
     );
   }
 }
 
 /// Local control planes grant a session automatically. Remote ones use login.
 class SessionGate extends StatefulWidget {
-  const SessionGate({super.key});
+  final String apiUrl;
+  const SessionGate({super.key, this.apiUrl = controlPlaneUrl});
 
   @override
   State<SessionGate> createState() => _SessionGateState();
@@ -44,7 +71,7 @@ class SessionGate extends StatefulWidget {
 
 class _SessionGateState extends State<SessionGate> {
   final _authStorage = AuthStorage();
-  late final ApiClient _apiClient = ApiClient(baseUrl: controlPlaneUrl)
+  late final ApiClient _apiClient = ApiClient(baseUrl: widget.apiUrl)
     ..onUnauthorized = _onUnauthorized
     ..onTokenRenewed = _onTokenRenewed;
 
@@ -57,11 +84,11 @@ class _SessionGateState extends State<SessionGate> {
 
   /// Local access can only work when the dashboard talks to a control plane
   /// on this computer.
-  static final bool _localAccessPossible = const {
+  bool get _localAccessPossible => const {
     'localhost',
     '127.0.0.1',
     '::1',
-  }.contains(Uri.parse(controlPlaneUrl).host);
+  }.contains(Uri.parse(widget.apiUrl).host);
 
   @override
   void initState() {

@@ -10,6 +10,7 @@ import (
 	dockerclient "github.com/docker/docker/client"
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/docker"
+	"github.com/ankitapaul1586-cmd/pspocketedge/internal/agent/hostexec"
 	agentv1 "github.com/ankitapaul1586-cmd/pspocketedge/internal/shared/pb/agentv1"
 )
 
@@ -179,23 +180,36 @@ func (r *Runner) runExec(ctx, execCtx context.Context, execCancel context.Cancel
 		}
 	}
 
-	if dockerCli == nil {
-		send(&agentv1.ExecOutputChunk{RequestId: cmd.GetRequestId(), Done: true, ErrorMessage: "docker client unavailable on this agent"})
-		return
+	var conn io.ReadWriteCloser
+	var resize func(context.Context, uint, uint) error
+	var exit func(context.Context) (int, error)
+	var closeSession func() error
+	if cmd.GetHostShell() {
+		if cmd.GetContainerId() != "" {
+			send(&agentv1.ExecOutputChunk{RequestId: cmd.GetRequestId(), Done: true, ErrorMessage: "host terminal cannot target a container"})
+			return
+		}
+		session, err := hostexec.Start(execCtx, cmd.GetCmd(), uint(cmd.GetCols()), uint(cmd.GetRows()))
+		if err != nil {
+			send(&agentv1.ExecOutputChunk{RequestId: cmd.GetRequestId(), Done: true, ErrorMessage: err.Error()})
+			return
+		}
+		conn, resize, exit, closeSession = session.Conn, session.Resize, session.ExitCode, session.Close
+	} else {
+		if cmd.GetContainerId() == "" || dockerCli == nil {
+			send(&agentv1.ExecOutputChunk{RequestId: cmd.GetRequestId(), Done: true, ErrorMessage: "container terminal requires a container and an available runtime"})
+			return
+		}
+		session, err := docker.StartExec(execCtx, dockerCli, cmd.GetContainerId(), cmd.GetCmd(), uint(cmd.GetCols()), uint(cmd.GetRows()))
+		if err != nil {
+			send(&agentv1.ExecOutputChunk{RequestId: cmd.GetRequestId(), Done: true, ErrorMessage: err.Error()})
+			return
+		}
+		conn, resize, exit, closeSession = session.Conn, session.Resize, session.ExitCode, session.Conn.Close
 	}
-
-	session, err := docker.StartExec(execCtx, dockerCli, cmd.GetContainerId(), cmd.GetCmd(), uint(cmd.GetCols()), uint(cmd.GetRows()))
-	if err != nil {
-		send(&agentv1.ExecOutputChunk{RequestId: cmd.GetRequestId(), Done: true, ErrorMessage: err.Error()})
-		return
-	}
-	defer session.Conn.Close()
-	// A StopStreamCommand cancels execCtx; closing the connection unblocks
-	// the read loop below.
-	go func() {
-		<-execCtx.Done()
-		session.Conn.Close()
-	}()
+	defer closeSession()
+	// Cancellation closes the PTY and terminates a host shell's process tree.
+	go func() { <-execCtx.Done(); closeSession() }()
 
 	go func() {
 		for {
@@ -207,11 +221,11 @@ func (r *Runner) runExec(ctx, execCtx context.Context, execCancel context.Cancel
 					continue
 				}
 				if in.GetResizeCols() > 0 && in.GetResizeRows() > 0 {
-					_ = session.Resize(ctx, uint(in.GetResizeCols()), uint(in.GetResizeRows()))
+					_ = resize(execCtx, uint(in.GetResizeCols()), uint(in.GetResizeRows()))
 					continue
 				}
 				if len(in.GetData()) > 0 {
-					if _, err := session.Conn.Write(in.GetData()); err != nil {
+					if _, err := conn.Write(in.GetData()); err != nil {
 						return
 					}
 				}
@@ -222,7 +236,7 @@ func (r *Runner) runExec(ctx, execCtx context.Context, execCancel context.Cancel
 	buf := make([]byte, execReadBufSize)
 	var readErr error
 	for {
-		n, err := session.Conn.Read(buf)
+		n, err := conn.Read(buf)
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
@@ -234,7 +248,7 @@ func (r *Runner) runExec(ctx, execCtx context.Context, execCancel context.Cancel
 		}
 	}
 
-	exitCode, _ := session.ExitCode(ctx)
+	exitCode, _ := exit(execCtx)
 	errMsg := ""
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		errMsg = readErr.Error()

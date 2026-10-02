@@ -10,11 +10,13 @@ import (
 )
 
 type Config struct {
-	Server    string `yaml:"server"`
-	Token     string `yaml:"token"`
-	StatePath string `yaml:"state_path"`
-	TLS       bool   `yaml:"tls"`
-	TLSCAFile string `yaml:"tls_ca_file"`
+	ContainerRuntime string `yaml:"container_runtime"`
+	ContainerHost    string `yaml:"container_host"`
+	Server           string `yaml:"server"`
+	Token            string `yaml:"token"`
+	StatePath        string `yaml:"state_path"`
+	TLS              bool   `yaml:"tls"`
+	TLSCAFile        string `yaml:"tls_ca_file"`
 	// AllowBuilds lets the control plane build images from Git on this
 	// server (see stream.Runner.AllowBuilds).
 	AllowBuilds bool `yaml:"allow_builds"`

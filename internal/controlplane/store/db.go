@@ -12,6 +12,9 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// Ping checks readiness without exposing database configuration.
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
 // Open connects to Postgres at databaseURL.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)

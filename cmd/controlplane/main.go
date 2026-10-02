@@ -48,7 +48,7 @@ func main() {
 	httpAddr := flag.String("http-addr", "127.0.0.1:8080", "address for the REST API to listen on")
 	tlsCert := flag.String("tls-cert", envOr("TLS_CERT_FILE", ""), "PEM certificate for HTTPS and agent gRPC (env TLS_CERT_FILE)")
 	tlsKey := flag.String("tls-key", envOr("TLS_KEY_FILE", ""), "PEM private key for HTTPS and agent gRPC (env TLS_KEY_FILE)")
-	databaseURL := flag.String("database-url", "postgres://pspocketedge:pspocketedge@localhost:55432/pspocketedge?sslmode=disable", "Postgres connection string")
+	databaseURL := flag.String("database-url", envOr("DATABASE_URL", "postgres://pspocketedge:pspocketedge@localhost:55432/pspocketedge?sslmode=disable"), "Postgres connection string (env DATABASE_URL)")
 	jwtSecret := flag.String("jwt-secret", os.Getenv("JWT_SECRET"), "secret used to sign admin session JWTs (env JWT_SECRET); a random one is generated per-process if unset, which invalidates sessions on restart")
 	adminEmail := flag.String("admin-email", os.Getenv("ADMIN_EMAIL"), "email for the seeded admin user, only used if no users exist yet (env ADMIN_EMAIL)")
 	adminPassword := flag.String("admin-password", os.Getenv("ADMIN_PASSWORD"), "password for the seeded admin user, only used if no users exist yet; generated and logged if unset (env ADMIN_PASSWORD)")

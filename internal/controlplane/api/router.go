@@ -41,6 +41,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	aiClient := ai.New()
 	secrets := vaultSecretSource(log, v)
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", handleReadiness(st.Ping))
 
 	mux.HandleFunc("POST /api/auth/login", handleLogin(log, st, authMgr))
 	mux.HandleFunc("POST /api/auth/local-session", handleLocalSession(log, st, authMgr, localAccessEnabled))
@@ -231,6 +232,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("GET /api/servers/{id}/containers/{containerId}/logs/download", authMgr.RequireAuth(handleDownloadContainerLogs(log, dispatcher, logStreamRelay, secrets)))
 	mux.Handle("POST /api/servers/{id}/containers/{containerId}/logs/analyze", authMgr.RequireAuth(handleAnalyzeContainerLogs(log, st, dispatcher, logStreamRelay, aiClient, secrets)))
 	mux.Handle("GET /api/servers/{id}/containers/{containerId}/events", authMgr.RequireAuth(handleListContainerEvents(log, dispatcher, eventListWaiter)))
+	mux.HandleFunc("GET /api/servers/{id}/exec", handleHostExec(log, authMgr, dispatcher, execStreamRelay))
 	mux.HandleFunc("GET /api/servers/{id}/containers/{containerId}/exec", handleContainerExec(log, authMgr, dispatcher, execStreamRelay))
 	mux.Handle("GET /api/ai/status", authMgr.RequireAuth(handleAIStatus(aiClient)))
 

@@ -12,6 +12,10 @@ abstract final class AppColors {
   static const surfaceHigh = Color(0xFF2A2F35);
   static const surfaceHighest = Color(0xFF31373E);
 
+  static const topBar = Color(0xFF20252B);
+  static const bottomBar = Color(0xFF2C3440);
+  static const bottomBarBorder = Color(0xFF414B59);
+
   static const border = Color(0xFF343B43);
   static const borderStrong = Color(0xFF4A535D);
 
@@ -159,7 +163,9 @@ abstract final class AppTheme {
       scaffoldBackgroundColor: scheme.surface,
       visualDensity: VisualDensity.standard,
       appBarTheme: AppBarTheme(
-        backgroundColor: scheme.surface,
+        backgroundColor: scheme.brightness == Brightness.dark
+            ? AppColors.topBar
+            : scheme.surface,
         foregroundColor: scheme.onSurface,
         surfaceTintColor: Colors.transparent,
         elevation: 0,

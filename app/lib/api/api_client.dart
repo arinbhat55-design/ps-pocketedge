@@ -1734,6 +1734,16 @@ class ApiClient {
     );
   }
 
+  /// Interactive shell on the selected agent host (admin access required).
+  Uri hostExecUri(String serverId, {int cols = 80, int rows = 24}) {
+    final uri = Uri.parse(baseUrl);
+    return uri.replace(
+      scheme: uri.scheme == 'https' ? 'wss' : 'ws',
+      path: '/api/servers/$serverId/exec',
+      queryParameters: {'token': ?authToken, 'cols': '$cols', 'rows': '$rows'},
+    );
+  }
+
   /// WebSocket URL for a deployment's live status stream. The JWT travels
   /// as a `?token=` query param here rather than an Authorization header —
   /// browsers can't set custom headers on a WebSocket handshake, so the

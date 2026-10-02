@@ -49,6 +49,8 @@ const ContentKeyLabel = "pspocketedge.content-key"
 
 // Options configures Run beyond what the command carries.
 type Options struct {
+	// Runtime selects the builder: Podman uses the compatibility API.
+	Runtime string
 	// WorkDir is where repositories are cloned; each build uses its own
 	// temporary directory under it, removed when the build ends.
 	WorkDir         string
@@ -147,11 +149,11 @@ func Run(ctx context.Context, cli *client.Client, cmd *agentv1.BuildImageCommand
 	}
 	// Buildx uses BuildKit and reads the context directly from this checked
 	// out repository. Check the same size limit as the SDK tar path first.
-	if buildxAvailable(ctx) {
+	if opts.Runtime != "podman" && buildxAvailable(ctx) {
 		if err := writeContextTar(io.Discard, contextDir, dockerfile, commit.Committer.When, maxBytes); err != nil {
 			return nil, err
 		}
-		if err := buildWithBuildx(ctx, workDir, contextDir, dockerfile, tag, cmd, labels, out); err != nil {
+		if err := buildWithBuildx(ctx, cli.DaemonHost(), workDir, contextDir, dockerfile, tag, cmd, labels, out); err != nil {
 			return nil, contextError(ctx, timeout, err)
 		}
 		img, err := cli.ImageInspect(ctx, tag)
@@ -160,7 +162,11 @@ func Run(ctx context.Context, cli *client.Client, cmd *agentv1.BuildImageCommand
 		}
 		return &Result{ImageID: img.ID}, nil
 	}
-	fmt.Fprintln(out, "Buildx is unavailable on this server; using Docker's classic builder.")
+	if opts.Runtime == "podman" {
+		fmt.Fprintln(out, "Building through Podman’s Docker-compatible API.")
+	} else {
+		fmt.Fprintln(out, "Buildx is unavailable on this server; using Docker's classic builder.")
+	}
 	pr, pw := io.Pipe()
 	go func() {
 		pw.CloseWithError(writeContextTar(pw, contextDir, dockerfile, commit.Committer.When, maxBytes))
@@ -214,8 +220,8 @@ func buildxAvailable(ctx context.Context) bool {
 	return exec.CommandContext(probe, "docker", "buildx", "version").Run() == nil
 }
 
-func buildWithBuildx(ctx context.Context, workDir, contextDir, dockerfile, tag string, cmd *agentv1.BuildImageCommand, labels map[string]string, out io.Writer) error {
-	args := []string{"buildx", "build", "--load", "--progress=plain", "--tag", tag, "--file", filepath.Join(contextDir, filepath.FromSlash(dockerfile))}
+func buildWithBuildx(ctx context.Context, host, workDir, contextDir, dockerfile, tag string, cmd *agentv1.BuildImageCommand, labels map[string]string, out io.Writer) error {
+	args := []string{"--host", host, "buildx", "build", "--load", "--progress=plain", "--tag", tag, "--file", filepath.Join(contextDir, filepath.FromSlash(dockerfile))}
 	if target := cmd.GetTarget(); target != "" {
 		args = append(args, "--target", target)
 	}

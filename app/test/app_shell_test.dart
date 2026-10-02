@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 
 import 'package:app/api/api_client.dart';
 import 'package:app/features/shell/app_shell.dart';
+import 'package:app/features/servers/server_list_screen.dart';
 
 void main() {
   Future<void> pumpShell(WidgetTester tester, Size size) async {
@@ -104,6 +105,33 @@ void main() {
           .minExtendedWidth,
       256,
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('status bar survives detail navigation and module changes', (
+    tester,
+  ) async {
+    await pumpShell(tester, const Size(1280, 900));
+    final context = tester.element(find.byType(ServerListScreen));
+    final navigator = Navigator.of(context);
+    navigator.push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            const Scaffold(body: Center(child: Text('Detail page'))),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Detail page'), findsOneWidget);
+    expect(find.byKey(const ValueKey('runtime-status-bar')), findsOneWidget);
+    await tester.tap(
+      find.descendant(
+        of: find.byType(NavigationRail),
+        matching: find.text('Images'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Detail page'), findsNothing);
+    expect(find.byKey(const ValueKey('runtime-status-bar')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

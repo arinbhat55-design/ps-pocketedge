@@ -1,10 +1,10 @@
 # Docker Desktop parity work
 
-PS-pocketEdge is a Docker management app. A Docker Engine or compatible daemon is still required on every machine where containers run.
+PS-pocketEdge manages Docker and Podman containers. Docker Engine or a Podman API service is required on every machine where containers run. See [runtime setup](local-docker.md).
 
 | Priority | Capability | Current state |
 | --- | --- | --- |
-| High | Local use without Docker Desktop | Linux Engine supported; macOS agent release and Colima installer added; Windows WSL2 setup documented. macOS and Windows runtime setup still need on-device validation. |
+| High | Local use without Docker Desktop | Linux Engine supported; macOS agent release and Colima installer added; Windows WSL2 setup documented. Podman selection and API support added for Linux, macOS, and WSL2; runtime setup and Podman parity still need on-device validation. |
 | High | Deploy from repository | Dockerfile wizard creates a Git-linked Compose file, checks the Dockerfile, and deploys to the chosen server. |
 | High | Build experience | Build state, live logs, cancel, copy log, follow output, Buildx when present, and manual registry push. |
 | High | Automatic registry publishing | Pending: per-deployment destination and publish step after successful build. |

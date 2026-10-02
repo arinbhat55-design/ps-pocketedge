@@ -11,10 +11,15 @@ import (
 // disconnected from the control plane and replayed (with its original
 // RecordedAt) once reconnected — see Buffer.
 type Sample struct {
-	RecordedAt  time.Time `json:"recordedAt"`
-	CPUPercent  float64   `json:"cpuPercent"`
-	MemPercent  float64   `json:"memPercent"`
-	DiskPercent float64   `json:"diskPercent"`
+	RecordedAt       time.Time `json:"recordedAt"`
+	CPUPercent       float64   `json:"cpuPercent"`
+	MemPercent       float64   `json:"memPercent"`
+	DiskPercent      float64   `json:"diskPercent"`
+	TotalMemoryBytes uint64    `json:"totalMemoryBytes,omitempty"`
+	NumCPUs          uint32    `json:"numCpus,omitempty"`
+	TotalDiskBytes   uint64    `json:"totalDiskBytes,omitempty"`
+	UsedMemoryBytes  *uint64   `json:"usedMemoryBytes,omitempty"`
+	UsedDiskBytes    *uint64   `json:"usedDiskBytes,omitempty"`
 }
 
 // Buffer is a bounded on-disk ring buffer of Samples, stored as JSON lines.
