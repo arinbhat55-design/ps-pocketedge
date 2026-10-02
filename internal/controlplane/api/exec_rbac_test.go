@@ -10,7 +10,7 @@ import (
 
 func TestViewerCannotOpenContainerExec(t *testing.T) {
 	m := auth.NewManager([]byte("test-secret"))
-	token, err := m.IssueToken("u1", "viewer@example.com", "viewer")
+	token, err := m.IssueToken("u1", "viewer@example.com", "viewer", 1)
 	if err != nil {
 		t.Fatal(err)
 	}

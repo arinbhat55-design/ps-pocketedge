@@ -196,6 +196,11 @@ func handleDeleteComposeFile(log *slog.Logger, st *store.Store) http.HandlerFunc
 			http.Error(w, "compose file not found", http.StatusNotFound)
 			return
 		}
+		var inUse *store.ComposeFileInUseError
+		if errors.As(err, &inUse) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": inUse.Error()})
+			return
+		}
 		if err != nil {
 			log.Error("failed to delete compose file", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)

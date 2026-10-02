@@ -62,7 +62,7 @@ func TestDashboardOriginsMustBeLoopback(t *testing.T) {
 func TestLocalTokenOnlyWorksOnLocalRequests(t *testing.T) {
 	m := NewManager([]byte("test-secret"))
 	m.SetLocalSessionsAllowed(true)
-	token, err := m.IssueLocalToken("u1", "admin@example.com", "admin")
+	token, err := m.IssueLocalToken("u1", "admin@example.com", "admin", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestLocalTokenOnlyWorksOnLocalRequests(t *testing.T) {
 			t.Errorf("%s: local token accepted", name)
 		}
 	}
-	login, err := m.IssueToken("u1", "admin@example.com", "admin")
+	login, err := m.IssueToken("u1", "admin@example.com", "admin", 1)
 	if err != nil {
 		t.Fatal(err)
 	}

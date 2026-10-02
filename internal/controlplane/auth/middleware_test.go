@@ -11,7 +11,7 @@ import (
 
 func TestViewerAccessPolicy(t *testing.T) {
 	m := NewManager([]byte("test-secret"))
-	token, err := m.IssueToken("u1", "viewer@example.com", "viewer")
+	token, err := m.IssueToken("u1", "viewer@example.com", "viewer", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,6 +24,9 @@ func TestViewerAccessPolicy(t *testing.T) {
 		{"POST /api/servers/{id}/containers/{containerId}/action", http.StatusForbidden},
 		{"POST /api/servers/{id}/containers", http.StatusForbidden},
 		{"POST /api/deployments", http.StatusForbidden},
+		{"POST /api/secrets/{id}/reveal", http.StatusOK},
+		{"POST /api/secrets/{id}/download", http.StatusOK},
+		{"POST /api/secrets/{id}/revoke", http.StatusForbidden},
 		{"DELETE /api/servers/{id}/volumes/{name}", http.StatusForbidden},
 		{"GET /api/servers/{id}/volumes/{name}/files/content", http.StatusForbidden},
 		{"GET /api/compose-files", http.StatusForbidden},
@@ -51,8 +54,8 @@ func TestViewerAccessPolicy(t *testing.T) {
 func TestRoleChangesApplyToExistingTokens(t *testing.T) {
 	m := NewManager([]byte("test-secret"))
 	role := "admin"
-	m.SetRoleLookup(func(context.Context, string) (string, error) { return role, nil })
-	token, err := m.IssueToken("u1", "user@example.com", "admin")
+	m.SetUserLookup(func(context.Context, string) (UserState, error) { return UserState{Role: role}, nil })
+	token, err := m.IssueToken("u1", "user@example.com", "admin", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +68,8 @@ func TestRoleChangesApplyToExistingTokens(t *testing.T) {
 
 func TestRoleLookupFailureIsNotASignOut(t *testing.T) {
 	m := NewManager([]byte("test-secret"))
-	m.SetRoleLookup(func(context.Context, string) (string, error) { return "", errors.New("db down") })
-	token, err := m.IssueToken("u1", "user@example.com", "admin")
+	m.SetUserLookup(func(context.Context, string) (UserState, error) { return UserState{}, errors.New("db down") })
+	token, err := m.IssueToken("u1", "user@example.com", "admin", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,13 +86,38 @@ func TestRoleLookupFailureIsNotASignOut(t *testing.T) {
 
 func TestDeletedUserTokenIsRejected(t *testing.T) {
 	m := NewManager([]byte("test-secret"))
-	m.SetRoleLookup(func(context.Context, string) (string, error) { return "", nil })
-	token, err := m.IssueToken("u1", "user@example.com", "admin")
+	m.SetUserLookup(func(context.Context, string) (UserState, error) { return UserState{}, nil })
+	token, err := m.IssueToken("u1", "user@example.com", "admin", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = m.AuthenticateRequest(httptest.NewRequest(http.MethodGet, "/", nil), token)
 	if !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("err = %v, want ErrInvalidToken", err)
+	}
+}
+
+func TestPasswordChangeEndsEarlierSessions(t *testing.T) {
+	m := NewManager([]byte("test-secret"))
+	state := UserState{Role: "admin", SessionVersion: 1}
+	m.SetUserLookup(func(context.Context, string) (UserState, error) { return state, nil })
+	old, err := m.IssueToken("u1", "user@example.com", "admin", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The password changed — even within the same second the token was
+	// issued in.
+	state.SessionVersion = 2
+	if _, err := m.AuthenticateRequest(httptest.NewRequest(http.MethodGet, "/", nil), old); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("old token: err = %v, want ErrInvalidToken", err)
+	}
+
+	fresh, err := m.IssueToken("u1", "user@example.com", "admin", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.AuthenticateRequest(httptest.NewRequest(http.MethodGet, "/", nil), fresh); err != nil {
+		t.Fatalf("token issued after the change: err = %v", err)
 	}
 }

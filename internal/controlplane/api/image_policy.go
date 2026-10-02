@@ -45,6 +45,12 @@ func handleCreateApprovedImage(log *slog.Logger, st *store.Store) http.HandlerFu
 			return
 		}
 
+		req.Pattern = strings.TrimSpace(req.Pattern)
+		if err := store.ValidateImagePattern(req.Pattern); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
 		id, err := st.CreateApprovedImage(r.Context(), req.Pattern, req.Note, claims.UserID)
 		if err != nil {
 			log.Error("failed to create approved image pattern", "error", err)

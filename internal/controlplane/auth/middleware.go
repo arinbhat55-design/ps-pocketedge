@@ -62,7 +62,11 @@ func viewerMayAccess(r *http.Request) bool {
 			"POST /api/compose-files/parse",
 			"POST /api/compose-files/render",
 			"POST /api/deployments/preview",
-			"POST /api/databases/preview":
+			"POST /api/databases/preview",
+			// Credentials shared with the viewer; the handlers answer 404
+			// unless the caller owns the credential or holds an active grant.
+			"POST /api/secrets/{id}/reveal",
+			"POST /api/secrets/{id}/download":
 			return true
 		}
 	}

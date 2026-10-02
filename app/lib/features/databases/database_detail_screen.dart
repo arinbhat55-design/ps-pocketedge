@@ -928,7 +928,8 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
-              if (widget.isAdmin && c.canReveal) ...[
+              // canReveal covers credentials shared with a viewer.
+              if (c.canReveal) ...[
                 IconButton(
                   tooltip: revealed == null ? 'Reveal for 30 seconds' : 'Hide',
                   icon: Icon(
@@ -949,7 +950,7 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                   onPressed: busy ? null : () => _copy(c),
                 ),
               ],
-              if (widget.isAdmin)
+              if (widget.isAdmin || c.canReveal)
                 PopupMenuButton<String>(
                   tooltip: 'More',
                   enabled: !busy,
@@ -982,7 +983,7 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                           title: Text('Rotate'),
                         ),
                       ),
-                    if (c.canManage && c.active)
+                    if (widget.isAdmin && c.canManage && c.active)
                       const PopupMenuItem(
                         value: 'share',
                         child: ListTile(
@@ -990,7 +991,10 @@ class _DatabaseDetailScreenState extends State<DatabaseDetailScreen> {
                           title: Text('Share…'),
                         ),
                       ),
-                    if (c.canManage && c.isTemporary && c.revokedAt == null)
+                    if (widget.isAdmin &&
+                        c.canManage &&
+                        c.isTemporary &&
+                        c.revokedAt == null)
                       const PopupMenuItem(
                         value: 'revoke',
                         child: ListTile(

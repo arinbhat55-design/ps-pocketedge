@@ -737,6 +737,8 @@ class _AuditTrailViewState extends State<AuditTrailView> {
     'env_var_group': 'Variable groups',
     'environment': 'Environment policies',
     'git_repository': 'Git repositories',
+    'user': 'Users',
+    'settings': 'Settings',
   };
 
   final List<AuditEvent> _events = [];
@@ -796,6 +798,8 @@ class _AuditTrailViewState extends State<AuditTrailView> {
     'env_var_group' => Icons.tune,
     'environment' => Icons.policy_outlined,
     'git_repository' => Icons.source_outlined,
+    'user' => Icons.person_outline,
+    'settings' => Icons.settings_outlined,
     _ => Icons.history,
   };
 

@@ -56,6 +56,11 @@ func handleUpdateAccessSettings(log *slog.Logger, st *store.Store, authMgr *auth
 			return
 		}
 		authMgr.SetLocalSessionsAllowed(localListener && !*req.RequireLocalLogin)
+		summary := "Login no longer required on this computer"
+		if *req.RequireLocalLogin {
+			summary = "Login now required on this computer"
+		}
+		recordAudit(r, log, st, "settings.update_access", "settings", "access", summary, map[string]any{"requireLocalLogin": *req.RequireLocalLogin})
 		writeJSON(w, http.StatusOK, accessSettingsResponse{*req.RequireLocalLogin, localListener})
 	}
 }

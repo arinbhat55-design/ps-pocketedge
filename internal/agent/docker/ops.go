@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
@@ -104,17 +105,64 @@ func UpdateRestartPolicy(ctx context.Context, cli *client.Client, containerID, n
 
 // UpdateResourceLimits changes containerID's CPU/memory/process limits in
 // place via the same ContainerUpdate call UpdateRestartPolicy uses — no
-// recreate needed. 0 on any field clears that limit.
+// recreate needed. 0 on any field means no limit: a process limit is
+// cleared, but Docker can't remove a CPU or memory limit from an existing
+// container, so asking to is an error that says to recreate it instead.
 func UpdateResourceLimits(ctx context.Context, cli *client.Client, containerID string, nanoCPUs, memoryLimitBytes, memoryReservationBytes, pidsLimit int64) error {
-	_, err := cli.ContainerUpdate(ctx, containerID, container.UpdateConfig{
-		Resources: resourcesFromConfig(ContainerConfig{
-			NanoCPUs:               nanoCPUs,
-			MemoryLimitBytes:       memoryLimitBytes,
-			MemoryReservationBytes: memoryReservationBytes,
-			PidsLimit:              pidsLimit,
-		}),
-	})
+	current, err := cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return err
+	}
+	res, err := resourceUpdate(current.HostConfig.Resources, nanoCPUs, memoryLimitBytes, memoryReservationBytes, pidsLimit)
+	if err != nil {
+		return err
+	}
+	_, err = cli.ContainerUpdate(ctx, containerID, container.UpdateConfig{Resources: res})
 	return err
+}
+
+// resourceUpdate builds the ContainerUpdate resources that move a
+// container from current to the requested limits (0 = no limit).
+// ContainerUpdate treats 0 as "leave unchanged", rejects a memory limit
+// above the container's existing swap limit unless the swap limit changes
+// with it, and can't unset CPU or memory limits at all.
+func resourceUpdate(current container.Resources, nanoCPUs, memoryLimitBytes, memoryReservationBytes, pidsLimit int64) (container.Resources, error) {
+	var cannotClear []string
+	if nanoCPUs == 0 && current.NanoCPUs > 0 {
+		cannotClear = append(cannotClear, "CPU")
+	}
+	if memoryLimitBytes == 0 && current.Memory > 0 {
+		cannotClear = append(cannotClear, "memory")
+	}
+	if memoryReservationBytes == 0 && current.MemoryReservation > 0 {
+		cannotClear = append(cannotClear, "memory reservation")
+	}
+	if len(cannotClear) > 0 {
+		return container.Resources{}, fmt.Errorf("docker can't remove the %s limit from an existing container; set a new value, or recreate the container without the limit", strings.Join(cannotClear, " and "))
+	}
+
+	res := container.Resources{
+		NanoCPUs:          nanoCPUs,
+		Memory:            memoryLimitBytes,
+		MemoryReservation: memoryReservationBytes,
+	}
+	if memoryLimitBytes > 0 {
+		// Docker's default when a container is created with a memory
+		// limit: as much swap again (memory+swap = 2x). Unlimited swap
+		// stays unlimited.
+		res.MemorySwap = 2 * memoryLimitBytes
+		if current.MemorySwap == -1 {
+			res.MemorySwap = -1
+		}
+	}
+	unlimited := int64(-1)
+	switch {
+	case pidsLimit > 0:
+		res.PidsLimit = &pidsLimit
+	case current.PidsLimit != nil && *current.PidsLimit > 0:
+		res.PidsLimit = &unlimited
+	}
+	return res, nil
 }
 
 // createStandaloneContainer builds and creates (but does not start) a

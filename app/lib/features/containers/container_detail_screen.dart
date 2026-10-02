@@ -285,13 +285,17 @@ class _ContainerDetailScreenState extends State<ContainerDetailScreen>
   }
 
   Future<void> _recreate(ContainerDetail detail) async {
+    // Docker lists a published port once per address family (0.0.0.0 and
+    // ::); keep one mapping each, or the recreate would bind it twice.
+    final seenPorts = <String>{};
     final current = ContainerConfig(
       image: widget.container.image ?? '',
       name: _currentName,
       env: detail.env,
       ports: [
         for (final p in widget.container.ports)
-          if (p.privatePort != 0)
+          if (p.privatePort != 0 &&
+              seenPorts.add('${p.privatePort}:${p.publicPort}/${p.type}'))
             ContainerPortSpec(
               containerPort: p.privatePort,
               hostPort: p.publicPort,

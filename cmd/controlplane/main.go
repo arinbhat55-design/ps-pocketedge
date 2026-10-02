@@ -86,15 +86,15 @@ func main() {
 		log.Warn("no JWT_SECRET set, generated a random one for this process — existing sessions will be invalidated on every restart; set JWT_SECRET for a stable one")
 	}
 	authMgr := authpkg.NewManager([]byte(secret))
-	authMgr.SetRoleLookup(func(ctx context.Context, userID string) (string, error) {
+	authMgr.SetUserLookup(func(ctx context.Context, userID string) (authpkg.UserState, error) {
 		user, err := st.GetUserByID(ctx, userID)
 		if errors.Is(err, store.ErrNotFound) {
-			return "", nil
+			return authpkg.UserState{}, nil
 		}
 		if err != nil {
-			return "", err
+			return authpkg.UserState{}, err
 		}
-		return user.Role, nil
+		return authpkg.UserState{Role: user.Role, SessionVersion: user.SessionVersion}, nil
 	})
 	if err := authMgr.SetDashboardOrigins(splitList(*dashboardOrigins)); err != nil {
 		log.Error("invalid -dashboard-origins", "error", err)

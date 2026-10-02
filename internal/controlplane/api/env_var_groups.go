@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -61,11 +62,20 @@ func (req *envVarGroupRequest) validate() error {
 	if !store.IsValidEnvironment(req.Environment) {
 		return errors.New("environment must be one of development, test, staging, production")
 	}
+	seen := map[string]bool{}
 	for i, v := range req.Variables {
-		if strings.TrimSpace(v.Key) == "" {
+		key := strings.TrimSpace(v.Key)
+		if key == "" {
 			return errors.New("every variable needs a key")
 		}
-		req.Variables[i].Key = strings.TrimSpace(v.Key)
+		if !composeEnvName.MatchString(key) {
+			return fmt.Errorf("%q isn't a valid variable name: use letters, digits and underscores, not starting with a digit", key)
+		}
+		if seen[key] {
+			return fmt.Errorf("variable %q is defined twice", key)
+		}
+		seen[key] = true
+		req.Variables[i].Key = key
 	}
 	return nil
 }

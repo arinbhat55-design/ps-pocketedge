@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/mail"
+	"strings"
 	"time"
 
 	"github.com/ankitapaul1586-cmd/pspocketedge/internal/controlplane/auth"
@@ -26,6 +28,17 @@ func toUserResponse(u store.User) userResponse {
 		Role:      u.Role,
 		CreatedAt: u.CreatedAt,
 	}
+}
+
+// isValidEmail accepts a bare address ("name@example.com") — no display
+// name or angle brackets — with a dot in its domain.
+func isValidEmail(email string) bool {
+	addr, err := mail.ParseAddress(email)
+	if err != nil || addr.Address != email || addr.Name != "" {
+		return false
+	}
+	_, domain, _ := strings.Cut(email, "@")
+	return strings.Contains(domain, ".") && !strings.HasSuffix(domain, ".")
 }
 
 func isValidRole(role string) bool {
@@ -56,8 +69,9 @@ func handleGetMe(log *slog.Logger, st *store.Store) http.HandlerFunc {
 }
 
 // handleChangePassword lets the caller change their own password, given
-// their current one.
-func handleChangePassword(log *slog.Logger, st *store.Store) http.HandlerFunc {
+// their current one. It answers with a fresh session token: the change
+// signs out every session issued before it.
+func handleChangePassword(log *slog.Logger, st *store.Store, authMgr *auth.Manager) http.HandlerFunc {
 	type request struct {
 		CurrentPassword string `json:"currentPassword"`
 		NewPassword     string `json:"newPassword"`
@@ -103,7 +117,26 @@ func handleChangePassword(log *slog.Logger, st *store.Store) http.HandlerFunc {
 			return
 		}
 
-		w.WriteHeader(http.StatusNoContent)
+		// The change ended every existing session, this one included; hand
+		// the caller a fresh token so only their other sessions sign out.
+		user, err = st.GetUserByID(r.Context(), user.ID)
+		if err != nil {
+			log.Error("failed to reload user after password change", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		issue := authMgr.IssueToken
+		if claims.Local {
+			issue = authMgr.IssueLocalToken
+		}
+		token, err := issue(user.ID, user.Email, user.Role, user.SessionVersion)
+		if err != nil {
+			log.Error("failed to issue token after password change", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		recordAudit(r, log, st, "user.change_password", "user", user.ID, "Password changed for "+user.Email, nil)
+		writeJSON(w, http.StatusOK, map[string]string{"token": token})
 	}
 }
 
@@ -140,6 +173,10 @@ func handleCreateUser(log *slog.Logger, st *store.Store) http.HandlerFunc {
 			http.Error(w, "email is required and password must be at least 8 characters", http.StatusBadRequest)
 			return
 		}
+		if !isValidEmail(req.Email) {
+			http.Error(w, "email must be a valid address, like name@example.com", http.StatusBadRequest)
+			return
+		}
 		if !isValidRole(req.Role) {
 			http.Error(w, "role must be 'admin' or 'viewer'", http.StatusBadRequest)
 			return
@@ -163,6 +200,7 @@ func handleCreateUser(log *slog.Logger, st *store.Store) http.HandlerFunc {
 			return
 		}
 
+		recordAudit(r, log, st, "user.create", "user", id, "User "+req.Email+" created as "+req.Role, map[string]any{"email": req.Email, "role": req.Role})
 		writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 	}
 }
@@ -217,6 +255,8 @@ func handleUpdateUserRole(log *slog.Logger, st *store.Store) http.HandlerFunc {
 			return
 		}
 
+		recordAudit(r, log, st, "user.update_role", "user", id, "Role of "+target.Email+" changed from "+target.Role+" to "+req.Role,
+			map[string]any{"email": target.Email, "from": target.Role, "to": req.Role})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -243,6 +283,17 @@ func handleResetUserPassword(log *slog.Logger, st *store.Store) http.HandlerFunc
 			return
 		}
 
+		target, err := st.GetUserByID(r.Context(), id)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			log.Error("failed to load user", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
 			log.Error("failed to hash password", "error", err)
@@ -260,6 +311,7 @@ func handleResetUserPassword(log *slog.Logger, st *store.Store) http.HandlerFunc
 			return
 		}
 
+		recordAudit(r, log, st, "user.reset_password", "user", id, "Password reset for "+target.Email+"; their sessions were signed out", nil)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -309,6 +361,7 @@ func handleDeleteUser(log *slog.Logger, st *store.Store) http.HandlerFunc {
 			return
 		}
 
+		recordAudit(r, log, st, "user.delete", "user", id, "User "+target.Email+" deleted", map[string]any{"email": target.Email, "role": target.Role})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

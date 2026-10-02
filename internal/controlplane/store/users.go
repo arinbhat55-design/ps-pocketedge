@@ -22,6 +22,9 @@ type User struct {
 	PasswordHash string
 	Role         string
 	CreatedAt    time.Time
+	// SessionVersion is bumped when the password changes; sessions issued
+	// under an earlier version are no longer accepted.
+	SessionVersion int
 }
 
 // CountUsers returns how many users exist, used to decide whether to seed
@@ -61,8 +64,8 @@ func (s *Store) CreateUser(ctx context.Context, email, passwordHash, role string
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, password_hash, role, created_at FROM users WHERE email = $1
-	`, email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+		SELECT id, email, password_hash, role, created_at, session_version FROM users WHERE email = $1
+	`, email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.SessionVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -77,8 +80,8 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*User, error)
 func (s *Store) GetUserByID(ctx context.Context, id string) (*User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, password_hash, role, created_at FROM users WHERE id = $1
-	`, id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+		SELECT id, email, password_hash, role, created_at, session_version FROM users WHERE id = $1
+	`, id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.SessionVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -138,10 +141,13 @@ func (s *Store) UpdateUserRole(ctx context.Context, id, role string) error {
 	return nil
 }
 
-// UpdateUserPassword replaces a user's password hash. Returns ErrNotFound
-// if no such user exists.
+// UpdateUserPassword replaces a user's password hash and ends the user's
+// existing sessions (see User.SessionVersion). Returns ErrNotFound if
+// no such user exists.
 func (s *Store) UpdateUserPassword(ctx context.Context, id, passwordHash string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, id, passwordHash)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE users SET password_hash = $2, session_version = session_version + 1 WHERE id = $1
+	`, id, passwordHash)
 	if err != nil {
 		return err
 	}

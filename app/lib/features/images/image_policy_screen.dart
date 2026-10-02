@@ -68,7 +68,9 @@ class _ImagePolicyScreenState extends State<ImagePolicyScreen> {
               controller: patternController,
               decoration: const InputDecoration(
                 labelText: 'Pattern',
-                hintText: 'nginx, or myregistry.com/team/',
+                hintText: 'nginx, nginx:1.27, nginx:1.*, ghcr.io/acme/*',
+                helperText:
+                    'A repository allows all its tags; * matches anything.',
               ),
             ),
             TextField(

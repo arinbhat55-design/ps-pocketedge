@@ -97,6 +97,9 @@ type Refs struct {
 // ListRefs lists the remote's branches and tags (`git ls-remote`). It also
 // serves as the connectivity/credentials check when a repository is added.
 func ListRefs(ctx context.Context, repo Repo) (*Refs, error) {
+	if err := checkRemote(ctx, repo.URL); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 	remote := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{Name: "origin", URLs: []string{repo.URL}})
@@ -188,6 +191,9 @@ func referenceName(ctx context.Context, repo Repo, ref string) (plumbing.Referen
 // clone clones one branch/tag into memory, with only the given depth of
 // history (0 = full history of that ref).
 func clone(ctx context.Context, repo Repo, ref string, depth int) (*git.Repository, error) {
+	if err := checkRemote(ctx, repo.URL); err != nil {
+		return nil, err
+	}
 	refName, err := referenceName(ctx, repo, ref)
 	if err != nil {
 		return nil, err
@@ -212,7 +218,7 @@ func clone(ctx context.Context, repo Repo, ref string, depth int) (*git.Reposito
 func readFile(commit *object.Commit, path string) (string, error) {
 	file, err := commit.File(strings.TrimPrefix(path, "/"))
 	if errors.Is(err, object.ErrFileNotFound) {
-		return "", fmt.Errorf("file %q not found at commit %s", path, commit.Hash.String()[:7])
+		return "", &FileNotFoundError{Path: path, Commit: commit.Hash.String()[:7]}
 	}
 	if err != nil {
 		return "", err

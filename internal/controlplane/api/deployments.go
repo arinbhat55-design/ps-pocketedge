@@ -138,6 +138,65 @@ type requestedPort struct {
 	protocol string
 }
 
+// loadComposeProject parses composeYAML with env interpolated, without the
+// consistency checks a full deploy runs.
+func loadComposeProject(ctx context.Context, composeYAML string, env map[string]string) (*types.Project, error) {
+	details := types.ConfigDetails{
+		ConfigFiles: []types.ConfigFile{{Filename: "compose.yaml", Content: []byte(composeYAML)}},
+		Environment: env,
+	}
+	return loader.LoadWithContext(ctx, details, func(o *loader.Options) {
+		o.SetProjectName("preview", true)
+		o.SkipConsistencyCheck = true
+	})
+}
+
+// publishedHostPorts lists every fixed host port project's services
+// publish (a range or an unpublished port can't conflict up front).
+func publishedHostPorts(project *types.Project) []requestedPort {
+	var out []requestedPort
+	for svcName, svc := range project.Services {
+		for _, p := range svc.Ports {
+			protocol := p.Protocol
+			if protocol == "" {
+				protocol = "tcp"
+			}
+			if hostPort, err := strconv.ParseUint(p.Published, 10, 16); err == nil {
+				out = append(out, requestedPort{service: svcName, hostPort: uint16(hostPort), protocol: protocol})
+			}
+		}
+	}
+	return out
+}
+
+// preflightNewDeployment refuses a new deployment before its row is
+// inserted when its server doesn't exist, or when composeYAML publishes a
+// host port another container on that server already holds — Docker would
+// only fail once the deploy reached the agent, with a raw networking
+// error. Compose errors are left for the deploy itself to report.
+func (d *deployer) preflightNewDeployment(ctx context.Context, serverID, composeYAML string, env map[string]string) error {
+	server, err := d.st.GetServer(ctx, serverID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && server.Status == "removed") {
+		return newActionError(http.StatusNotFound, "server not found")
+	}
+	if err != nil {
+		return err
+	}
+	project, err := loadComposeProject(ctx, composeYAML, env)
+	if err != nil {
+		return nil
+	}
+	conflicts := checkDeploymentPortConflicts(ctx, d.log, d.st, serverID, publishedHostPorts(project))
+	if len(conflicts) == 0 {
+		return nil
+	}
+	c := conflicts[0]
+	ae := newActionError(http.StatusConflict, "host port %d/%s for service %q is already in use on this server by container %s; choose another port or free it first",
+		c.HostPort, c.Protocol, c.Service, shortID(c.ContainerID))
+	ae.extra = map[string]any{"portConflicts": conflicts}
+	return ae
+}
+
 // handlePreviewDeployment resolves a stack or compose file's services
 // (same loader compose-go path composeImages uses for the image-policy
 // check) without creating anything, so the deploy dialog can show exactly
@@ -203,21 +262,14 @@ func handlePreviewDeployment(log *slog.Logger, st *store.Store) http.HandlerFunc
 			name, composeYAML = file.Name, file.Content
 		}
 
-		details := types.ConfigDetails{
-			ConfigFiles: []types.ConfigFile{{Filename: "compose.yaml", Content: []byte(composeYAML)}},
-			Environment: env,
-		}
-		project, err := loader.LoadWithContext(r.Context(), details, func(o *loader.Options) {
-			o.SetProjectName("preview", true)
-			o.SkipConsistencyCheck = true
-		})
+		project, err := loadComposeProject(r.Context(), composeYAML, env)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse compose file: " + err.Error()})
 			return
 		}
 
 		services := make([]deploymentPreviewService, 0, len(project.Services))
-		var requestedPorts []requestedPort
+		requestedPorts := publishedHostPorts(project)
 		for svcName, svc := range project.Services {
 			preview := deploymentPreviewService{
 				Name:             svcName,
@@ -235,11 +287,6 @@ func handlePreviewDeployment(log *slog.Logger, st *store.Store) http.HandlerFunc
 				}
 				if p.Published != "" {
 					preview.Ports = append(preview.Ports, fmt.Sprintf("%s:%d/%s", p.Published, p.Target, protocol))
-					if hostPort, err := strconv.ParseUint(p.Published, 10, 16); err == nil {
-						requestedPorts = append(requestedPorts, requestedPort{
-							service: svcName, hostPort: uint16(hostPort), protocol: protocol,
-						})
-					}
 				} else {
 					preview.Ports = append(preview.Ports, fmt.Sprintf("%d/%s", p.Target, protocol))
 				}
@@ -650,7 +697,7 @@ func handleCreateDeployment(d *deployer) http.HandlerFunc {
 			GitRef:         req.GitRef,
 			AutoDeploy:     req.AutoDeploy,
 		}
-		var summary string
+		var summary, composeYAML string
 		if req.StackID != "" {
 			stack, err := d.st.GetStack(r.Context(), req.StackID)
 			if errors.Is(err, store.ErrNotFound) {
@@ -665,6 +712,7 @@ func handleCreateDeployment(d *deployer) http.HandlerFunc {
 				env[k] = v
 			}
 			n.StackID = &stack.ID
+			composeYAML = stack.ComposeYAML
 			summary = "deployment of stack " + stack.Name + " created"
 		} else {
 			file, err := d.st.GetComposeFile(r.Context(), req.ComposeFileID)
@@ -681,12 +729,17 @@ func handleCreateDeployment(d *deployer) http.HandlerFunc {
 				return
 			}
 			n.ComposeFileID = &file.ID
+			composeYAML = file.Content
 			summary = "deployment of compose file " + file.Name + " created"
 		}
 		for k, v := range req.Env {
 			env[k] = v
 		}
 		n.Env = env
+		if err := d.preflightNewDeployment(r.Context(), req.ServerID, composeYAML, env); err != nil {
+			writeActionError(w, d.log, err)
+			return
+		}
 
 		outcome, deploymentID, err := d.create(r.Context(), a, n, req.gateOptions, summary)
 		if err != nil {
@@ -1101,6 +1154,15 @@ func handlePromoteDeployment(d *deployer) http.HandlerFunc {
 		strategy := req.UpdateStrategy
 		if strategy == "" {
 			strategy = src.UpdateStrategy
+		}
+		rev, err := d.st.GetDeploymentRevision(r.Context(), src.ID, src.CurrentRevision)
+		if err != nil {
+			writeActionError(w, d.log, err)
+			return
+		}
+		if err := d.preflightNewDeployment(r.Context(), req.ServerID, rev.ComposeContent, env); err != nil {
+			writeActionError(w, d.log, err)
+			return
 		}
 		srcID := src.ID
 		id, err := d.st.InsertDeployment(r.Context(), store.NewDeployment{

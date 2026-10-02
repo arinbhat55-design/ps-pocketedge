@@ -44,6 +44,17 @@ func webhookInfo(publicURL string, g *store.GitRepository) gitRepoWebhookInfo {
 	return gitRepoWebhookInfo{URL: strings.TrimRight(publicURL, "/") + "/api/webhooks/git/" + g.ID, Secret: g.WebhookSecret}
 }
 
+// gitFetchStatus is the HTTP status for a failed fetch from a repository:
+// 404 when the path doesn't exist at the ref, 502 when the repository
+// itself couldn't be reached.
+func gitFetchStatus(err error) int {
+	var notFound *gitsource.FileNotFoundError
+	if errors.As(err, &notFound) {
+		return http.StatusNotFound
+	}
+	return http.StatusBadGateway
+}
+
 type gitRepoRequest struct {
 	Name          string  `json:"name"`
 	Provider      string  `json:"provider"`
@@ -104,6 +115,10 @@ func handleCreateGitRepository(log *slog.Logger, st *store.Store, publicURL stri
 		}
 		g, err := req.toRepo()
 		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := gitsource.CheckURL(r.Context(), g.URL); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -170,6 +185,10 @@ func handleUpdateGitRepository(log *slog.Logger, st *store.Store) http.HandlerFu
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if err := gitsource.CheckURL(r.Context(), g.URL); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		g.ID = existing.ID
 		replaceToken := req.Token != nil
 		check := g
@@ -204,6 +223,21 @@ func handleDeleteGitRepository(log *slog.Logger, st *store.Store) http.HandlerFu
 		}
 		if err != nil {
 			writeActionError(w, log, err)
+			return
+		}
+		linked, err := st.ListComposeFilesByGitRepository(r.Context(), id)
+		if err != nil {
+			writeActionError(w, log, err)
+			return
+		}
+		if len(linked) > 0 {
+			names := make([]string, len(linked))
+			for i, f := range linked {
+				names[i] = f.Name
+			}
+			writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf(
+				"%d compose file(s) are linked to this repository: %s — unlink or delete them first",
+				len(linked), strings.Join(names, ", "))})
 			return
 		}
 		if err := st.DeleteGitRepository(r.Context(), id); err != nil {
@@ -307,7 +341,7 @@ func handlePreviewGitFile(log *slog.Logger, st *store.Store) http.HandlerFunc {
 		}
 		content, commit, err := gitsource.FetchFile(r.Context(), toGitRepo(g), ref, path)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			writeJSON(w, gitFetchStatus(err), map[string]string{"error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"content": content, "commit": commit, "ref": ref, "parse": compose.Parse(content)})
@@ -343,7 +377,7 @@ func handleImportGitComposeFile(log *slog.Logger, st *store.Store) http.HandlerF
 		}
 		content, commit, err := gitsource.FetchFile(r.Context(), toGitRepo(g), req.Ref, req.Path)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			writeJSON(w, gitFetchStatus(err), map[string]string{"error": err.Error()})
 			return
 		}
 		if result := compose.Parse(content); !result.Valid {
@@ -423,7 +457,7 @@ func handleGenerateGitComposeFile(log *slog.Logger, st *store.Store) http.Handle
 		}
 		_, commit, err := gitsource.FetchFile(r.Context(), toGitRepo(g), req.Ref, dockerfilePath)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Dockerfile check failed: " + err.Error()})
+			writeJSON(w, gitFetchStatus(err), map[string]string{"error": "Dockerfile check failed: " + err.Error()})
 			return
 		}
 		if result := compose.Parse(content); !result.Valid {
@@ -515,7 +549,7 @@ func syncComposeFile(ctx context.Context, st *store.Store, file *store.ComposeFi
 		content, commit, err = gitsource.FetchFile(ctx, toGitRepo(g), file.GitRef, file.GitPath)
 	}
 	if err != nil {
-		return nil, newActionError(http.StatusBadGateway, "%v", err)
+		return nil, newActionError(gitFetchStatus(err), "%v", err)
 	}
 	if result := compose.Parse(content); !result.Valid {
 		ae := newActionError(http.StatusBadRequest, "the file at %s (%s) isn't a valid Compose file", file.GitRef, shortCommit(commit))

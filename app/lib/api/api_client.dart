@@ -144,6 +144,10 @@ class ApiClient {
   /// Called when the server rejects [authToken] with 401.
   void Function()? onUnauthorized;
 
+  /// Called when the server replaces [authToken] (after a password change,
+  /// which ends every earlier session), so the app can persist the new one.
+  void Function(String token)? onTokenRenewed;
+
   ApiClient({required this.baseUrl, http.Client? httpClient, this.authToken}) {
     _http = _UnauthorizedWatcher(
       httpClient ?? http.Client(),
@@ -478,8 +482,15 @@ class ApiClient {
         'newPassword': newPassword,
       }),
     );
-    if (response.statusCode != 204) {
+    if (response.statusCode == 204) return;
+    if (response.statusCode != 200) {
       throw ApiException(response.statusCode, response.body);
+    }
+    final token =
+        (jsonDecode(response.body) as Map<String, dynamic>)['token'] as String?;
+    if (token != null) {
+      authToken = token;
+      onTokenRenewed?.call(token);
     }
   }
 
@@ -1946,7 +1957,9 @@ class ApiClient {
 
   /// Changes an existing container's CPU/memory/process limits live, via
   /// Docker's ContainerUpdate — no recreate needed, same as
-  /// [updateRestartPolicy]. 0 on any field clears that limit.
+  /// [updateRestartPolicy]. 0 on any field means no limit; Docker can only
+  /// clear the process limit in place, so clearing a CPU or memory limit
+  /// comes back as a failed result telling the user to recreate instead.
   Future<ContainerOpResult> updateResourceLimits(
     String serverId,
     String containerId, {
@@ -2879,9 +2892,7 @@ class ApiClient {
       Uri.parse('$baseUrl/api/compose-files/$id'),
       headers: _headers,
     );
-    if (response.statusCode != 204) {
-      throw ApiException(response.statusCode, response.body);
-    }
+    if (response.statusCode != 204) throwApiError(response);
   }
 
   Future<List<ComposeFileVersionSummary>> listComposeFileVersions(

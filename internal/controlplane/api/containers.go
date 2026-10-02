@@ -627,9 +627,10 @@ func handleCloneContainer(log *slog.Logger, dispatcher *deploy.Dispatcher, opWai
 // handleRecreateContainer stops and removes an existing container and
 // creates a fresh one in its place from the posted (edited) config. When
 // the image is changing, the container's current image is captured into
-// image_rollback_history beforehand — that's what makes "rollback to
-// previous image" (rollback.go) possible after this call.
-func handleRecreateContainer(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, opWaiter *deploy.OpWaiter) http.HandlerFunc {
+// image_rollback_history, which follows the container to its new ID —
+// that's what makes "rollback to previous image" (rollback.go) possible
+// after this call.
+func handleRecreateContainer(log *slog.Logger, st *store.Store, dispatcher *deploy.Dispatcher, inspectWaiter *deploy.InspectWaiter, opWaiter *deploy.OpWaiter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		serverID := r.PathValue("id")
 		containerID := r.PathValue("containerId")
@@ -656,7 +657,15 @@ func handleRecreateContainer(log *slog.Logger, st *store.Store, dispatcher *depl
 			return
 		}
 
-		previousImage, _ := findContainerState(r.Context(), st, serverID, containerID)
+		// The image being replaced. A container created moments ago isn't in
+		// server_containers until the agent's next heartbeat, so fall back
+		// to asking the agent directly.
+		var previousImage string
+		if state, err := findContainerState(r.Context(), st, serverID, containerID); err == nil {
+			previousImage = state.Image
+		} else if detail, err := awaitInspect(dispatcher, inspectWaiter, serverID, containerID); err == nil && detail.GetFound() {
+			previousImage = detail.GetImage()
+		}
 
 		requestID, ok := newRequestID(w, log)
 		if !ok {
@@ -683,8 +692,14 @@ func handleRecreateContainer(log *slog.Logger, st *store.Store, dispatcher *depl
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": err.Error()})
 			return
 		}
-		if result.GetSuccess() && previousImage != nil && previousImage.Image != "" && previousImage.Image != req.Image {
-			if err := st.AddImageRollbackHistory(r.Context(), serverID, containerID, previousImage.Image, rollbackHistoryLimit); err != nil {
+		if result.GetSuccess() {
+			// The recreated container has a new ID; its history moves with
+			// it, plus the replaced image when the image changed.
+			captured := ""
+			if previousImage != req.Image {
+				captured = previousImage
+			}
+			if err := st.RecordContainerRecreate(r.Context(), serverID, containerID, result.GetContainerId(), "", captured, rollbackHistoryLimit); err != nil {
 				log.Warn("failed to record image rollback history", "server_id", serverID, "container_id", containerID, "error", err)
 			}
 		}

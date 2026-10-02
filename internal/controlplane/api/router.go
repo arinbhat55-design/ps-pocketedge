@@ -47,7 +47,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("GET /api/settings/access", authMgr.RequireAdmin(handleGetAccessSettings(log, st, localAccessEnabled)))
 	mux.Handle("PUT /api/settings/access", authMgr.RequireAdmin(handleUpdateAccessSettings(log, st, authMgr, localAccessEnabled)))
 	mux.Handle("GET /api/auth/me", authMgr.RequireAuth(handleGetMe(log, st)))
-	mux.Handle("POST /api/auth/change-password", authMgr.RequireAuth(handleChangePassword(log, st)))
+	mux.Handle("POST /api/auth/change-password", authMgr.RequireAuth(handleChangePassword(log, st, authMgr)))
 
 	mux.Handle("GET /api/users", authMgr.RequireAdmin(handleListUsers(log, st)))
 	mux.Handle("POST /api/users", authMgr.RequireAdmin(handleCreateUser(log, st)))
@@ -209,7 +209,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.Handle("POST /api/containers/bulk-action", authMgr.RequireAuth(handleBulkContainerAction(log, dispatcher, opWaiter)))
 	mux.Handle("POST /api/servers/{id}/containers/{containerId}/rename", authMgr.RequireAuth(handleRenameContainer(log, dispatcher, opWaiter)))
 	mux.Handle("POST /api/servers/{id}/containers/{containerId}/clone", authMgr.RequireAuth(handleCloneContainer(log, dispatcher, opWaiter)))
-	mux.Handle("POST /api/servers/{id}/containers/{containerId}/recreate", authMgr.RequireAuth(handleRecreateContainer(log, st, dispatcher, opWaiter)))
+	mux.Handle("POST /api/servers/{id}/containers/{containerId}/recreate", authMgr.RequireAuth(handleRecreateContainer(log, st, dispatcher, inspectWaiter, opWaiter)))
 	mux.Handle("PATCH /api/servers/{id}/containers/{containerId}/restart-policy", authMgr.RequireAuth(handleUpdateRestartPolicy(log, dispatcher, opWaiter)))
 	mux.Handle("PATCH /api/servers/{id}/containers/{containerId}/resources", authMgr.RequireAuth(handleUpdateResourceLimits(log, dispatcher, opWaiter)))
 	mux.Handle("GET /api/servers/{id}/containers/{containerId}/metrics", authMgr.RequireAuth(handleGetContainerMetrics(log, st)))
@@ -287,7 +287,7 @@ func NewRouter(log *slog.Logger, st *store.Store, authMgr *auth.Manager, dispatc
 	mux.HandleFunc("PUT /api/agent/backups/{id}/blob", handleUploadBackupBlob(log, st, blobs))
 	mux.HandleFunc("GET /api/agent/backups/{id}/blob", handleDownloadBackupBlob(log, st, blobs))
 
-	return withCORS(authMgr, mux)
+	return withCORS(authMgr, withPathIDValidation(mux))
 }
 
 func handleLogin(log *slog.Logger, st *store.Store, authMgr *auth.Manager) http.HandlerFunc {
@@ -322,7 +322,7 @@ func handleLogin(log *slog.Logger, st *store.Store, authMgr *auth.Manager) http.
 			return
 		}
 
-		token, err := authMgr.IssueToken(user.ID, user.Email, user.Role)
+		token, err := authMgr.IssueToken(user.ID, user.Email, user.Role, user.SessionVersion)
 		if err != nil {
 			log.Error("failed to issue token", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -356,7 +356,7 @@ func handleLocalSession(log *slog.Logger, st *store.Store, authMgr *auth.Manager
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		token, err := authMgr.IssueLocalToken(user.ID, user.Email, user.Role)
+		token, err := authMgr.IssueLocalToken(user.ID, user.Email, user.Role, user.SessionVersion)
 		if err != nil {
 			log.Error("local session token issuance failed", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)

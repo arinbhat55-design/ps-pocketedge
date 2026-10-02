@@ -94,6 +94,9 @@ func checkVolumePath(ctx context.Context, cli *client.Client, containerID, relat
 		if newLeaf && i == len(parts)-1 && errdefs.IsNotFound(err) {
 			return container.PathStat{}, nil
 		}
+		if errdefs.IsNotFound(err) {
+			return container.PathStat{}, fmt.Errorf("%q does not exist in the volume", path.Join(parts[:i+1]...))
+		}
 		if err != nil {
 			return container.PathStat{}, err
 		}
@@ -108,6 +111,34 @@ func checkVolumePath(ctx context.Context, cli *client.Client, containerID, relat
 		return cli.ContainerStatPath(ctx, containerID, volumeFilesMount)
 	}
 	return stat, nil
+}
+
+// existingVolumeDir walks dir (relative to the volume root) with
+// checkVolumePath's rules and splits it into its deepest existing
+// directory and the components below it that don't exist yet.
+func existingVolumeDir(ctx context.Context, cli *client.Client, containerID, dir string) (existing string, missing []string, err error) {
+	existing = "."
+	if dir == "." {
+		return existing, nil, nil
+	}
+	parts := strings.Split(dir, "/")
+	for i, part := range parts {
+		stat, err := cli.ContainerStatPath(ctx, containerID, path.Join(volumeFilesMount, existing, part))
+		if errdefs.IsNotFound(err) {
+			return existing, parts[i:], nil
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		if stat.Mode&os.ModeSymlink != 0 || stat.LinkTarget != "" {
+			return "", nil, errors.New("symlink paths are not allowed")
+		}
+		if !stat.Mode.IsDir() {
+			return "", nil, errors.New("parent path is not a directory")
+		}
+		existing = path.Join(existing, part)
+	}
+	return existing, nil, nil
 }
 
 func volumeUnused(ctx context.Context, cli *client.Client, name string) error {
@@ -240,17 +271,17 @@ func WriteVolumeFile(ctx context.Context, cli *client.Client, volumeName, rawPat
 		return err
 	}
 	defer cleanup()
-	parent := path.Dir(relative)
-	parentStat, err := checkVolumePath(ctx, cli, id, parent, false)
+	// Folders on the way to the file that don't exist yet are created
+	// with it, in the same archive.
+	parent, missing, err := existingVolumeDir(ctx, cli, id, path.Dir(relative))
 	if err != nil {
 		return err
 	}
-	if !parentStat.Mode.IsDir() {
-		return errors.New("parent path is not a directory")
-	}
-	stat, err := checkVolumePath(ctx, cli, id, relative, true)
-	if err != nil {
-		return err
+	var stat container.PathStat
+	if len(missing) == 0 {
+		if stat, err = checkVolumePath(ctx, cli, id, relative, true); err != nil {
+			return err
+		}
 	}
 	mode := int64(0644)
 	uid, gid := 0, 0
@@ -272,7 +303,14 @@ func WriteVolumeFile(ctx context.Context, cli *client.Client, volumeName, rawPat
 	}
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{Name: path.Base(relative), Mode: mode, Uid: uid, Gid: gid, Size: int64(len(content)), ModTime: time.Now()}); err != nil {
+	dir := ""
+	for _, m := range missing {
+		dir = path.Join(dir, m)
+		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: dir + "/", Mode: 0755, ModTime: time.Now()}); err != nil {
+			return err
+		}
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: path.Join(dir, path.Base(relative)), Mode: mode, Uid: uid, Gid: gid, Size: int64(len(content)), ModTime: time.Now()}); err != nil {
 		return err
 	}
 	if _, err := tw.Write(content); err != nil {

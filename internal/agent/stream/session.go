@@ -311,6 +311,22 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 	// multi-message conversations, not one-shot request/reply.
 	streams := newActiveStreams()
 
+	// inventoryChanged asks the loop below for an immediate heartbeat with
+	// the container list, after a command that created, removed, renamed
+	// or restarted containers — so the control plane acts on current
+	// container IDs instead of waiting up to a heartbeat interval for them.
+	// Buffered by one: a burst of changes collapses into one report.
+	inventoryChanged := make(chan struct{}, 1)
+	changesContainers := func(handle func()) {
+		go func() {
+			handle()
+			select {
+			case inventoryChanged <- struct{}{}:
+			default:
+			}
+		}()
+	}
+
 	recvErrCh := make(chan error, 1)
 	go func() {
 		for {
@@ -325,31 +341,31 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 			case msg.GetExecInput() != nil:
 				streams.sendInput(msg.GetExecInput())
 			case msg.GetDeployStack() != nil:
-				go r.handleDeploy(sessionCtx, dockerCli, msg.GetDeployStack(), outbound)
+				changesContainers(func() { r.handleDeploy(sessionCtx, dockerCli, msg.GetDeployStack(), outbound) })
 			case msg.GetBackup() != nil:
 				go r.handleBackup(sessionCtx, dockerCli, msg.GetBackup(), identity.Credential, outbound)
 			case msg.GetRestore() != nil:
-				go r.handleRestore(sessionCtx, dockerCli, msg.GetRestore(), identity.Credential, outbound)
+				changesContainers(func() { r.handleRestore(sessionCtx, dockerCli, msg.GetRestore(), identity.Credential, outbound) })
 			case msg.GetInspectContainer() != nil:
 				go r.handleInspectContainer(sessionCtx, dockerCli, msg.GetInspectContainer(), outbound)
 			case msg.GetContainerAction() != nil:
-				go r.handleContainerAction(sessionCtx, dockerCli, msg.GetContainerAction(), outbound)
+				changesContainers(func() { r.handleContainerAction(sessionCtx, dockerCli, msg.GetContainerAction(), outbound) })
 			case msg.GetCreateContainer() != nil:
-				go r.handleCreateContainer(sessionCtx, dockerCli, msg.GetCreateContainer(), outbound)
+				changesContainers(func() { r.handleCreateContainer(sessionCtx, dockerCli, msg.GetCreateContainer(), outbound) })
 			case msg.GetRenameContainer() != nil:
-				go r.handleRenameContainer(sessionCtx, dockerCli, msg.GetRenameContainer(), outbound)
+				changesContainers(func() { r.handleRenameContainer(sessionCtx, dockerCli, msg.GetRenameContainer(), outbound) })
 			case msg.GetCloneContainer() != nil:
-				go r.handleCloneContainer(sessionCtx, dockerCli, msg.GetCloneContainer(), outbound)
+				changesContainers(func() { r.handleCloneContainer(sessionCtx, dockerCli, msg.GetCloneContainer(), outbound) })
 			case msg.GetRecreateContainer() != nil:
-				go r.handleRecreateContainer(sessionCtx, dockerCli, msg.GetRecreateContainer(), outbound)
+				changesContainers(func() { r.handleRecreateContainer(sessionCtx, dockerCli, msg.GetRecreateContainer(), outbound) })
 			case msg.GetUpdateRestartPolicy() != nil:
 				go r.handleUpdateRestartPolicy(sessionCtx, dockerCli, msg.GetUpdateRestartPolicy(), outbound)
 			case msg.GetUpdateResourceLimits() != nil:
 				go r.handleUpdateResourceLimits(sessionCtx, dockerCli, msg.GetUpdateResourceLimits(), outbound)
 			case msg.GetUndeploy() != nil:
-				go r.handleUndeploy(sessionCtx, dockerCli, msg.GetUndeploy(), outbound)
+				changesContainers(func() { r.handleUndeploy(sessionCtx, dockerCli, msg.GetUndeploy(), outbound) })
 			case msg.GetDeployService() != nil:
-				go r.handleDeployService(sessionCtx, dockerCli, msg.GetDeployService(), outbound)
+				changesContainers(func() { r.handleDeployService(sessionCtx, dockerCli, msg.GetDeployService(), outbound) })
 			case msg.GetBuildImage() != nil:
 				go r.handleBuildImage(sessionCtx, dockerCli, msg.GetBuildImage(), outbound, streams)
 			case msg.GetListImages() != nil:
@@ -377,9 +393,13 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 			case msg.GetRemoveNetwork() != nil:
 				go r.handleRemoveNetwork(sessionCtx, dockerCli, msg.GetRemoveNetwork(), outbound)
 			case msg.GetConnectContainerToNetwork() != nil:
-				go r.handleConnectContainerToNetwork(sessionCtx, dockerCli, msg.GetConnectContainerToNetwork(), outbound)
+				changesContainers(func() {
+					r.handleConnectContainerToNetwork(sessionCtx, dockerCli, msg.GetConnectContainerToNetwork(), outbound)
+				})
 			case msg.GetDisconnectContainerFromNetwork() != nil:
-				go r.handleDisconnectContainerFromNetwork(sessionCtx, dockerCli, msg.GetDisconnectContainerFromNetwork(), outbound)
+				changesContainers(func() {
+					r.handleDisconnectContainerFromNetwork(sessionCtx, dockerCli, msg.GetDisconnectContainerFromNetwork(), outbound)
+				})
 			case msg.GetListVolumes() != nil:
 				go r.handleListVolumes(sessionCtx, dockerCli, msg.GetListVolumes(), outbound)
 			case msg.GetCreateVolume() != nil:
@@ -409,6 +429,12 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 		tick++
 		return stream.Send(msg)
 	}
+	// sendInventory is an out-of-schedule heartbeat that always carries
+	// the container list (tick 0 refreshes it) and leaves the regular
+	// tick count alone.
+	sendInventory := func() error {
+		return stream.Send(r.heartbeatMessage(ctx, dockerCli, identity.ServerID, 0))
+	}
 
 	// Send an immediate heartbeat on connect rather than waiting a full
 	// interval, so a fresh/reconnected agent shows up promptly.
@@ -424,6 +450,10 @@ func (r *Runner) runSession(ctx context.Context, client agentv1.AgentSessionClie
 			return err
 		case msg := <-outbound:
 			if err := stream.Send(msg); err != nil {
+				return err
+			}
+		case <-inventoryChanged:
+			if err := sendInventory(); err != nil {
 				return err
 			}
 		case <-ticker.C:

@@ -5,11 +5,11 @@ import "testing"
 func TestLocalTokensAreRevokedWhenLoginIsRequired(t *testing.T) {
 	m := NewManager([]byte("test-secret"))
 	m.SetLocalSessionsAllowed(true)
-	local, err := m.IssueLocalToken("u1", "admin@example.com", "admin")
+	local, err := m.IssueLocalToken("u1", "admin@example.com", "admin", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	login, err := m.IssueToken("u1", "admin@example.com", "admin")
+	login, err := m.IssueToken("u1", "admin@example.com", "admin", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestLocalTokensAreRevokedWhenLoginIsRequired(t *testing.T) {
 	if _, err := m.ParseToken(login); err != nil {
 		t.Fatalf("login token was revoked: %v", err)
 	}
-	if _, err := m.IssueLocalToken("u1", "admin@example.com", "admin"); err == nil {
+	if _, err := m.IssueLocalToken("u1", "admin@example.com", "admin", 1); err == nil {
 		t.Fatal("issued a new local token while login is required")
 	}
 }

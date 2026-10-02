@@ -45,7 +45,8 @@ class SessionGate extends StatefulWidget {
 class _SessionGateState extends State<SessionGate> {
   final _authStorage = AuthStorage();
   late final ApiClient _apiClient = ApiClient(baseUrl: controlPlaneUrl)
-    ..onUnauthorized = _onUnauthorized;
+    ..onUnauthorized = _onUnauthorized
+    ..onTokenRenewed = _onTokenRenewed;
 
   bool _starting = true;
   String? _token;
@@ -134,6 +135,13 @@ class _SessionGateState extends State<SessionGate> {
       local: false,
       notice: 'Your session ended. Sign in to continue.',
     );
+  }
+
+  /// The server replaced the session token (a password change ends every
+  /// earlier session); keep using and storing the new one.
+  void _onTokenRenewed(String token) {
+    if (!_localMode) unawaited(_authStorage.writeToken(token));
+    setState(() => _token = token);
   }
 
   void _onLoggedIn(String token) {

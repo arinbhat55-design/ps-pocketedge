@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +15,18 @@ import (
 // UpdateComposeFile when another compose file already has that name
 // (unique_violation on compose_files.name).
 var ErrDuplicateComposeFileName = errors.New("a compose file with this name already exists")
+
+// ComposeFileInUseError is returned by DeleteComposeFile when deployments
+// that haven't been removed still run the file.
+type ComposeFileInUseError struct {
+	// Deployments are the active deployments using the file, as
+	// "<source name> on <server>" descriptions.
+	Deployments []string
+}
+
+func (e *ComposeFileInUseError) Error() string {
+	return fmt.Sprintf("this compose file is used by %d active deployment(s): %s — remove them first", len(e.Deployments), strings.Join(e.Deployments, ", "))
+}
 
 // ComposeFile is one row in compose_files: a user-authored Compose YAML
 // document managed under Deployment Management > Docker Compose. Version
@@ -53,13 +67,13 @@ func scanComposeFile(row pgx.Row) (*ComposeFile, error) {
 }
 
 func (s *Store) ListComposeFiles(ctx context.Context) ([]ComposeFile, error) {
-	return s.queryComposeFiles(ctx, `SELECT `+composeFileColumns+` FROM compose_files ORDER BY name ASC`)
+	return s.queryComposeFiles(ctx, `SELECT `+composeFileColumns+` FROM compose_files WHERE deleted_at IS NULL ORDER BY name ASC`)
 }
 
 // ListComposeFilesByGitRepository returns the files linked to repoID —
 // what a push webhook for that repository re-syncs.
 func (s *Store) ListComposeFilesByGitRepository(ctx context.Context, repoID string) ([]ComposeFile, error) {
-	return s.queryComposeFiles(ctx, `SELECT `+composeFileColumns+` FROM compose_files WHERE git_repository_id = $1 ORDER BY name`, repoID)
+	return s.queryComposeFiles(ctx, `SELECT `+composeFileColumns+` FROM compose_files WHERE git_repository_id = $1 AND deleted_at IS NULL ORDER BY name`, repoID)
 }
 
 func (s *Store) queryComposeFiles(ctx context.Context, sql string, args ...any) ([]ComposeFile, error) {
@@ -81,9 +95,9 @@ func (s *Store) queryComposeFiles(ctx context.Context, sql string, args ...any) 
 }
 
 // GetComposeFile looks up a single compose file by ID. Returns ErrNotFound
-// if it doesn't exist.
+// if it doesn't exist or was deleted.
 func (s *Store) GetComposeFile(ctx context.Context, id string) (*ComposeFile, error) {
-	f, err := scanComposeFile(s.pool.QueryRow(ctx, `SELECT `+composeFileColumns+` FROM compose_files WHERE id = $1`, id))
+	f, err := scanComposeFile(s.pool.QueryRow(ctx, `SELECT `+composeFileColumns+` FROM compose_files WHERE id = $1 AND deleted_at IS NULL`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -137,7 +151,7 @@ func (s *Store) SetComposeFileGitLink(ctx context.Context, id string, repoID *st
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE compose_files SET git_repository_id = $2, git_ref = $3, git_path = $4,
 			git_commit = CASE WHEN $2::uuid IS NULL THEN '' ELSE git_commit END, updated_at = now()
-		WHERE id = $1
+		WHERE id = $1 AND deleted_at IS NULL
 	`, id, repoID, ref, path)
 	if err != nil {
 		return err
@@ -159,7 +173,7 @@ func (s *Store) updateComposeFile(ctx context.Context, id, name, content string,
 	var currentVersion int
 	var createdBy *string
 	err = tx.QueryRow(ctx, `
-		SELECT name, content, version, created_by, git_commit FROM compose_files WHERE id = $1 FOR UPDATE
+		SELECT name, content, version, created_by, git_commit FROM compose_files WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 	`, id).Scan(&currentName, &currentContent, &currentVersion, &createdBy, &currentCommit)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
@@ -205,17 +219,59 @@ func (s *Store) updateComposeFile(ctx context.Context, id, name, content string,
 	return tx.Commit(ctx)
 }
 
-// DeleteComposeFile removes a compose file, cascading to its version
-// history. Returns ErrNotFound if it doesn't exist.
+// DeleteComposeFile deletes a compose file. Returns ErrNotFound if it
+// doesn't exist, or a *ComposeFileInUseError while deployments that
+// haven't been removed still use it. A file only removed deployments
+// reference is hidden instead of deleted, keeping their history intact;
+// it's unlinked from Git so it no longer syncs or holds its repository.
 func (s *Store) DeleteComposeFile(ctx context.Context, id string) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM compose_files WHERE id = $1`, id)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	defer tx.Rollback(ctx)
+
+	var one int
+	err = tx.QueryRow(ctx, `SELECT 1 FROM compose_files WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
-	return nil
+	if err != nil {
+		return err
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT COALESCE(cf.name, '') || ' on ' || COALESCE(srv.hostname, srv.name, 'unknown server')
+		FROM deployments d
+		JOIN compose_files cf ON cf.id = d.compose_file_id
+		LEFT JOIN servers srv ON srv.id = d.server_id
+		WHERE d.compose_file_id = $1 AND d.phase <> 'removed'
+		ORDER BY d.created_at
+	`, id)
+	if err != nil {
+		return err
+	}
+	inUse, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	if len(inUse) > 0 {
+		return &ComposeFileInUseError{Deployments: inUse}
+	}
+
+	var referenced bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM deployments WHERE compose_file_id = $1)`, id).Scan(&referenced); err != nil {
+		return err
+	}
+	if referenced {
+		_, err = tx.Exec(ctx, `UPDATE compose_files SET deleted_at = now(), git_repository_id = NULL WHERE id = $1`, id)
+	} else {
+		_, err = tx.Exec(ctx, `DELETE FROM compose_files WHERE id = $1`, id)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ComposeFileVersionSummary is one entry in a compose file's version

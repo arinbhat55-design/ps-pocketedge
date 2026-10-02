@@ -38,7 +38,7 @@ func handleListImageRollbackHistory(log *slog.Logger, st *store.Store) http.Hand
 
 // handleRollbackContainer recreates a standalone container on its most
 // recently recorded previous image, keeping every other setting (name,
-// ports, volumes, restart policy) unchanged and refreshing env from a live
+// ports, volumes, restart policy, resource limits) unchanged and refreshing env from a live
 // inspect. It assembles a full ContainerConfig from the container's
 // current known state — the server_containers row (name/ports/mounts)
 // plus a fresh InspectContainerCommand (env/restart policy) — combined
@@ -48,7 +48,7 @@ func handleRollbackContainer(log *slog.Logger, st *store.Store, dispatcher *depl
 		serverID := r.PathValue("id")
 		containerID := r.PathValue("containerId")
 
-		entry, err := st.PopLatestImageRollbackHistory(r.Context(), serverID, containerID)
+		entry, err := st.LatestImageRollbackHistory(r.Context(), serverID, containerID)
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "no rollback history for this container", http.StatusNotFound)
 			return
@@ -59,7 +59,7 @@ func handleRollbackContainer(log *slog.Logger, st *store.Store, dispatcher *depl
 			return
 		}
 
-		current, err := findContainerState(r.Context(), st, serverID, containerID)
+		current, err := awaitContainerState(r.Context(), st, serverID, containerID)
 		if err != nil {
 			http.Error(w, "container not found", http.StatusNotFound)
 			return
@@ -102,10 +102,13 @@ func handleRollbackContainer(log *slog.Logger, st *store.Store, dispatcher *depl
 			return
 		}
 		if result.GetSuccess() {
-			// The image we just rolled away from becomes rollback-able
-			// again, same as any other recreate that changes the image
-			// (see handleRecreateContainer's capture in containers.go).
-			_ = st.AddImageRollbackHistory(r.Context(), serverID, containerID, current.Image, rollbackHistoryLimit)
+			// The entry is consumed, the rest of the history follows the
+			// container to its new ID, and the image we just rolled away
+			// from becomes rollback-able again, same as any other recreate
+			// that changes the image (see handleRecreateContainer).
+			if err := st.RecordContainerRecreate(r.Context(), serverID, containerID, result.GetContainerId(), entry.ID, current.Image, rollbackHistoryLimit); err != nil {
+				log.Warn("failed to update image rollback history", "server_id", serverID, "container_id", containerID, "error", err)
+			}
 		}
 
 		writeJSON(w, http.StatusOK, containerOpResponse{
@@ -130,6 +133,29 @@ func findContainerState(ctx context.Context, st *store.Store, serverID, containe
 		}
 	}
 	return nil, errors.New("container not found")
+}
+
+// containerStateWait bounds how long awaitContainerState waits for a
+// container to show up in server_containers — one heartbeat interval plus
+// slack, since a container recreated moments ago is only reported on the
+// agent's next heartbeat.
+const containerStateWait = 25 * time.Second
+
+// awaitContainerState is findContainerState, polling until the container
+// appears or containerStateWait passes.
+func awaitContainerState(ctx context.Context, st *store.Store, serverID, containerID string) (*store.ContainerState, error) {
+	deadline := time.Now().Add(containerStateWait)
+	for {
+		state, err := findContainerState(ctx, st, serverID, containerID)
+		if err == nil || time.Now().After(deadline) {
+			return state, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // awaitInspect runs the same dispatch+correlate+timeout as
@@ -167,10 +193,22 @@ func awaitInspect(dispatcher *deploy.Dispatcher, waiter *deploy.InspectWaiter, s
 // container identically except for the image.
 func containerConfigFromState(state *store.ContainerState, detail *agentv1.ContainerDetail, image string) *agentv1.ContainerConfig {
 	ports := make([]*agentv1.ContainerPortSpec, 0, len(state.Ports))
+	// Docker reports a published port once per address family (0.0.0.0
+	// and ::); binding both entries again would publish the port twice.
+	type binding struct {
+		private, public uint16
+		protocol        string
+	}
+	seen := map[binding]bool{}
 	for _, p := range state.Ports {
 		if p.PublicPort == 0 {
 			continue
 		}
+		b := binding{p.PrivatePort, p.PublicPort, p.Type}
+		if seen[b] {
+			continue
+		}
+		seen[b] = true
 		ports = append(ports, &agentv1.ContainerPortSpec{
 			ContainerPort: uint32(p.PrivatePort),
 			HostPort:      uint32(p.PublicPort),
@@ -198,5 +236,9 @@ func containerConfigFromState(state *store.ContainerState, detail *agentv1.Conta
 		Volumes:                    volumes,
 		RestartPolicyName:          detail.GetRestartPolicyName(),
 		RestartPolicyMaxRetryCount: detail.GetRestartPolicyMaxRetryCount(),
+		NanoCpus:                   detail.GetNanoCpus(),
+		MemoryLimitBytes:           detail.GetMemoryLimitBytes(),
+		MemoryReservationBytes:     detail.GetMemoryReservationBytes(),
+		PidsLimit:                  detail.GetPidsLimit(),
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -124,11 +126,8 @@ func (s *Store) SetImagePolicyEnabled(ctx context.Context, enabled bool) error {
 }
 
 // IsImageApproved reports whether ref matches one of the configured
-// approved_images patterns. A pattern matches ref if ref equals it exactly
-// or starts with it — the same simple prefix/exact scheme used for both
-// bare repos ("nginx") and registry-scoped prefixes
-// ("myregistry.com/team/"). Callers should only enforce this when
-// GetImagePolicyEnabled is true.
+// approved_images patterns (see matchesImagePattern for the syntax).
+// Callers should only enforce this when GetImagePolicyEnabled is true.
 func (s *Store) IsImageApproved(ctx context.Context, ref string) (bool, error) {
 	patterns, err := s.ListApprovedImages(ctx)
 	if err != nil {
@@ -142,24 +141,171 @@ func (s *Store) IsImageApproved(ctx context.Context, ref string) (bool, error) {
 	return false, nil
 }
 
-// matchesImagePattern reports whether ref matches pattern by exact equality
-// or prefix — factored out of IsImageApproved so the matching rule itself
-// is unit-testable without a database.
+// matchesImagePattern reports whether image ref matches an approved-image
+// pattern. Both sides are normalized the way Docker does, so "nginx",
+// "library/nginx" and "docker.io/library/nginx" are the same repository.
+// Patterns:
+//
+//   - a repository ("nginx", "ghcr.io/acme/app") matches it at any tag or
+//     digest — but not a different repository sharing the prefix, such as
+//     "nginx-evil/miner";
+//   - a repository with a tag ("nginx:1.27") matches only that tag;
+//   - "*" matches any run of characters ("nginx:1.*", "ghcr.io/acme/*");
+//   - a trailing "/" ("myregistry.com/team/") is shorthand for
+//     "myregistry.com/team/*".
+//
+// Factored out of IsImageApproved so the matching rule itself is
+// unit-testable without a database.
 func matchesImagePattern(ref, pattern string) bool {
-	return ref == pattern || strings.HasPrefix(ref, pattern)
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return false
+	}
+	if strings.HasSuffix(pattern, "/") {
+		pattern += "*"
+	}
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		// Not a valid image reference; only an identical pattern matches.
+		return ref == pattern
+	}
+	repo := named.Name()
+
+	if strings.Contains(pattern, "*") {
+		full := repo
+		if tagged, ok := named.(reference.Tagged); ok {
+			full += ":" + tagged.Tag()
+		} else if _, ok := named.(reference.Digested); !ok {
+			full += ":latest"
+		}
+		if digested, ok := named.(reference.Digested); ok {
+			full += "@" + digested.Digest().String()
+		}
+		return globMatch(normalizeImagePatternName(pattern), full)
+	}
+
+	p, err := reference.ParseNormalizedNamed(pattern)
+	if err != nil || p.Name() != repo {
+		return false
+	}
+	if pt, ok := p.(reference.Tagged); ok {
+		rt, ok := named.(reference.Tagged)
+		if !ok || rt.Tag() != pt.Tag() {
+			return false
+		}
+	}
+	if pd, ok := p.(reference.Digested); ok {
+		rd, ok := named.(reference.Digested)
+		if !ok || rd.Digest() != pd.Digest() {
+			return false
+		}
+	}
+	return true
 }
 
-// AddImageRollbackHistory records previousImage as containerID's prior
-// image, then trims the history to the most recent keepLast entries — the
-// history exists purely to support "rollback to previous image", not a
-// full audit trail.
-func (s *Store) AddImageRollbackHistory(ctx context.Context, serverID, containerID, previousImage string, keepLast int) error {
-	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO image_rollback_history (server_id, container_id, previous_image) VALUES ($1, $2, $3)
-	`, serverID, containerID, previousImage); err != nil {
+// ValidateImagePattern reports why pattern can't be used as an approved-
+// image pattern, or nil when it can (see matchesImagePattern).
+func ValidateImagePattern(pattern string) error {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return errors.New("pattern is required")
+	}
+	if strings.HasSuffix(pattern, "/") || strings.Contains(pattern, "*") {
+		probe := strings.ReplaceAll(strings.TrimSuffix(pattern, "/"), "*", "x")
+		if strings.HasSuffix(pattern, "/") {
+			probe += "/x"
+		}
+		if _, err := reference.ParseNormalizedNamed(probe); err != nil {
+			return fmt.Errorf("%q is not a valid image pattern: %v", pattern, err)
+		}
+		return nil
+	}
+	if _, err := reference.ParseNormalizedNamed(pattern); err != nil {
+		return fmt.Errorf("%q is not a valid image reference: %v", pattern, err)
+	}
+	return nil
+}
+
+// normalizeImagePatternName applies Docker's name normalization to a glob
+// pattern, which reference.ParseNormalizedNamed rejects because of its
+// "*": a first component without a "." or ":" (and not "localhost") is a
+// Docker Hub name, and a single-component Hub name is under "library/".
+func normalizeImagePatternName(pattern string) string {
+	if pattern == "*" {
+		return pattern
+	}
+	first, rest, hasSlash := strings.Cut(pattern, "/")
+	if hasSlash && (strings.ContainsAny(first, ".:") || first == "localhost") {
+		return pattern
+	}
+	if !hasSlash {
+		if first == "*" || strings.HasPrefix(first, "*") {
+			return "docker.io/" + pattern
+		}
+		return "docker.io/library/" + pattern
+	}
+	return "docker.io/" + first + "/" + rest
+}
+
+// globMatch matches s against pattern, where "*" matches any run of
+// characters (including "/" and ":") and everything else is literal.
+func globMatch(pattern, s string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == s
+	}
+	if !strings.HasPrefix(s, parts[0]) {
+		return false
+	}
+	s = s[len(parts[0]):]
+	for _, part := range parts[1 : len(parts)-1] {
+		i := strings.Index(s, part)
+		if i < 0 {
+			return false
+		}
+		s = s[i+len(part):]
+	}
+	return strings.HasSuffix(s, parts[len(parts)-1])
+}
+
+// RecordContainerRecreate updates image_rollback_history after fromID was
+// recreated as toID: Docker gives a recreated container a new ID, so the
+// history moves with it. consumedID, when set, is the entry a rollback just
+// used and is dropped. previousImage, when set, becomes the newest entry.
+// The history is then trimmed to the most recent keepLast entries — it
+// exists purely to support "rollback to previous image", not a full audit
+// trail.
+func (s *Store) RecordContainerRecreate(ctx context.Context, serverID, fromID, toID, consumedID, previousImage string, keepLast int) error {
+	if toID == "" {
+		toID = fromID
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, `
+	defer tx.Rollback(ctx)
+
+	if consumedID != "" {
+		if _, err := tx.Exec(ctx, `DELETE FROM image_rollback_history WHERE id = $1`, consumedID); err != nil {
+			return err
+		}
+	}
+	if fromID != toID {
+		if _, err := tx.Exec(ctx, `
+			UPDATE image_rollback_history SET container_id = $3
+			WHERE server_id = $1 AND container_id = $2
+		`, serverID, fromID, toID); err != nil {
+			return err
+		}
+	}
+	if previousImage != "" {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO image_rollback_history (server_id, container_id, previous_image) VALUES ($1, $2, $3)
+		`, serverID, toID, previousImage); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `
 		DELETE FROM image_rollback_history
 		WHERE server_id = $1 AND container_id = $2
 		  AND id NOT IN (
@@ -167,8 +313,10 @@ func (s *Store) AddImageRollbackHistory(ctx context.Context, serverID, container
 		    WHERE server_id = $1 AND container_id = $2
 		    ORDER BY captured_at DESC LIMIT $3
 		  )
-	`, serverID, containerID, keepLast)
-	return err
+	`, serverID, toID, keepLast); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ImageRollbackEntry is one recorded previous image for a container.
@@ -200,19 +348,16 @@ func (s *Store) ListImageRollbackHistory(ctx context.Context, serverID, containe
 	return history, rows.Err()
 }
 
-// PopLatestImageRollbackHistory removes and returns the most recently
-// captured previous image for containerID, for a rollback request to
-// consume. Returns ErrNotFound if there's no history.
-func (s *Store) PopLatestImageRollbackHistory(ctx context.Context, serverID, containerID string) (*ImageRollbackEntry, error) {
+// LatestImageRollbackHistory returns the most recently captured previous
+// image for containerID without removing it — a rollback only consumes it
+// (via RecordContainerRecreate) once the recreate succeeded. Returns
+// ErrNotFound if there's no history.
+func (s *Store) LatestImageRollbackHistory(ctx context.Context, serverID, containerID string) (*ImageRollbackEntry, error) {
 	var e ImageRollbackEntry
 	err := s.pool.QueryRow(ctx, `
-		DELETE FROM image_rollback_history
-		WHERE id = (
-		  SELECT id FROM image_rollback_history
-		  WHERE server_id = $1 AND container_id = $2
-		  ORDER BY captured_at DESC LIMIT 1
-		)
-		RETURNING id, previous_image, captured_at
+		SELECT id, previous_image, captured_at FROM image_rollback_history
+		WHERE server_id = $1 AND container_id = $2
+		ORDER BY captured_at DESC LIMIT 1
 	`, serverID, containerID).Scan(&e.ID, &e.PreviousImage, &e.CapturedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
